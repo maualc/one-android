@@ -16,6 +16,10 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        // The emulator reaches a backend running on the development machine
+        // through 10.0.2.2. Release configuration will provide an HTTPS URL.
+        buildConfigField("String", "ONE_API_BASE_URL", "\"http://10.0.2.2:8000/api/v1\"")
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -32,6 +36,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

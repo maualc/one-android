@@ -82,9 +82,7 @@ import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneInverseSurface
 import com.one.cognitivecompanion.ui.theme.OneMint
 import com.one.cognitivecompanion.ui.theme.ONETheme
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private data class OneNavItem(
     val key: String,
@@ -109,46 +107,25 @@ private val residentTabs = listOf(
 @Composable
 fun OneApp() {
     // Demo mode starts inside the app so the shell is immediately usable. The
-    // Account screen exposes a sign-out preview to exercise this flow until
-    // the real pairing API is wired in.
-    var authStageName by rememberSaveable { mutableStateOf(AuthStage.AUTHENTICATED.name) }
-    var roleName by rememberSaveable { mutableStateOf(OneRole.CAREGIVER.name) }
-    var selectedTab by rememberSaveable { mutableStateOf("home") }
-    var onboardingStep by rememberSaveable { mutableStateOf(0) }
-    var onboardingConsentRoom by rememberSaveable { mutableStateOf(false) }
-    var onboardingConsentMic by rememberSaveable { mutableStateOf(false) }
-    var onboardingConsentMedication by rememberSaveable { mutableStateOf(false) }
-    var onboardingConsentFamily by rememberSaveable { mutableStateOf(false) }
-    var backendMode by rememberSaveable { mutableStateOf(false) }
-    var session by remember { mutableStateOf<OneSession?>(null) }
+    // Account screen exposes a signed-out preview for demo and backend auth.
     val appContext = LocalContext.current.applicationContext
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val apiClient = remember { OneHttpApiClient() }
+    val appState = remember(secureStore, apiClient) { OneAppState(apiClient, secureStore) }
+    var authStageName by appState::authStageName
+    var roleName by appState::roleName
+    var selectedTab by appState::selectedTab
+    var onboardingStep by appState::onboardingStep
+    var onboardingConsentRoom by appState::onboardingConsentRoom
+    var onboardingConsentMic by appState::onboardingConsentMic
+    var onboardingConsentMedication by appState::onboardingConsentMedication
+    var onboardingConsentFamily by appState::onboardingConsentFamily
     val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
 
-    LaunchedEffect(secureStore) {
-        val restored = withContext(Dispatchers.IO) { secureStore.restore() }
-        if (restored != null) {
-            session = restored.session
-            backendMode = true
-            roleName = restored.session.role.name
-            selectedTab = if (restored.session.role == OneRole.CAREGIVER) "home" else "today"
-            if (restored.onboardingComplete) {
-                onboardingStep = 3
-                authStageName = AuthStage.AUTHENTICATED.name
-            } else {
-                onboardingConsentRoom = false
-                onboardingConsentMic = false
-                onboardingConsentMedication = false
-                onboardingConsentFamily = false
-                onboardingStep = 0
-                authStageName = AuthStage.ONBOARDING.name
-            }
-        }
-    }
+    LaunchedEffect(appState) { appState.restoreSession() }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
@@ -175,16 +152,7 @@ fun OneApp() {
                 AuthStage.SIGNED_OUT -> LoginScreen(
                     apiClient = apiClient,
                     onAuthenticated = { authenticatedSession, usedBackend ->
-                        session = authenticatedSession
-                        backendMode = usedBackend
-                        if (usedBackend && authenticatedSession != null) {
-                            runCatching {
-                                secureStore.saveSession(authenticatedSession, onboardingComplete = false)
-                            }
-                        }
-                        roleName = authenticatedSession?.role?.name ?: OneRole.CAREGIVER.name
-                        onboardingStep = 0
-                        authStageName = AuthStage.ONBOARDING.name
+                        appState.applyAuthenticatedSession(authenticatedSession, usedBackend)
                     }
                 )
                 AuthStage.ONBOARDING -> OnboardingScreen(
@@ -198,38 +166,9 @@ fun OneApp() {
                     onMedicationConsentChange = { onboardingConsentMedication = it },
                     onFamilyConsentChange = { onboardingConsentFamily = it },
                     onContinue = {
-                        if (onboardingStep == 1 && backendMode && session != null) {
-                            val choices = listOf(
-                                "Daily check-in support" to "audio_capture",
-                                "Room and camera data" to "video_capture",
-                                "Medication reminders" to "medication_management",
-                                "Family sharing" to "family_mode"
-                            )
-                            choices.forEach { (label, purpose) ->
-                                apiClient.recordConsent(
-                                    session = session!!,
-                                    consentRequest = ConsentRequest(
-                                        purpose = purpose,
-                                        policyVersion = "2026-09",
-                                        granted = when (label) {
-                                            "Daily check-in support" -> onboardingConsentMic
-                                            "Room and camera data" -> onboardingConsentRoom
-                                            "Medication reminders" -> onboardingConsentMedication
-                                            else -> onboardingConsentFamily
-                                        }
-                                    )
-                                )
-                            }
-                        }
+                        if (onboardingStep == 1) appState.recordOnboardingConsents()
                         if (onboardingStep < 2) onboardingStep += 1
-                        else {
-                            if (backendMode && session != null) {
-                                withContext(Dispatchers.IO) { secureStore.markOnboardingComplete(session!!) }
-                            }
-                            onboardingStep = 3
-                            authStageName = AuthStage.AUTHENTICATED.name
-                            selectedTab = "home"
-                        }
+                        else appState.completeOnboarding()
                     }
                 )
                 AuthStage.AUTHENTICATED -> when (role) {
@@ -240,15 +179,7 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = {
-                                coroutineScope.launch {
-                                    session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
-                                    withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
-                                    session = null
-                                    backendMode = false
-                                    authStageName = AuthStage.SIGNED_OUT.name
-                                }
-                            }
+                            onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
                         else -> CaregiverHomeScreen()
                     }
@@ -257,15 +188,7 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = {
-                                coroutineScope.launch {
-                                    session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
-                                    withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
-                                    session = null
-                                    backendMode = false
-                                    authStageName = AuthStage.SIGNED_OUT.name
-                                }
-                            }
+                            onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
                         else -> ResidentTodayScreen(onOpenAssistant = { selectedTab = "assistant" })
                     }

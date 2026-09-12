@@ -58,8 +58,11 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,6 +81,7 @@ import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneInverseSurface
 import com.one.cognitivecompanion.ui.theme.OneMint
 import com.one.cognitivecompanion.ui.theme.ONETheme
+import kotlinx.coroutines.launch
 
 private data class OneNavItem(
     val key: String,
@@ -112,6 +116,10 @@ fun OneApp() {
     var onboardingConsentMic by rememberSaveable { mutableStateOf(false) }
     var onboardingConsentMedication by rememberSaveable { mutableStateOf(false) }
     var onboardingConsentFamily by rememberSaveable { mutableStateOf(false) }
+    var backendMode by rememberSaveable { mutableStateOf(false) }
+    var session by remember { mutableStateOf<OneSession?>(null) }
+    val apiClient = remember { OneHttpApiClient() }
+    val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
@@ -139,7 +147,11 @@ fun OneApp() {
         OneBackground(modifier = Modifier.padding(innerPadding)) {
             when (authStage) {
                 AuthStage.SIGNED_OUT -> LoginScreen(
-                    onAuthenticated = {
+                    apiClient = apiClient,
+                    onAuthenticated = { authenticatedSession, usedBackend ->
+                        session = authenticatedSession
+                        backendMode = usedBackend
+                        roleName = authenticatedSession?.role?.name ?: OneRole.CAREGIVER.name
                         onboardingStep = 0
                         authStageName = AuthStage.ONBOARDING.name
                     }
@@ -155,11 +167,33 @@ fun OneApp() {
                     onMedicationConsentChange = { onboardingConsentMedication = it },
                     onFamilyConsentChange = { onboardingConsentFamily = it },
                     onContinue = {
+                        if (onboardingStep == 1 && backendMode && session != null) {
+                            val choices = listOf(
+                                "Daily check-in support" to "audio_capture",
+                                "Room and camera data" to "video_capture",
+                                "Medication reminders" to "medication_management",
+                                "Family sharing" to "family_mode"
+                            )
+                            choices.forEach { (label, purpose) ->
+                                apiClient.recordConsent(
+                                    session = session!!,
+                                    consentRequest = ConsentRequest(
+                                        purpose = purpose,
+                                        policyVersion = "2026-09",
+                                        granted = when (label) {
+                                            "Daily check-in support" -> onboardingConsentMic
+                                            "Room and camera data" -> onboardingConsentRoom
+                                            "Medication reminders" -> onboardingConsentMedication
+                                            else -> onboardingConsentFamily
+                                        }
+                                    )
+                                )
+                            }
+                        }
                         if (onboardingStep < 2) onboardingStep += 1
                         else {
                             onboardingStep = 3
                             authStageName = AuthStage.AUTHENTICATED.name
-                            roleName = OneRole.CAREGIVER.name
                             selectedTab = "home"
                         }
                     }
@@ -172,7 +206,14 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = { authStageName = AuthStage.SIGNED_OUT.name }
+                            onSignOut = {
+                                coroutineScope.launch {
+                                    session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
+                                    session = null
+                                    backendMode = false
+                                    authStageName = AuthStage.SIGNED_OUT.name
+                                }
+                            }
                         )
                         else -> CaregiverHomeScreen()
                     }
@@ -181,7 +222,14 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = { authStageName = AuthStage.SIGNED_OUT.name }
+                            onSignOut = {
+                                coroutineScope.launch {
+                                    session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
+                                    session = null
+                                    backendMode = false
+                                    authStageName = AuthStage.SIGNED_OUT.name
+                                }
+                            }
                         )
                         else -> ResidentTodayScreen(onOpenAssistant = { selectedTab = "assistant" })
                     }
@@ -258,15 +306,37 @@ private fun SectionHeading(eyebrow: String, title: String) {
 }
 
 @Composable
-private fun LoginScreen(onAuthenticated: () -> Unit) {
+private fun LoginScreen(
+    apiClient: OneApiClient,
+    onAuthenticated: (OneSession?, Boolean) -> Unit
+) {
     var mode by rememberSaveable { mutableStateOf(0) }
     var pairingCode by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var homeName by rememberSaveable { mutableStateOf("") }
     var accountConsent by rememberSaveable { mutableStateOf(false) }
+    var useBackend by rememberSaveable { mutableStateOf(false) }
+    var backendStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var isSubmitting by rememberSaveable { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
     val isCreateMode = mode == 1
-    val canContinue = if (isCreateMode) name.isNotBlank() && accountConsent else pairingCode.isNotBlank()
+    val codeIsValid = pairingCode.length == 6 && pairingCode.all(Char::isDigit)
+    val canContinue = if (isCreateMode) name.isNotBlank() && accountConsent else if (useBackend) codeIsValid else pairingCode.isNotBlank()
+
+    LaunchedEffect(useBackend) {
+        errorMessage = null
+        if (!useBackend) {
+            backendStatus = null
+        } else {
+            backendStatus = "Checking backend…"
+            backendStatus = runCatching {
+                val health = apiClient.health()
+                if (health.status == "ok") "Backend connected" else "Backend unavailable"
+            }.getOrElse { "Backend unavailable" }
+        }
+    }
 
     ScreenScroll {
         Spacer(Modifier.height(34.dp))
@@ -280,6 +350,14 @@ private fun LoginScreen(onAuthenticated: () -> Unit) {
             Tab(selected = mode == 1, onClick = { mode = 1 }, text = { Text("Create household") })
             Tab(selected = mode == 2, onClick = { mode = 2 }, text = { Text("Join household") })
         }
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Use ONE backend", style = MaterialTheme.typography.titleMedium)
+                Text("Connect this device to a running FastAPI home.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = useBackend, onCheckedChange = { useBackend = it })
+        }
+        backendStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it == "Backend connected") OneMint else MaterialTheme.colorScheme.onSurfaceVariant) }
         if (isCreateMode) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -297,18 +375,49 @@ private fun LoginScreen(onAuthenticated: () -> Unit) {
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
+        errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
         Text(
-            "Demo mode is active for this first slice. Any non-empty code continues; the real pairing API comes next.",
+            if (useBackend) "Codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Button(
-            onClick = onAuthenticated,
-            enabled = canContinue,
+            onClick = {
+                if (!useBackend) {
+                    onAuthenticated(null, false)
+                } else {
+                    coroutineScope.launch {
+                        isSubmitting = true
+                        errorMessage = null
+                        try {
+                            val authenticated = when {
+                                mode == 1 -> {
+                                    val pairing = apiClient.startPairing(
+                                        PairingStartRequest(
+                                            displayName = name.trim(),
+                                            email = email.trim().ifBlank { null },
+                                            homeName = homeName.trim().ifBlank { "ONE Home" }
+                                        )
+                                    )
+                                    apiClient.completePairing(pairing.pairingCode)
+                                }
+                                mode == 2 -> apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(pairingCode, name.trim().ifBlank { null }))
+                                else -> apiClient.completePairing(pairingCode)
+                            }
+                            onAuthenticated(authenticated, true)
+                        } catch (error: Exception) {
+                            errorMessage = error.message ?: "Could not connect to the ONE backend."
+                        } finally {
+                            isSubmitting = false
+                        }
+                    }
+                }
+            },
+            enabled = canContinue && !isSubmitting,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
         ) {
-            Text(if (mode == 0) "Sign in" else if (mode == 1) "Create account" else "Join household", style = MaterialTheme.typography.titleMedium)
+            Text(if (isSubmitting) "Working…" else if (mode == 0) "Sign in" else if (mode == 1) "Create account" else "Join household", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.width(9.dp))
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
         }
@@ -326,8 +435,11 @@ private fun OnboardingScreen(
     onMicrophoneConsentChange: (Boolean) -> Unit,
     onMedicationConsentChange: (Boolean) -> Unit,
     onFamilyConsentChange: (Boolean) -> Unit,
-    onContinue: () -> Unit
+    onContinue: suspend () -> Unit
 ) {
+    var isSubmitting by rememberSaveable { mutableStateOf(false) }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
     ScreenScroll {
         Spacer(Modifier.height(34.dp))
         ScreenHeader("WELCOME", when (step) {
@@ -365,8 +477,26 @@ private fun OnboardingScreen(
             }
         }
         Spacer(Modifier.height(26.dp))
-        Button(onClick = onContinue, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = OneBlue)) {
-            Text(if (step < 2) "Continue" else "Finish setup", style = MaterialTheme.typography.titleMedium)
+        errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
+        Button(
+            onClick = {
+                coroutineScope.launch {
+                    isSubmitting = true
+                    errorMessage = null
+                    try {
+                        onContinue()
+                    } catch (error: Exception) {
+                        errorMessage = error.message ?: "Could not save your choices."
+                    } finally {
+                        isSubmitting = false
+                    }
+                }
+            },
+            enabled = !isSubmitting,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
+        ) {
+            Text(if (isSubmitting) "Saving…" else if (step < 2) "Continue" else "Finish setup", style = MaterialTheme.typography.titleMedium)
         }
     }
 }

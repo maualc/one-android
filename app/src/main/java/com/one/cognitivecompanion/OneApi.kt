@@ -39,6 +39,11 @@ data class PairingStartResponse(
     val role: String
 )
 
+data class FamilyInviteAcceptRequest(
+    val code: String,
+    val displayName: String?
+)
+
 data class ConsentRequest(
     val purpose: String,
     val policyVersion: String,
@@ -59,6 +64,7 @@ interface OneApiClient {
     suspend fun health(): BackendHealth
     suspend fun startPairing(pairingRequest: PairingStartRequest, bootstrapSecret: String? = null): PairingStartResponse
     suspend fun completePairing(code: String): OneSession
+    suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun logout(session: OneSession)
 }
@@ -99,6 +105,16 @@ class OneHttpApiClient(
 
     override suspend fun completePairing(code: String): OneSession {
         val body = request("/pairing/complete", "POST", JSONObject().put("code", code))
+        return sessionFrom(body)
+    }
+
+    override suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession {
+        val payload = JSONObject().put("code", inviteRequest.code)
+        inviteRequest.displayName?.let { payload.put("display_name", it) }
+        return sessionFrom(request("/family/invites/accept", "POST", payload))
+    }
+
+    private suspend fun sessionFrom(body: JSONObject): OneSession {
         val accessToken = body.requiredString("access_token")
         val homeId = body.requiredUuid("home_id")
         val userId = body.requiredUuid("user_id")

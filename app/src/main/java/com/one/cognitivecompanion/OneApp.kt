@@ -71,6 +71,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -81,7 +82,9 @@ import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneInverseSurface
 import com.one.cognitivecompanion.ui.theme.OneMint
 import com.one.cognitivecompanion.ui.theme.ONETheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class OneNavItem(
     val key: String,
@@ -118,11 +121,34 @@ fun OneApp() {
     var onboardingConsentFamily by rememberSaveable { mutableStateOf(false) }
     var backendMode by rememberSaveable { mutableStateOf(false) }
     var session by remember { mutableStateOf<OneSession?>(null) }
+    val appContext = LocalContext.current.applicationContext
+    val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val apiClient = remember { OneHttpApiClient() }
     val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
+
+    LaunchedEffect(secureStore) {
+        val restored = withContext(Dispatchers.IO) { secureStore.restore() }
+        if (restored != null) {
+            session = restored.session
+            backendMode = true
+            roleName = restored.session.role.name
+            selectedTab = if (restored.session.role == OneRole.CAREGIVER) "home" else "today"
+            if (restored.onboardingComplete) {
+                onboardingStep = 3
+                authStageName = AuthStage.AUTHENTICATED.name
+            } else {
+                onboardingConsentRoom = false
+                onboardingConsentMic = false
+                onboardingConsentMedication = false
+                onboardingConsentFamily = false
+                onboardingStep = 0
+                authStageName = AuthStage.ONBOARDING.name
+            }
+        }
+    }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
@@ -151,6 +177,11 @@ fun OneApp() {
                     onAuthenticated = { authenticatedSession, usedBackend ->
                         session = authenticatedSession
                         backendMode = usedBackend
+                        if (usedBackend && authenticatedSession != null) {
+                            runCatching {
+                                secureStore.saveSession(authenticatedSession, onboardingComplete = false)
+                            }
+                        }
                         roleName = authenticatedSession?.role?.name ?: OneRole.CAREGIVER.name
                         onboardingStep = 0
                         authStageName = AuthStage.ONBOARDING.name
@@ -192,6 +223,9 @@ fun OneApp() {
                         }
                         if (onboardingStep < 2) onboardingStep += 1
                         else {
+                            if (backendMode && session != null) {
+                                withContext(Dispatchers.IO) { secureStore.markOnboardingComplete(session!!) }
+                            }
                             onboardingStep = 3
                             authStageName = AuthStage.AUTHENTICATED.name
                             selectedTab = "home"
@@ -209,6 +243,7 @@ fun OneApp() {
                             onSignOut = {
                                 coroutineScope.launch {
                                     session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
+                                    withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
                                     session = null
                                     backendMode = false
                                     authStageName = AuthStage.SIGNED_OUT.name
@@ -225,6 +260,7 @@ fun OneApp() {
                             onSignOut = {
                                 coroutineScope.launch {
                                     session?.let { activeSession -> if (backendMode) runCatching { apiClient.logout(activeSession) } }
+                                    withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
                                     session = null
                                     backendMode = false
                                     authStageName = AuthStage.SIGNED_OUT.name

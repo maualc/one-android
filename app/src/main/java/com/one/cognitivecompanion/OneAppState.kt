@@ -17,6 +17,7 @@ class OneAppState(
     val apiClient: OneApiClient,
     private val secureStore: OneSecureStore,
     private val homeRepository: OneHomeRepository,
+    private val cameraRepository: OneCameraRepository,
     private val familyRepository: OneFamilyRepository,
     private val medicationRepository: OneMedicationRepository
 ) {
@@ -33,6 +34,9 @@ class OneAppState(
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
     var homeLoadError by mutableStateOf<String?>(null)
+    var cameras by mutableStateOf<List<OneCamera>?>(null)
+    var cameraLoadState by mutableStateOf(OneCameraLoadState.IDLE)
+    var cameraLoadError by mutableStateOf<String?>(null)
     var familyMembers by mutableStateOf<List<OneFamilyMember>?>(null)
     var familyLoadState by mutableStateOf(OneFamilyLoadState.IDLE)
     var familyLoadError by mutableStateOf<String?>(null)
@@ -65,6 +69,9 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        cameras = null
+        cameraLoadState = OneCameraLoadState.IDLE
+        cameraLoadError = null
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
@@ -129,6 +136,25 @@ class OneAppState(
         }
     }
 
+    suspend fun loadCameras() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            cameras = null
+            cameraLoadState = OneCameraLoadState.IDLE
+            cameraLoadError = null
+            return
+        }
+        cameraLoadState = OneCameraLoadState.LOADING
+        cameraLoadError = null
+        try {
+            cameras = cameraRepository.load(authenticatedSession)
+            cameraLoadState = OneCameraLoadState.LOADED
+        } catch (error: Exception) {
+            cameraLoadState = OneCameraLoadState.ERROR
+            cameraLoadError = error.message ?: "Could not load the household cameras."
+        }
+    }
+
     suspend fun loadFamily() {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
@@ -178,6 +204,9 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        cameras = null
+        cameraLoadState = OneCameraLoadState.IDLE
+        cameraLoadError = null
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null

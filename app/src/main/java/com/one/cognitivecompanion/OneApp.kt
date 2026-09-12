@@ -114,10 +114,11 @@ fun OneApp() {
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val apiClient = remember { OneHttpApiClient() }
     val homeRepository = remember(apiClient) { OneApiHomeRepository(apiClient) }
+    val cameraRepository = remember(apiClient) { OneApiCameraRepository(apiClient) }
     val familyRepository = remember(apiClient) { OneApiFamilyRepository(apiClient) }
     val medicationRepository = remember(apiClient) { OneApiMedicationRepository(apiClient) }
-    val appState = remember(secureStore, apiClient, homeRepository, familyRepository, medicationRepository) {
-        OneAppState(apiClient, secureStore, homeRepository, familyRepository, medicationRepository)
+    val appState = remember(secureStore, apiClient, homeRepository, cameraRepository, familyRepository, medicationRepository) {
+        OneAppState(apiClient, secureStore, homeRepository, cameraRepository, familyRepository, medicationRepository)
     }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
@@ -134,7 +135,10 @@ fun OneApp() {
 
     LaunchedEffect(appState) { appState.restoreSession() }
     LaunchedEffect(appState, appState.authStageName, appState.session) {
-        if (appState.authStageName == AuthStage.AUTHENTICATED.name) appState.loadHome()
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name) {
+            appState.loadHome()
+            appState.loadCameras()
+        }
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") {
@@ -224,7 +228,11 @@ fun OneApp() {
                             homeSnapshot = appState.homeSnapshot,
                             homeLoadState = appState.homeLoadState,
                             homeLoadError = appState.homeLoadError,
-                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                            onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            cameras = appState.cameras,
+                            cameraLoadState = appState.cameraLoadState,
+                            cameraLoadError = appState.cameraLoadError,
+                            onCameraRetry = { coroutineScope.launch { appState.loadCameras() } }
                         )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
@@ -519,7 +527,11 @@ private fun CaregiverHomeScreen(
     homeSnapshot: OneHomeSnapshot?,
     homeLoadState: OneHomeLoadState,
     homeLoadError: String?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    cameras: List<OneCamera>?,
+    cameraLoadState: OneCameraLoadState,
+    cameraLoadError: String?,
+    onCameraRetry: () -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
     ScreenScroll {
@@ -535,7 +547,13 @@ private fun CaregiverHomeScreen(
                 InfoCard("Home data unavailable", homeLoadError ?: "ONE could not reach the household right now.")
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
-            isBackendHome -> HomeCameraStatusCard(paused = homeSnapshot?.profile?.paused == true)
+            isBackendHome -> HomeCameraStatusCard(
+                paused = homeSnapshot?.profile?.paused == true,
+                cameras = cameras,
+                loadState = cameraLoadState,
+                loadError = cameraLoadError,
+                onRetry = onCameraRetry
+            )
             else -> CameraHeroCard()
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -575,7 +593,13 @@ private fun CaregiverHomeScreen(
 }
 
 @Composable
-private fun HomeCameraStatusCard(paused: Boolean) {
+private fun HomeCameraStatusCard(
+    paused: Boolean,
+    cameras: List<OneCamera>?,
+    loadState: OneCameraLoadState,
+    loadError: String?,
+    onRetry: () -> Unit
+) {
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -584,12 +608,64 @@ private fun HomeCameraStatusCard(paused: Boolean) {
             Text("Camera and room setup", style = MaterialTheme.typography.titleMedium)
             Text(
                 if (paused) "Camera capture is paused until the household enables room-data consent."
-                else "Live camera status will appear after camera setup is connected to Android.",
+                else "Camera viewing is local and consent-based.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            when {
+                loadState == OneCameraLoadState.LOADING && cameras == null -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading paired cameras…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                loadState == OneCameraLoadState.ERROR && cameras == null -> {
+                    Text(loadError ?: "ONE could not load the household cameras.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
+                cameras.orEmpty().isEmpty() -> {
+                    Text("No cameras are paired with this household yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                else -> cameras.orEmpty().take(3).forEach { camera -> CameraStatusRow(camera, paused) }
+            }
         }
     }
+}
+
+@Composable
+private fun CameraStatusRow(camera: OneCamera, paused: Boolean) {
+    val status = if (paused) "Paused" else camera.status.cameraStatusLabel(camera.enabled)
+    val tint = if (paused) OneAmber else camera.status.cameraStatusTint(camera.enabled)
+    Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.Visibility, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(camera.name, style = MaterialTheme.typography.titleSmall)
+            Text(
+                "${camera.roomId?.let { "Room configured" } ?: "Room not assigned"} · ${camera.platform}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Box(Modifier.size(9.dp).background(tint, CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(status, style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Bold)
+    }
+}
+
+private fun String.cameraStatusLabel(enabled: Boolean): String = when {
+    !enabled -> "Offline"
+    equals("online", ignoreCase = true) -> "Online"
+    equals("paused", ignoreCase = true) -> "Paused"
+    equals("offline", ignoreCase = true) -> "Offline"
+    else -> replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+}
+
+private fun String.cameraStatusTint(enabled: Boolean): Color = when {
+    !enabled || equals("offline", ignoreCase = true) -> OneAmber
+    equals("online", ignoreCase = true) -> OneMint
+    equals("paused", ignoreCase = true) -> OneAmber
+    else -> OneCyan
 }
 
 @Composable

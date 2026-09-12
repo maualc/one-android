@@ -66,6 +66,16 @@ data class OneHomeProfile(
     val paused: Boolean
 )
 
+data class OneRemoteCamera(
+    val id: UUID,
+    val name: String,
+    val roomId: UUID?,
+    val platform: String,
+    val status: String,
+    val enabled: Boolean,
+    val lastSeenAt: Instant?
+)
+
 data class OneRemoteObject(
     val id: UUID,
     val label: String,
@@ -117,6 +127,7 @@ interface OneApiClient {
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun logout(session: OneSession)
     suspend fun homeProfile(session: OneSession): OneHomeProfile
+    suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
@@ -201,6 +212,29 @@ class OneHttpApiClient(
             residentName = home.optString("residentName").takeIf { it.isNotBlank() } ?: "Resident",
             paused = body.optBoolean("paused", false)
         )
+    }
+
+    override suspend fun homeCameras(session: OneSession): List<OneRemoteCamera> {
+        val rows = request("/homes/${session.homeId}/cameras", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                add(
+                    OneRemoteCamera(
+                        id = id,
+                        name = row.optString("name").takeIf { it.isNotBlank() }
+                            ?: row.optString("label").takeIf { it.isNotBlank() }
+                            ?: "Unnamed camera",
+                        roomId = row.optNullableUuid("room_id") ?: row.optNullableUuid("roomId"),
+                        platform = row.optString("platform").takeIf { it.isNotBlank() } ?: "unknown",
+                        status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
+                        enabled = row.optNullableBoolean("enabled") ?: true,
+                        lastSeenAt = (row.optNullableString("lastSeenAt") ?: row.optNullableString("last_seen_at")).toInstantOrNull()
+                    )
+                )
+            }
+        }
     }
 
     override suspend fun homeObjects(session: OneSession): List<OneRemoteObject> {
@@ -347,6 +381,18 @@ private fun JSONObject.requiredUuid(key: String): UUID = runCatching { UUID.from
 private fun JSONObject.optNullableString(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
 
 private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
+
+private fun JSONObject.optNullableUuid(key: String): UUID? = optNullableString(key)?.let { value -> runCatching { UUID.fromString(value) }.getOrNull() }
+
+private fun JSONObject.optNullableBoolean(key: String): Boolean? {
+    if (!has(key) || isNull(key)) return null
+    return when (val value = opt(key)) {
+        is Boolean -> value
+        is Number -> value.toInt() != 0
+        is String -> value.equals("true", ignoreCase = true) || value == "1"
+        else -> null
+    }
+}
 
 private fun String?.toInstantOrNull(): Instant? = this?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
 

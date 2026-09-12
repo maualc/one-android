@@ -6,6 +6,12 @@ enum class OneRole {
     RESIDENT
 }
 
+enum class AuthStage {
+    SIGNED_OUT,
+    ONBOARDING,
+    AUTHENTICATED
+}
+
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),

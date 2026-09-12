@@ -49,10 +49,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.Tab
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -97,17 +101,26 @@ private val residentTabs = listOf(
 
 @Composable
 fun OneApp() {
+    // Demo mode starts inside the app so the shell is immediately usable. The
+    // Account screen exposes a sign-out preview to exercise this flow until
+    // the real pairing API is wired in.
+    var authStageName by rememberSaveable { mutableStateOf(AuthStage.AUTHENTICATED.name) }
     var roleName by rememberSaveable { mutableStateOf(OneRole.CAREGIVER.name) }
     var selectedTab by rememberSaveable { mutableStateOf("home") }
+    var onboardingStep by rememberSaveable { mutableStateOf(0) }
+    var onboardingConsentRoom by rememberSaveable { mutableStateOf(false) }
+    var onboardingConsentMic by rememberSaveable { mutableStateOf(false) }
+    var onboardingConsentMedication by rememberSaveable { mutableStateOf(false) }
+    var onboardingConsentFamily by rememberSaveable { mutableStateOf(false) }
+    val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
 
-    if (tabs.none { it.key == selectedTab }) {
-        selectedTab = tabs.first().key
-    }
+    if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
     Scaffold(
-        bottomBar = {
+        bottomBar = if (authStage == AuthStage.AUTHENTICATED) {
+            {
             NavigationBar(modifier = Modifier.navigationBarsPadding()) {
                 tabs.forEach { tab ->
                     NavigationBarItem(
@@ -118,27 +131,60 @@ fun OneApp() {
                     )
                 }
             }
+            }
+        } else {
+            {}
         }
     ) { innerPadding ->
         OneBackground(modifier = Modifier.padding(innerPadding)) {
-            when (role) {
-                OneRole.CAREGIVER -> when (selectedTab) {
-                    "map" -> MapScreen()
-                    "family" -> FamilyScreen()
-                    "events" -> EventsScreen()
-                    "account" -> AccountScreen(
-                        role = role,
-                        onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" }
-                    )
-                    else -> CaregiverHomeScreen()
-                }
-                OneRole.RESIDENT -> when (selectedTab) {
-                    "assistant" -> AssistantScreen()
-                    "account" -> AccountScreen(
-                        role = role,
-                        onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" }
-                    )
-                    else -> ResidentTodayScreen(onOpenAssistant = { selectedTab = "assistant" })
+            when (authStage) {
+                AuthStage.SIGNED_OUT -> LoginScreen(
+                    onAuthenticated = {
+                        onboardingStep = 0
+                        authStageName = AuthStage.ONBOARDING.name
+                    }
+                )
+                AuthStage.ONBOARDING -> OnboardingScreen(
+                    step = onboardingStep,
+                    roomConsent = onboardingConsentRoom,
+                    microphoneConsent = onboardingConsentMic,
+                    medicationConsent = onboardingConsentMedication,
+                    familyConsent = onboardingConsentFamily,
+                    onRoomConsentChange = { onboardingConsentRoom = it },
+                    onMicrophoneConsentChange = { onboardingConsentMic = it },
+                    onMedicationConsentChange = { onboardingConsentMedication = it },
+                    onFamilyConsentChange = { onboardingConsentFamily = it },
+                    onContinue = {
+                        if (onboardingStep < 2) onboardingStep += 1
+                        else {
+                            onboardingStep = 3
+                            authStageName = AuthStage.AUTHENTICATED.name
+                            roleName = OneRole.CAREGIVER.name
+                            selectedTab = "home"
+                        }
+                    }
+                )
+                AuthStage.AUTHENTICATED -> when (role) {
+                    OneRole.CAREGIVER -> when (selectedTab) {
+                        "map" -> MapScreen()
+                        "family" -> FamilyScreen()
+                        "events" -> EventsScreen()
+                        "account" -> AccountScreen(
+                            role = role,
+                            onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
+                            onSignOut = { authStageName = AuthStage.SIGNED_OUT.name }
+                        )
+                        else -> CaregiverHomeScreen()
+                    }
+                    OneRole.RESIDENT -> when (selectedTab) {
+                        "assistant" -> AssistantScreen()
+                        "account" -> AccountScreen(
+                            role = role,
+                            onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
+                            onSignOut = { authStageName = AuthStage.SIGNED_OUT.name }
+                        )
+                        else -> ResidentTodayScreen(onOpenAssistant = { selectedTab = "assistant" })
+                    }
                 }
             }
         }
@@ -208,6 +254,130 @@ private fun SectionHeading(eyebrow: String, title: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(text = title, style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+@Composable
+private fun LoginScreen(onAuthenticated: () -> Unit) {
+    var mode by rememberSaveable { mutableStateOf(0) }
+    var pairingCode by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var homeName by rememberSaveable { mutableStateOf("") }
+    var accountConsent by rememberSaveable { mutableStateOf(false) }
+    val isCreateMode = mode == 1
+    val canContinue = if (isCreateMode) name.isNotBlank() && accountConsent else pairingCode.isNotBlank()
+
+    ScreenScroll {
+        Spacer(Modifier.height(34.dp))
+        ScreenHeader(
+            eyebrow = "ONE",
+            title = "Sign in to your home.",
+            subtitle = "Use the one-time code from your ONE backend. Your session will be stored securely on this device."
+        )
+        PrimaryTabRow(selectedTabIndex = mode) {
+            Tab(selected = mode == 0, onClick = { mode = 0 }, text = { Text("Sign in") })
+            Tab(selected = mode == 1, onClick = { mode = 1 }, text = { Text("Create household") })
+            Tab(selected = mode == 2, onClick = { mode = 2 }, text = { Text("Join household") })
+        }
+        if (isCreateMode) {
+            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = homeName, onValueChange = { homeName = it }, label = { Text("Household name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            ConsentRow("I consent to ONE storing the account data needed for this service.", accountConsent) { accountConsent = it }
+        } else {
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = { pairingCode = it.uppercase() },
+                label = { Text(if (mode == 0) "Pairing code" else "Invitation code") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (mode == 2) {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        Text(
+            "Demo mode is active for this first slice. Any non-empty code continues; the real pairing API comes next.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Button(
+            onClick = onAuthenticated,
+            enabled = canContinue,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
+        ) {
+            Text(if (mode == 0) "Sign in" else if (mode == 1) "Create account" else "Join household", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(9.dp))
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+        }
+    }
+}
+
+@Composable
+private fun OnboardingScreen(
+    step: Int,
+    roomConsent: Boolean,
+    microphoneConsent: Boolean,
+    medicationConsent: Boolean,
+    familyConsent: Boolean,
+    onRoomConsentChange: (Boolean) -> Unit,
+    onMicrophoneConsentChange: (Boolean) -> Unit,
+    onMedicationConsentChange: (Boolean) -> Unit,
+    onFamilyConsentChange: (Boolean) -> Unit,
+    onContinue: () -> Unit
+) {
+    ScreenScroll {
+        Spacer(Modifier.height(34.dp))
+        ScreenHeader("WELCOME", when (step) {
+            0 -> "Welcome to your home."
+            1 -> "Choose what ONE may use."
+            else -> "Set up at your pace."
+        }, when (step) {
+            0 -> "ONE helps your care circle notice daily rhythms with clarity and consent."
+            1 -> "You can change these choices later in Account."
+            else -> "Camera pairing and inviting family are optional. You can do them later."
+        })
+        when (step) {
+            0 -> {
+                InfoCard("Your choices stay yours.", "ONE is designed to support independence, not replace the person or their care team.")
+                InfoCard("Observations are not diagnoses.", "Signals are shown with context and uncertainty for human review.")
+            }
+            1 -> {
+                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                        ConsentRow("Daily check-in support", microphoneConsent) { onMicrophoneConsentChange(it) }
+                        HorizontalDivider()
+                        ConsentRow("Room and camera data", roomConsent) { onRoomConsentChange(it) }
+                        HorizontalDivider()
+                        ConsentRow("Medication reminders", medicationConsent) { onMedicationConsentChange(it) }
+                        HorizontalDivider()
+                        ConsentRow("Family sharing", familyConsent) { onFamilyConsentChange(it) }
+                    }
+                }
+            }
+            else -> {
+                InfoCard("No access is enabled automatically.", "Camera pairing and family invitations remain optional until you choose them from the care circle.")
+                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Text("You are in control of what is recorded, stored, and shared.", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+        Spacer(Modifier.height(26.dp))
+        Button(onClick = onContinue, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = OneBlue)) {
+            Text(if (step < 2) "Continue" else "Finish setup", style = MaterialTheme.typography.titleMedium)
+        }
+    }
+}
+
+@Composable
+private fun InfoCard(title: String, body: String) {
+    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -501,7 +671,7 @@ private fun AssistantScreen() {
 }
 
 @Composable
-private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit) {
+private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit, onSignOut: () -> Unit) {
     var roomConsent by rememberSaveable { mutableStateOf(true) }
     var microphoneConsent by rememberSaveable { mutableStateOf(true) }
     var clipsConsent by rememberSaveable { mutableStateOf(false) }
@@ -527,6 +697,9 @@ private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit) {
         SectionHeading("YOUR DATA", "Human control")
         OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Prepare a data export") }
         OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Request deletion") }
+        TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
+            Text("Preview signed-out flow")
+        }
         Text("Observations support human attention. They are not medical advice or a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
     }
 }

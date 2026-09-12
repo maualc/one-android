@@ -16,7 +16,8 @@ import kotlinx.coroutines.withContext
 class OneAppState(
     val apiClient: OneApiClient,
     private val secureStore: OneSecureStore,
-    private val homeRepository: OneHomeRepository
+    private val homeRepository: OneHomeRepository,
+    private val familyRepository: OneFamilyRepository
 ) {
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
@@ -31,6 +32,9 @@ class OneAppState(
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
     var homeLoadError by mutableStateOf<String?>(null)
+    var familyMembers by mutableStateOf<List<OneFamilyMember>?>(null)
+    var familyLoadState by mutableStateOf(OneFamilyLoadState.IDLE)
+    var familyLoadError by mutableStateOf<String?>(null)
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -57,6 +61,9 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        familyMembers = null
+        familyLoadState = OneFamilyLoadState.IDLE
+        familyLoadError = null
         if (usedBackend && authenticatedSession != null) {
             runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
         }
@@ -115,6 +122,25 @@ class OneAppState(
         }
     }
 
+    suspend fun loadFamily() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            familyMembers = null
+            familyLoadState = OneFamilyLoadState.IDLE
+            familyLoadError = null
+            return
+        }
+        familyLoadState = OneFamilyLoadState.LOADING
+        familyLoadError = null
+        try {
+            familyMembers = familyRepository.load(authenticatedSession)
+            familyLoadState = OneFamilyLoadState.LOADED
+        } catch (error: Exception) {
+            familyLoadState = OneFamilyLoadState.ERROR
+            familyLoadError = error.message ?: "Could not load the care circle."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -126,6 +152,9 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        familyMembers = null
+        familyLoadState = OneFamilyLoadState.IDLE
+        familyLoadError = null
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }

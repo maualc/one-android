@@ -113,7 +113,8 @@ fun OneApp() {
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val apiClient = remember { OneHttpApiClient() }
     val homeRepository = remember(apiClient) { OneApiHomeRepository(apiClient) }
-    val appState = remember(secureStore, apiClient, homeRepository) { OneAppState(apiClient, secureStore, homeRepository) }
+    val familyRepository = remember(apiClient) { OneApiFamilyRepository(apiClient) }
+    val appState = remember(secureStore, apiClient, homeRepository, familyRepository) { OneAppState(apiClient, secureStore, homeRepository, familyRepository) }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
     var selectedTab by appState::selectedTab
@@ -130,6 +131,9 @@ fun OneApp() {
     LaunchedEffect(appState) { appState.restoreSession() }
     LaunchedEffect(appState, appState.authStageName, appState.session) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name) appState.loadHome()
+    }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") appState.loadFamily()
     }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
@@ -179,7 +183,13 @@ fun OneApp() {
                 AuthStage.AUTHENTICATED -> when (role) {
                     OneRole.CAREGIVER -> when (selectedTab) {
                         "map" -> MapScreen()
-                        "family" -> FamilyScreen()
+                        "family" -> FamilyScreen(
+                            members = appState.familyMembers,
+                            isBackend = appState.backendMode,
+                            loadState = appState.familyLoadState,
+                            loadError = appState.familyLoadError,
+                            onRetry = { coroutineScope.launch { appState.loadFamily() } }
+                        )
                         "events" -> EventsScreen(
                             events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
                             isBackend = appState.backendMode,
@@ -701,26 +711,76 @@ private fun MapPin(label: String, tint: Color, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun FamilyScreen() {
+private fun FamilyScreen(
+    members: List<OneFamilyMember>?,
+    isBackend: Boolean,
+    loadState: OneFamilyLoadState,
+    loadError: String?,
+    onRetry: () -> Unit
+) {
     ScreenScroll {
         ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
         AssistChip(onClick = { }, label = { Text("Everyone") }, leadingIcon = { Icon(Icons.Default.People, contentDescription = null) })
         Text("Showing plans and observations for Everyone. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionHeading("PEOPLE", "Your care circle")
-        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                CaregiverRow("Biel Martínez", "You", "Owner", OneBlue)
-                HorizontalDivider()
-                CaregiverRow("Marta Martínez", "Daughter", "Primary caregiver", OneBlue)
-                HorizontalDivider()
-                CaregiverRow("Joan Soler", "Neighbour", "Supporter", OneCyan)
+        when {
+            !isBackend -> DemoFamilyMembersCard()
+            members == null && (loadState == OneFamilyLoadState.IDLE || loadState == OneFamilyLoadState.LOADING) -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Loading the care circle…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            members == null && loadState == OneFamilyLoadState.ERROR -> {
+                InfoCard("Family data unavailable", loadError ?: "ONE could not load the care circle.")
+                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            members.isNullOrEmpty() -> InfoCard("No family members recorded yet", "Invite a trusted person from the care circle when family sharing is enabled.")
+            else -> {
+                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        members.forEachIndexed { index, member ->
+                            if (index > 0) HorizontalDivider()
+                            CaregiverRow(
+                                name = member.displayName,
+                                relationship = member.email ?: "ONE member",
+                                role = member.familyRoleLabel(),
+                                tint = member.familyTint()
+                            )
+                        }
+                    }
+                }
             }
         }
         SectionHeading("TODAY'S PLAN", "Medication reminders")
-        demoMedicationDoses.forEach { dose -> MedicationRow(dose) }
+        if (isBackend) {
+            InfoCard("Medication reminders next", "The care-circle connection is ready. Reminder data will be connected in the next step.")
+        } else {
+            demoMedicationDoses.forEach { dose -> MedicationRow(dose) }
+        }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+@Composable
+private fun DemoFamilyMembersCard() {
+    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            CaregiverRow("Biel Martínez", "You", "Owner", OneBlue)
+            HorizontalDivider()
+            CaregiverRow("Marta Martínez", "Daughter", "Primary caregiver", OneBlue)
+            HorizontalDivider()
+            CaregiverRow("Joan Soler", "Neighbour", "Supporter", OneCyan)
+        }
+    }
+}
+
+private fun OneFamilyMember.familyRoleLabel(): String = when (role.lowercase()) {
+    "admin" -> "Owner"
+    "caregiver" -> "Caregiver"
+    "resident" -> "Resident"
+    else -> role.replaceFirstChar { it.uppercase() }
+}
+
+private fun OneFamilyMember.familyTint(): Color = if (role.equals("resident", ignoreCase = true)) OneCyan else OneBlue
 
 @Composable
 private fun CaregiverRow(name: String, relationship: String, role: String, tint: Color) {

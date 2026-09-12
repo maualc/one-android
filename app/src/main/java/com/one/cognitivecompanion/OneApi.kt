@@ -85,6 +85,14 @@ data class OneRemoteEvent(
     val lastSeenAt: Instant?
 )
 
+data class OneRemoteFamilyMember(
+    val id: UUID,
+    val displayName: String,
+    val email: String?,
+    val role: String,
+    val representationStatus: String?
+)
+
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
 
 interface OneApiClient {
@@ -97,6 +105,7 @@ interface OneApiClient {
     suspend fun homeProfile(session: OneSession): OneHomeProfile
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
+    suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
 }
 
 /**
@@ -215,6 +224,26 @@ class OneHttpApiClient(
                         explanation = row.optString("explanation").takeIf { it.isNotBlank() } ?: "No explanation provided.",
                         confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
                         lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull()
+                    )
+                )
+            }
+        }
+    }
+
+    override suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember> {
+        val rows = request("/homes/${session.homeId}/family/members", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                val displayName = row.optString("display_name").takeIf { it.isNotBlank() } ?: continue
+                add(
+                    OneRemoteFamilyMember(
+                        id = id,
+                        displayName = displayName,
+                        email = row.optNullableString("email"),
+                        role = row.optString("role").takeIf { it.isNotBlank() } ?: "member",
+                        representationStatus = row.optNullableString("representation_status")
                     )
                 )
             }

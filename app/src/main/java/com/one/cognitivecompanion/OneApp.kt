@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -188,7 +189,14 @@ fun OneApp() {
                 )
                 AuthStage.AUTHENTICATED -> when (role) {
                     OneRole.CAREGIVER -> when (selectedTab) {
-                        "map" -> MapScreen()
+                        "map" -> MapScreen(
+                            objects = appState.homeSnapshot?.objects,
+                            events = appState.homeSnapshot?.events,
+                            isBackend = appState.backendMode,
+                            loadState = appState.homeLoadState,
+                            loadError = appState.homeLoadError,
+                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                        )
                         "family" -> FamilyScreen(
                             members = appState.familyMembers,
                             isBackend = appState.backendMode,
@@ -679,12 +687,34 @@ private fun StatusRow(title: String, subtitle: String, icon: ImageVector, tint: 
 }
 
 @Composable
-private fun MapScreen() {
+private fun MapScreen(
+    objects: List<OneRemoteObject>?,
+    events: List<OneEvent>?,
+    isBackend: Boolean,
+    loadState: OneHomeLoadState,
+    loadError: String?,
+    onRetry: () -> Unit
+) {
     ScreenScroll {
         ScreenHeader("MAP", "Home map", "Approximate locations · local view")
-        MapCanvas()
+        when {
+            isBackend && objects == null && (loadState == OneHomeLoadState.IDLE || loadState == OneHomeLoadState.LOADING) -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Loading the approximate map…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            isBackend && objects == null && loadState == OneHomeLoadState.ERROR -> {
+                InfoCard("Map data unavailable", loadError ?: "ONE could not load the household map.")
+                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            else -> MapCanvas(objects = objects, isBackend = isBackend)
+        }
         SectionHeading("EVIDENCE", "Recent observations")
-        demoEvents.take(2).forEach { event -> EventRow(event) }
+        val visibleEvents = events ?: if (isBackend) emptyList() else demoEvents
+        if (visibleEvents.isEmpty()) {
+            InfoCard("No map observations yet", "Approximate evidence will appear here when ONE receives a consented observation.")
+        } else {
+            visibleEvents.take(2).forEach { event -> EventRow(event) }
+        }
         OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.Map, contentDescription = null)
             Spacer(Modifier.width(8.dp))
@@ -694,8 +724,43 @@ private fun MapScreen() {
 }
 
 @Composable
-private fun MapCanvas() {
-    Box(
+private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
+    if (!isBackend) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(300.dp)
+                .clip(RoundedCornerShape(26.dp))
+                .background(Brush.verticalGradient(listOf(Color(0xFFB3E4EA), Color(0xFFEAF1E8))))
+                .border(2.dp, OneBlue.copy(alpha = 0.45f), RoundedCornerShape(26.dp))
+        ) {
+            Text("LIVING ROOM", modifier = Modifier.align(Alignment.TopStart).padding(26.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+            MapPin("Blue mug", OneCyan, Modifier.align(Alignment.BottomStart).padding(start = 50.dp, bottom = 55.dp))
+            MapPin("Kitchen", OneBlue, Modifier.align(Alignment.BottomEnd).padding(end = 60.dp, bottom = 100.dp))
+            Text("Pins are approximate and include confidence", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+
+    val positionedObjects = objects.orEmpty().filter { it.pointX != null && it.pointY != null }
+    if (positionedObjects.isEmpty()) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().height(220.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("No approximate positions are available yet.", modifier = Modifier.padding(22.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        return
+    }
+
+    val minX = positionedObjects.minOf { it.pointX!! }
+    val maxX = positionedObjects.maxOf { it.pointX!! }
+    val minY = positionedObjects.minOf { it.pointY!! }
+    val maxY = positionedObjects.maxOf { it.pointY!! }
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .height(300.dp)
@@ -703,12 +768,24 @@ private fun MapCanvas() {
             .background(Brush.verticalGradient(listOf(Color(0xFFB3E4EA), Color(0xFFEAF1E8))))
             .border(2.dp, OneBlue.copy(alpha = 0.45f), RoundedCornerShape(26.dp))
     ) {
-        Text("LIVING ROOM", modifier = Modifier.align(Alignment.TopStart).padding(26.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
-        MapPin("Blue mug", OneCyan, Modifier.align(Alignment.BottomStart).padding(start = 50.dp, bottom = 55.dp))
-        MapPin("Kitchen", OneBlue, Modifier.align(Alignment.BottomEnd).padding(end = 60.dp, bottom = 100.dp))
+        Text("APPROXIMATE HOME MAP", modifier = Modifier.align(Alignment.TopStart).padding(26.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+        positionedObjects.forEach { remoteObject ->
+            val horizontal = normaliseMapCoordinate(remoteObject.pointX!!, minX, maxX)
+            val vertical = 1f - normaliseMapCoordinate(remoteObject.pointY!!, minY, maxY)
+            MapPin(
+                remoteObject.label,
+                OneCyan,
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = maxWidth * horizontal - 26.dp, y = maxHeight * vertical - 42.dp)
+            )
+        }
         Text("Pins are approximate and include confidence", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+private fun normaliseMapCoordinate(value: Double, minimum: Double, maximum: Double): Float =
+    if (minimum == maximum) 0.5f else ((value - minimum) / (maximum - minimum)).toFloat().coerceIn(0.12f, 0.88f)
 
 @Composable
 private fun MapPin(label: String, tint: Color, modifier: Modifier = Modifier) {

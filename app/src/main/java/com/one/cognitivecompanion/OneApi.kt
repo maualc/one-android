@@ -71,6 +71,8 @@ data class OneRemoteObject(
     val label: String,
     val status: String,
     val zone: String?,
+    val pointX: Double?,
+    val pointY: Double?,
     val lastSeenAt: Instant?,
     val confidence: Double,
     val confidenceRadiusM: Double
@@ -213,6 +215,8 @@ class OneHttpApiClient(
                         label = row.optString("label").takeIf { it.isNotBlank() } ?: "Unlabelled object",
                         status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
                         zone = row.optNullableString("zone"),
+                        pointX = row.optJSONObject("point")?.optNullableDouble("x"),
+                        pointY = row.optJSONObject("point")?.optNullableDouble("y"),
                         lastSeenAt = (row.optNullableString("lastSeenAt") ?: row.optNullableString("last_seen_at")).toInstantOrNull(),
                         confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
                         confidenceRadiusM = row.optDouble("confidenceRadiusM", 0.0).takeUnless { it.isNaN() } ?: 0.0
@@ -341,6 +345,8 @@ private fun JSONObject.requiredLong(key: String): Long = if (has(key) && !isNull
 private fun JSONObject.requiredUuid(key: String): UUID = runCatching { UUID.fromString(requiredString(key)) }.getOrElse { throw OneApiException("ONE API response has an invalid '$key'.", cause = it) }
 
 private fun JSONObject.optNullableString(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
+
+private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
 
 private fun String?.toInstantOrNull(): Instant? = this?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
 

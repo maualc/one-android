@@ -180,7 +180,13 @@ fun OneApp() {
                     OneRole.CAREGIVER -> when (selectedTab) {
                         "map" -> MapScreen()
                         "family" -> FamilyScreen()
-                        "events" -> EventsScreen()
+                        "events" -> EventsScreen(
+                            events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
+                            isBackend = appState.backendMode,
+                            homeLoadState = appState.homeLoadState,
+                            homeLoadError = appState.homeLoadError,
+                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                        )
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
@@ -756,13 +762,31 @@ private fun doseTint(status: DoseStatus): Color = when (status) {
 }
 
 @Composable
-private fun EventsScreen() {
+private fun EventsScreen(
+    events: List<OneEvent>,
+    isBackend: Boolean,
+    homeLoadState: OneHomeLoadState,
+    homeLoadError: String?,
+    onRetry: () -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { ScreenHeader("EVENTS", "Reviewable moments", "A human-readable record of observed activity.") }
-        items(demoEvents) { event -> EventRow(event) }
+        when {
+            isBackend && homeLoadState == OneHomeLoadState.LOADING && events.isEmpty() -> item {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            isBackend && homeLoadState == OneHomeLoadState.ERROR && events.isEmpty() -> item {
+                InfoCard("Events unavailable", homeLoadError ?: "ONE could not load the household events.")
+                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            events.isEmpty() -> item {
+                InfoCard("No events recorded yet", "Reviewable moments will appear here when ONE observes activity.")
+            }
+            else -> items(events) { event -> EventRow(event) }
+        }
         item { Text("Observations support human attention. They are not a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber, modifier = Modifier.padding(top = 4.dp)) }
     }
 }

@@ -15,7 +15,8 @@ import kotlinx.coroutines.withContext
 @Stable
 class OneAppState(
     val apiClient: OneApiClient,
-    private val secureStore: OneSecureStore
+    private val secureStore: OneSecureStore,
+    private val homeRepository: OneHomeRepository
 ) {
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
@@ -27,6 +28,9 @@ class OneAppState(
     var onboardingConsentFamily by mutableStateOf(false)
     var backendMode by mutableStateOf(false)
     var session by mutableStateOf<OneSession?>(null)
+    var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
+    var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
+    var homeLoadError by mutableStateOf<String?>(null)
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -50,6 +54,9 @@ class OneAppState(
     fun applyAuthenticatedSession(authenticatedSession: OneSession?, usedBackend: Boolean) {
         session = authenticatedSession
         backendMode = usedBackend
+        homeSnapshot = null
+        homeLoadState = OneHomeLoadState.IDLE
+        homeLoadError = null
         if (usedBackend && authenticatedSession != null) {
             runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
         }
@@ -89,6 +96,25 @@ class OneAppState(
         selectedTab = if (roleName == OneRole.RESIDENT.name) "today" else "home"
     }
 
+    suspend fun loadHome() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            homeSnapshot = null
+            homeLoadState = OneHomeLoadState.IDLE
+            homeLoadError = null
+            return
+        }
+        homeLoadState = OneHomeLoadState.LOADING
+        homeLoadError = null
+        try {
+            homeSnapshot = homeRepository.load(authenticatedSession)
+            homeLoadState = OneHomeLoadState.LOADED
+        } catch (error: Exception) {
+            homeLoadState = OneHomeLoadState.ERROR
+            homeLoadError = error.message ?: "Could not load the household."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -97,6 +123,9 @@ class OneAppState(
         withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
         session = null
         backendMode = false
+        homeSnapshot = null
+        homeLoadState = OneHomeLoadState.IDLE
+        homeLoadError = null
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }

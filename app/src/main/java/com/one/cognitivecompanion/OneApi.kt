@@ -2,6 +2,7 @@ package com.one.cognitivecompanion
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -58,6 +59,32 @@ data class BackendHealth(
     val localInferenceModel: String?
 )
 
+data class OneHomeProfile(
+    val homeId: UUID,
+    val homeName: String,
+    val residentName: String,
+    val paused: Boolean
+)
+
+data class OneRemoteObject(
+    val id: UUID,
+    val label: String,
+    val status: String,
+    val zone: String?,
+    val lastSeenAt: Instant?,
+    val confidence: Double,
+    val confidenceRadiusM: Double
+)
+
+data class OneRemoteEvent(
+    val id: UUID,
+    val type: String,
+    val status: String,
+    val explanation: String,
+    val confidence: Double,
+    val lastSeenAt: Instant?
+)
+
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
 
 interface OneApiClient {
@@ -67,6 +94,9 @@ interface OneApiClient {
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun logout(session: OneSession)
+    suspend fun homeProfile(session: OneSession): OneHomeProfile
+    suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
+    suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
 }
 
 /**
@@ -138,6 +168,59 @@ class OneHttpApiClient(
         request("/sessions/current", "DELETE", token = session.accessToken)
     }
 
+    override suspend fun homeProfile(session: OneSession): OneHomeProfile {
+        val body = request("/me", "GET", token = session.accessToken)
+        val home = body.optJSONObject("home") ?: throw OneApiException("ONE API response is missing the home profile.")
+        return OneHomeProfile(
+            homeId = home.requiredUuid("id"),
+            homeName = home.requiredString("name"),
+            residentName = home.optString("residentName").takeIf { it.isNotBlank() } ?: "Resident",
+            paused = body.optBoolean("paused", false)
+        )
+    }
+
+    override suspend fun homeObjects(session: OneSession): List<OneRemoteObject> {
+        val rows = request("/homes/${session.homeId}/objects", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                add(
+                    OneRemoteObject(
+                        id = id,
+                        label = row.optString("label").takeIf { it.isNotBlank() } ?: "Unlabelled object",
+                        status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
+                        zone = row.optNullableString("zone"),
+                        lastSeenAt = (row.optNullableString("lastSeenAt") ?: row.optNullableString("last_seen_at")).toInstantOrNull(),
+                        confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
+                        confidenceRadiusM = row.optDouble("confidenceRadiusM", 0.0).takeUnless { it.isNaN() } ?: 0.0
+                    )
+                )
+            }
+        }
+    }
+
+    override suspend fun homeEvents(session: OneSession, limit: Int): List<OneRemoteEvent> {
+        val boundedLimit = limit.coerceIn(1, 100)
+        val rows = request("/homes/${session.homeId}/events?limit=$boundedLimit", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                add(
+                    OneRemoteEvent(
+                        id = id,
+                        type = row.optString("event_type").takeIf { it.isNotBlank() } ?: "unknown",
+                        status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
+                        explanation = row.optString("explanation").takeIf { it.isNotBlank() } ?: "No explanation provided.",
+                        confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
+                        lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull()
+                    )
+                )
+            }
+        }
+    }
+
     private suspend fun request(
         path: String,
         method: String,
@@ -188,5 +271,7 @@ private fun JSONObject.requiredLong(key: String): Long = if (has(key) && !isNull
 private fun JSONObject.requiredUuid(key: String): UUID = runCatching { UUID.fromString(requiredString(key)) }.getOrElse { throw OneApiException("ONE API response has an invalid '$key'.", cause = it) }
 
 private fun JSONObject.optNullableString(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
+
+private fun String?.toInstantOrNull(): Instant? = this?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
 
 private fun String.problemMessage(): String = runCatching { JSONObject(this).optString("detail").takeIf { it.isNotBlank() } ?: JSONObject(this).optJSONObject("error")?.optString("message") }.getOrNull() ?: "Request failed."

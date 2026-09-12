@@ -45,6 +45,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -111,7 +112,8 @@ fun OneApp() {
     val appContext = LocalContext.current.applicationContext
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val apiClient = remember { OneHttpApiClient() }
-    val appState = remember(secureStore, apiClient) { OneAppState(apiClient, secureStore) }
+    val homeRepository = remember(apiClient) { OneApiHomeRepository(apiClient) }
+    val appState = remember(secureStore, apiClient, homeRepository) { OneAppState(apiClient, secureStore, homeRepository) }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
     var selectedTab by appState::selectedTab
@@ -126,6 +128,9 @@ fun OneApp() {
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
 
     LaunchedEffect(appState) { appState.restoreSession() }
+    LaunchedEffect(appState, appState.authStageName, appState.session) {
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name) appState.loadHome()
+    }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
@@ -181,7 +186,12 @@ fun OneApp() {
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
-                        else -> CaregiverHomeScreen()
+                        else -> CaregiverHomeScreen(
+                            homeSnapshot = appState.homeSnapshot,
+                            homeLoadState = appState.homeLoadState,
+                            homeLoadError = appState.homeLoadError,
+                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                        )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
                         "assistant" -> AssistantScreen()
@@ -471,14 +481,29 @@ private fun InfoCard(title: String, body: String) {
 }
 
 @Composable
-private fun CaregiverHomeScreen() {
+private fun CaregiverHomeScreen(
+    homeSnapshot: OneHomeSnapshot?,
+    homeLoadState: OneHomeLoadState,
+    homeLoadError: String?,
+    onRetry: () -> Unit
+) {
+    val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
     ScreenScroll {
         ScreenHeader(
             eyebrow = "ONE",
-            title = "Your home, in view.",
-            subtitle = "A calm, human-readable picture of today."
+            title = homeSnapshot?.profile?.homeName?.let { "$it, in view." } ?: "Your home, in view.",
+            subtitle = homeSnapshot?.profile?.residentName?.let { "A calm view of ${it}'s home, with consent." }
+                ?: "A calm, human-readable picture of today."
         )
-        CameraHeroCard()
+        when {
+            homeLoadState == OneHomeLoadState.LOADING && homeSnapshot == null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            homeLoadState == OneHomeLoadState.ERROR && homeSnapshot == null -> {
+                InfoCard("Home data unavailable", homeLoadError ?: "ONE could not reach the household right now.")
+                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            isBackendHome -> HomeCameraStatusCard(paused = homeSnapshot?.profile?.paused == true)
+            else -> CameraHeroCard()
+        }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(listOf("Today", "Objects", "Cameras", "Check-in")) { label ->
                 FilterChip(
@@ -489,12 +514,47 @@ private fun CaregiverHomeScreen() {
             }
         }
         SectionHeading("TODAY", "Observed objects")
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            item { ObjectCard("Blue mug", "Kitchen · remembered", Icons.Default.Visibility, OneCyan) }
-            item { ObjectCard("Front door", "Entry · mapped", Icons.Default.Home, OneBlue) }
-            item { ObjectCard("Reading chair", "Living room", Icons.Default.Person, OneMint) }
+        if (homeSnapshot != null) {
+            if (homeSnapshot.objects.isEmpty()) {
+                InfoCard("No objects recorded yet", "Objects appear here after a consented room setup or observation.")
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(homeSnapshot.objects) { remoteObject ->
+                        ObjectCard(
+                            title = remoteObject.label,
+                            subtitle = remoteObject.zone ?: if (remoteObject.status == "seen") "Home · observed" else "Home · not observed yet",
+                            icon = Icons.Default.Visibility,
+                            accent = OneCyan
+                        )
+                    }
+                }
+            }
+        } else {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                item { ObjectCard("Blue mug", "Kitchen · remembered", Icons.Default.Visibility, OneCyan) }
+                item { ObjectCard("Front door", "Entry · mapped", Icons.Default.Home, OneBlue) }
+                item { ObjectCard("Reading chair", "Living room", Icons.Default.Person, OneMint) }
+            }
         }
-        HouseholdStatusCard()
+        HouseholdStatusCard(homeSnapshot)
+    }
+}
+
+@Composable
+private fun HomeCameraStatusCard(paused: Boolean) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Text("Camera and room setup", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (paused) "Camera capture is paused until the household enables room-data consent."
+                else "Live camera status will appear after camera setup is connected to Android.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -559,14 +619,19 @@ private fun ObjectCard(title: String, subtitle: String, icon: ImageVector, accen
 }
 
 @Composable
-private fun HouseholdStatusCard() {
+private fun HouseholdStatusCard(homeSnapshot: OneHomeSnapshot?) {
+    val status = when {
+        homeSnapshot == null -> "All connected"
+        homeSnapshot.profile.paused -> "Camera capture paused"
+        else -> "${homeSnapshot.objects.size} objects · ${homeSnapshot.events.size} events"
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)) {
-            StatusRow("Household status", "All connected", Icons.Default.CheckCircle, OneMint)
+            StatusRow("Household status", status, Icons.Default.CheckCircle, OneMint)
             HorizontalDivider()
             StatusRow("This week's plan", "3 check-ins · 1 review", Icons.Default.Schedule, OneBlue)
         }

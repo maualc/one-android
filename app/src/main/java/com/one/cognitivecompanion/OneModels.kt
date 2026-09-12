@@ -15,7 +15,11 @@ enum class AuthStage {
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),
-    SCHEDULED("Scheduled")
+    SCHEDULED("Scheduled"),
+    PENDING("Pending"),
+    TAKEN("Taken"),
+    SKIPPED("Skipped"),
+    MISSED("Missed")
 }
 
 data class MedicationDose(

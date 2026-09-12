@@ -93,6 +93,18 @@ data class OneRemoteFamilyMember(
     val representationStatus: String?
 )
 
+data class OneRemoteMedicationReminder(
+    val planId: UUID,
+    val name: String,
+    val dose: String,
+    val instructions: String,
+    val scheduleRule: String,
+    val scheduledFor: Instant?,
+    val status: String,
+    val note: String?,
+    val assignedCaregiverName: String?
+)
+
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
 
 interface OneApiClient {
@@ -106,6 +118,7 @@ interface OneApiClient {
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
+    suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
 }
 
 /**
@@ -244,6 +257,34 @@ class OneHttpApiClient(
                         email = row.optNullableString("email"),
                         role = row.optString("role").takeIf { it.isNotBlank() } ?: "member",
                         representationStatus = row.optNullableString("representation_status")
+                    )
+                )
+            }
+        }
+    }
+
+    override suspend fun medicationReminders(session: OneSession, day: String?, subjectUserId: UUID?): List<OneRemoteMedicationReminder> {
+        val query = buildList {
+            day?.let { add("day=$it") }
+            subjectUserId?.let { add("subject_user_id=$it") }
+        }.joinToString("&").takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
+        val rows = request("/homes/${session.homeId}/medication-reminders$query", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val planId = runCatching { UUID.fromString(row.optString("plan_id")) }.getOrNull() ?: continue
+                val name = row.optString("name").takeIf { it.isNotBlank() } ?: continue
+                add(
+                    OneRemoteMedicationReminder(
+                        planId = planId,
+                        name = name,
+                        dose = row.optString("dose"),
+                        instructions = row.optString("instructions"),
+                        scheduleRule = row.optString("schedule_rule"),
+                        scheduledFor = row.optNullableString("scheduled_for").toInstantOrNull(),
+                        status = row.optString("status").takeIf { it.isNotBlank() } ?: "pending",
+                        note = row.optNullableString("note"),
+                        assignedCaregiverName = row.optNullableString("assigned_caregiver_name")
                     )
                 )
             }

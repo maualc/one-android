@@ -114,7 +114,10 @@ fun OneApp() {
     val apiClient = remember { OneHttpApiClient() }
     val homeRepository = remember(apiClient) { OneApiHomeRepository(apiClient) }
     val familyRepository = remember(apiClient) { OneApiFamilyRepository(apiClient) }
-    val appState = remember(secureStore, apiClient, homeRepository, familyRepository) { OneAppState(apiClient, secureStore, homeRepository, familyRepository) }
+    val medicationRepository = remember(apiClient) { OneApiMedicationRepository(apiClient) }
+    val appState = remember(secureStore, apiClient, homeRepository, familyRepository, medicationRepository) {
+        OneAppState(apiClient, secureStore, homeRepository, familyRepository, medicationRepository)
+    }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
     var selectedTab by appState::selectedTab
@@ -133,7 +136,10 @@ fun OneApp() {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name) appState.loadHome()
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
-        if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") appState.loadFamily()
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") {
+            appState.loadFamily()
+            appState.loadMedicationReminders()
+        }
     }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
@@ -188,7 +194,11 @@ fun OneApp() {
                             isBackend = appState.backendMode,
                             loadState = appState.familyLoadState,
                             loadError = appState.familyLoadError,
-                            onRetry = { coroutineScope.launch { appState.loadFamily() } }
+                            onRetry = { coroutineScope.launch { appState.loadFamily() } },
+                            medicationDoses = appState.medicationDoses,
+                            medicationLoadState = appState.medicationLoadState,
+                            medicationLoadError = appState.medicationLoadError,
+                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } }
                         )
                         "events" -> EventsScreen(
                             events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
@@ -716,7 +726,11 @@ private fun FamilyScreen(
     isBackend: Boolean,
     loadState: OneFamilyLoadState,
     loadError: String?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    medicationDoses: List<MedicationDose>?,
+    medicationLoadState: OneMedicationLoadState,
+    medicationLoadError: String?,
+    onMedicationRetry: () -> Unit
 ) {
     ScreenScroll {
         ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
@@ -751,10 +765,19 @@ private fun FamilyScreen(
             }
         }
         SectionHeading("TODAY'S PLAN", "Medication reminders")
-        if (isBackend) {
-            InfoCard("Medication reminders next", "The care-circle connection is ready. Reminder data will be connected in the next step.")
-        } else {
+        if (!isBackend) {
             demoMedicationDoses.forEach { dose -> MedicationRow(dose) }
+        } else when {
+            medicationDoses == null && (medicationLoadState == OneMedicationLoadState.IDLE || medicationLoadState == OneMedicationLoadState.LOADING) -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Loading medication reminders…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            medicationDoses == null && medicationLoadState == OneMedicationLoadState.ERROR -> {
+                InfoCard("Medication data unavailable", medicationLoadError ?: "ONE could not load medication reminders.")
+                OutlinedButton(onClick = onMedicationRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            medicationDoses.isNullOrEmpty() -> InfoCard("No reminders for today", "No active medication reminder has been scheduled for this household today.")
+            else -> medicationDoses.forEach { dose -> MedicationRow(dose) }
         }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -816,9 +839,9 @@ private fun MedicationRow(dose: MedicationDose) {
 }
 
 private fun doseTint(status: DoseStatus): Color = when (status) {
-    DoseStatus.ACKNOWLEDGED -> OneMint
-    DoseStatus.NEEDS_CONFIRMATION -> OneBlue
-    DoseStatus.SCHEDULED -> OneAmber
+    DoseStatus.ACKNOWLEDGED, DoseStatus.TAKEN -> OneMint
+    DoseStatus.NEEDS_CONFIRMATION, DoseStatus.SKIPPED, DoseStatus.MISSED -> OneBlue
+    DoseStatus.SCHEDULED, DoseStatus.PENDING -> OneAmber
 }
 
 @Composable

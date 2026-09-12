@@ -17,7 +17,8 @@ class OneAppState(
     val apiClient: OneApiClient,
     private val secureStore: OneSecureStore,
     private val homeRepository: OneHomeRepository,
-    private val familyRepository: OneFamilyRepository
+    private val familyRepository: OneFamilyRepository,
+    private val medicationRepository: OneMedicationRepository
 ) {
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
@@ -35,6 +36,9 @@ class OneAppState(
     var familyMembers by mutableStateOf<List<OneFamilyMember>?>(null)
     var familyLoadState by mutableStateOf(OneFamilyLoadState.IDLE)
     var familyLoadError by mutableStateOf<String?>(null)
+    var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
+    var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
+    var medicationLoadError by mutableStateOf<String?>(null)
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -64,6 +68,9 @@ class OneAppState(
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
+        medicationDoses = null
+        medicationLoadState = OneMedicationLoadState.IDLE
+        medicationLoadError = null
         if (usedBackend && authenticatedSession != null) {
             runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
         }
@@ -141,6 +148,25 @@ class OneAppState(
         }
     }
 
+    suspend fun loadMedicationReminders() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            medicationDoses = null
+            medicationLoadState = OneMedicationLoadState.IDLE
+            medicationLoadError = null
+            return
+        }
+        medicationLoadState = OneMedicationLoadState.LOADING
+        medicationLoadError = null
+        try {
+            medicationDoses = medicationRepository.load(authenticatedSession)
+            medicationLoadState = OneMedicationLoadState.LOADED
+        } catch (error: Exception) {
+            medicationLoadState = OneMedicationLoadState.ERROR
+            medicationLoadError = error.message ?: "Could not load medication reminders."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -155,6 +181,9 @@ class OneAppState(
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
+        medicationDoses = null
+        medicationLoadState = OneMedicationLoadState.IDLE
+        medicationLoadError = null
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }

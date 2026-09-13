@@ -49,6 +49,7 @@ class OneCaptureService : LifecycleService() {
     private var lastUploadAt = 0L
     private var sentFrames = 0
     private val knownObjectIds = mutableMapOf<String, UUID>()
+    private val lastObservationAt = mutableMapOf<String, Long>()
     private var objectsLoaded = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -156,6 +157,8 @@ class OneCaptureService : LifecycleService() {
         val api = OneHttpApiClient()
         result.detections.forEach { detection ->
             val key = detection.label.lowercase()
+            val now = SystemClock.elapsedRealtime()
+            if (now - (lastObservationAt[key] ?: 0L) < OBSERVATION_INTERVAL_MS) return@forEach
             val objectId = knownObjectIds[key] ?: runCatching {
                 api.createObject(session, OneObjectRequest(label = detection.label, displayName = detection.label))
             }.getOrNull()?.id?.also { knownObjectIds[key] = it } ?: return@forEach
@@ -174,7 +177,7 @@ class OneCaptureService : LifecycleService() {
                         detectorVersion = result.detectorVersion
                     )
                 )
-            }
+            }.onSuccess { lastObservationAt[key] = now }
         }
     }
 
@@ -280,6 +283,7 @@ class OneCaptureService : LifecycleService() {
         const val FRAME_INTERVAL_MS = 2_500L
         const val JPEG_QUALITY = 70
         const val MAX_LABELS = 20
+        const val OBSERVATION_INTERVAL_MS = 30_000L
         val DEFAULT_LABELS = listOf("keys", "glasses", "mug", "wallet", "phone")
 
         fun start(context: Context, cameraId: UUID, candidateLabels: List<String> = DEFAULT_LABELS) {

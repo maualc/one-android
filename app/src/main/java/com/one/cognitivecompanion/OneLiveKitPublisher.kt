@@ -137,7 +137,7 @@ class OneLiveKitPublisherService : LifecycleService() {
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, OneLiveKitPublisherService::class.java).setAction(ACTION_STOP))
+            context.stopService(Intent(context, OneLiveKitPublisherService::class.java))
         }
     }
 }

@@ -292,7 +292,7 @@ class OneCaptureService : LifecycleService() {
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, OneCaptureService::class.java).setAction(ACTION_STOP))
+            context.stopService(Intent(context, OneCaptureService::class.java))
         }
     }
 }

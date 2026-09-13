@@ -64,6 +64,12 @@ data class OneRemoteConsent(
     val revokedAt: Instant?
 )
 
+data class OneDataExport(
+    val homeId: UUID,
+    val exportedAt: Instant?,
+    val recordCounts: Map<String, Int>
+)
+
 data class BackendHealth(
     val status: String,
     val database: String?,
@@ -169,6 +175,7 @@ interface OneApiClient {
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
+    suspend fun requestDataExport(session: OneSession): OneDataExport
     suspend fun logout(session: OneSession)
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
@@ -278,6 +285,28 @@ class OneHttpApiClient(
                 )
             }
         }
+    }
+
+    override suspend fun requestDataExport(session: OneSession): OneDataExport {
+        val body = request("/homes/${session.homeId}/privacy/export", "POST", token = session.accessToken)
+        val data = body.optJSONObject("data")
+        val recordCounts = if (data == null) {
+            emptyMap()
+        } else {
+            buildMap {
+                val keys = data.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val rows = data.optJSONArray(key)
+                    if (rows != null) put(key, rows.length())
+                }
+            }
+        }
+        return OneDataExport(
+            homeId = body.optNullableUuid("home_id") ?: session.homeId,
+            exportedAt = body.optNullableString("exported_at")?.toInstantOrNull(),
+            recordCounts = recordCounts
+        )
     }
 
     override suspend fun logout(session: OneSession) {

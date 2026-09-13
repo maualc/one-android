@@ -60,6 +60,9 @@ class OneAppState(
     var consentLoadError by mutableStateOf<String?>(null)
     var consentUpdatePurpose by mutableStateOf<String?>(null)
     var consentUpdateError by mutableStateOf<String?>(null)
+    var exportLoadState by mutableStateOf(OneExportLoadState.IDLE)
+    var dataExport by mutableStateOf<OneDataExport?>(null)
+    var exportLoadError by mutableStateOf<String?>(null)
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
@@ -110,6 +113,9 @@ class OneAppState(
         consentLoadError = null
         consentUpdatePurpose = null
         consentUpdateError = null
+        exportLoadState = OneExportLoadState.IDLE
+        dataExport = null
+        exportLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
@@ -395,6 +401,24 @@ class OneAppState(
         }
     }
 
+    suspend fun requestDataExport() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            exportLoadState = OneExportLoadState.ERROR
+            exportLoadError = "Connect a backend session before preparing an export."
+            return
+        }
+        exportLoadState = OneExportLoadState.SUBMITTING
+        exportLoadError = null
+        try {
+            dataExport = apiClient.requestDataExport(authenticatedSession)
+            exportLoadState = OneExportLoadState.LOADED
+        } catch (error: Exception) {
+            exportLoadState = OneExportLoadState.ERROR
+            exportLoadError = error.message ?: "Could not prepare the data export."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -427,6 +451,9 @@ class OneAppState(
         consentLoadError = null
         consentUpdatePurpose = null
         consentUpdateError = null
+        exportLoadState = OneExportLoadState.IDLE
+        dataExport = null
+        exportLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null

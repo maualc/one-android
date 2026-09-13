@@ -292,6 +292,10 @@ fun OneApp() {
                             consentUpdateError = appState.consentUpdateError,
                             onConsentRetry = { coroutineScope.launch { appState.loadConsents() } },
                             onConsentChange = { purpose, granted -> coroutineScope.launch { appState.updateConsent(purpose, granted) } },
+                            exportLoadState = appState.exportLoadState,
+                            dataExport = appState.dataExport,
+                            exportLoadError = appState.exportLoadError,
+                            onExport = { coroutineScope.launch { appState.requestDataExport() } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -327,6 +331,10 @@ fun OneApp() {
                             consentUpdateError = appState.consentUpdateError,
                             onConsentRetry = { coroutineScope.launch { appState.loadConsents() } },
                             onConsentChange = { purpose, granted -> coroutineScope.launch { appState.updateConsent(purpose, granted) } },
+                            exportLoadState = appState.exportLoadState,
+                            dataExport = appState.dataExport,
+                            exportLoadError = appState.exportLoadError,
+                            onExport = { coroutineScope.launch { appState.requestDataExport() } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -1571,6 +1579,10 @@ private fun AccountScreen(
     consentUpdateError: String?,
     onConsentRetry: () -> Unit,
     onConsentChange: (String, Boolean) -> Unit,
+    exportLoadState: OneExportLoadState,
+    dataExport: OneDataExport?,
+    exportLoadError: String?,
+    onExport: () -> Unit,
     onRoleChange: (OneRole) -> Unit,
     onSignOut: () -> Unit
 ) {
@@ -1642,7 +1654,27 @@ private fun AccountScreen(
             Text(if (role == OneRole.CAREGIVER) "Preview resident experience" else "Preview caregiver experience")
         }
         SectionHeading("YOUR DATA", "Human control")
-        OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Prepare a data export") }
+        OutlinedButton(
+            onClick = onExport,
+            enabled = exportLoadState != OneExportLoadState.SUBMITTING,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (exportLoadState == OneExportLoadState.SUBMITTING) "Preparing…" else "Prepare a data export")
+        }
+        exportLoadError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        dataExport?.let { export ->
+            val totalRecords = export.recordCounts.values.sum()
+            val recordSummary = export.recordCounts.entries
+                .sortedByDescending { it.value }
+                .take(4)
+                .joinToString(" · ") { "${it.key}: ${it.value}" }
+            InfoCard(
+                "Export prepared",
+                "${export.exportedAt ?: "Timestamp unavailable"} · $totalRecords records${recordSummary.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}. The payload is not stored on this device."
+            )
+        }
         OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Request deletion") }
         TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
             Text("Preview signed-out flow")

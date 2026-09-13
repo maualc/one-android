@@ -647,6 +647,8 @@ private fun CaregiverHomeScreen(
     onOpenCamera: (OneCamera) -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
+    var selectedHomeFilter by rememberSaveable { mutableStateOf("Today") }
+    val homeFilters = listOf("Today", "Objects", "Cameras", "Check-in")
     ScreenScroll {
         ScreenHeader(
             eyebrow = "ONE",
@@ -671,38 +673,81 @@ private fun CaregiverHomeScreen(
             else -> CameraHeroCard()
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(listOf("Today", "Objects", "Cameras", "Check-in")) { label ->
+            items(homeFilters) { label ->
                 FilterChip(
-                    selected = label == "Today",
-                    onClick = { },
+                    selected = label == selectedHomeFilter,
+                    onClick = { selectedHomeFilter = label },
                     label = { Text(label) }
                 )
             }
         }
-        SectionHeading("TODAY", "Observed objects")
-        if (homeSnapshot != null) {
-            if (homeSnapshot.objects.isEmpty()) {
-                InfoCard("No objects recorded yet", "Objects appear here after a consented room setup or observation.")
-            } else {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    items(homeSnapshot.objects) { remoteObject ->
-                        ObjectCard(
-                            title = remoteObject.label,
-                            subtitle = remoteObject.zone ?: if (remoteObject.status == "seen") "Home · observed" else "Home · not observed yet",
-                            icon = Icons.Default.Visibility,
-                            accent = OneCyan
-                        )
-                    }
+        when (selectedHomeFilter) {
+            "Objects" -> {
+                SectionHeading("MEMORY", "Objects in the home map")
+                HomeObjectsRow(homeSnapshot = homeSnapshot, isBackend = isBackendHome)
+                Text("Pins are approximate and include the confidence returned by ONE.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            "Cameras" -> {
+                SectionHeading("CAMERAS", "Paired views")
+                if (isBackendHome) {
+                    HomeCameraStatusCard(
+                        paused = homeSnapshot?.profile?.paused == true,
+                        cameras = cameras,
+                        loadState = cameraLoadState,
+                        loadError = cameraLoadError,
+                        onRetry = onCameraRetry,
+                        onOpenCamera = onOpenCamera
+                    )
+                } else {
+                    InfoCard("Camera preview", "Connect a backend to see paired household cameras and open a consented live view.")
                 }
             }
-        } else {
+            "Check-in" -> {
+                SectionHeading("CHECK-IN", "Recent human-readable moments")
+                val visibleEvents = homeSnapshot?.events ?: if (isBackendHome) emptyList() else demoEvents
+                val checkIns = visibleEvents.filter { it.kind == EventKind.CHECK_IN || it.kind == EventKind.ASSISTANT }
+                if (checkIns.isEmpty()) {
+                    InfoCard("No check-ins recorded yet", "A check-in will appear here after the resident or assistant records a consented interaction.")
+                } else {
+                    checkIns.take(3).forEach { event -> EventRow(event) }
+                }
+                Text("ONE supports attention and conversation. It does not diagnose or make medical decisions.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+            }
+            else -> {
+                SectionHeading("TODAY", "Observed objects")
+                HomeObjectsRow(homeSnapshot = homeSnapshot, isBackend = isBackendHome)
+                HouseholdStatusCard(homeSnapshot)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeObjectsRow(homeSnapshot: OneHomeSnapshot?, isBackend: Boolean) {
+    when {
+        homeSnapshot != null && homeSnapshot.objects.isEmpty() -> {
+            InfoCard("No objects recorded yet", "Objects appear here after a consented room setup or observation.")
+        }
+        homeSnapshot != null -> {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                items(homeSnapshot.objects) { remoteObject ->
+                    ObjectCard(
+                        title = remoteObject.label,
+                        subtitle = remoteObject.zone ?: if (remoteObject.status == "seen") "Home · observed" else "Home · not observed yet",
+                        icon = Icons.Default.Visibility,
+                        accent = OneCyan
+                    )
+                }
+            }
+        }
+        isBackend -> InfoCard("Objects unavailable", "ONE has not received a household map snapshot yet.")
+        else -> {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { ObjectCard("Blue mug", "Kitchen · remembered", Icons.Default.Visibility, OneCyan) }
                 item { ObjectCard("Front door", "Entry · mapped", Icons.Default.Home, OneBlue) }
                 item { ObjectCard("Reading chair", "Living room", Icons.Default.Person, OneMint) }
             }
         }
-        HouseholdStatusCard(homeSnapshot)
     }
 }
 

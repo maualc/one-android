@@ -104,6 +104,7 @@ import io.livekit.android.compose.state.rememberTracks
 import io.livekit.android.compose.ui.VideoTrackView
 import io.livekit.android.room.track.Track
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.UUID
 
 private data class OneNavItem(
@@ -2144,6 +2145,24 @@ private fun EventsScreen(
     onClipRetry: () -> Unit,
     onOpenEvent: (OneEvent) -> Unit
 ) {
+    var eventRangeFilter by rememberSaveable { mutableStateOf("7d") }
+    var eventKindFilter by rememberSaveable { mutableStateOf("all") }
+    var eventClipsOnly by rememberSaveable { mutableStateOf(false) }
+    val rangeFilters = listOf("24h" to "24 h", "7d" to "7 days", "30d" to "30 days", "all" to "All")
+    val kindFilters = listOf("all" to "All", "check_in" to "Check-ins", "movement" to "Movement", "assistant" to "Assistant")
+    val clipEventIds = clips.orEmpty().map { it.eventId }.toSet()
+    val cutoff = when (eventRangeFilter) {
+        "24h" -> Instant.now().minusSeconds(24 * 60 * 60L)
+        "7d" -> Instant.now().minusSeconds(7 * 24 * 60 * 60L)
+        "30d" -> Instant.now().minusSeconds(30 * 24 * 60 * 60L)
+        else -> null
+    }
+    val filteredEvents = events.filter { event ->
+        val kindMatches = eventKindFilter == "all" || event.kind.name.equals(eventKindFilter, ignoreCase = true)
+        val clipMatches = !eventClipsOnly || event.id?.let(clipEventIds::contains) == true
+        val rangeMatches = cutoff == null || event.observedAt == null || !event.observedAt.isBefore(cutoff)
+        kindMatches && clipMatches && rangeMatches
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -2164,6 +2183,44 @@ private fun EventsScreen(
         if (isBackend && eventStreamState == OneEventStreamState.ERROR && !eventStreamError.isNullOrBlank()) {
             item { Text("${eventStreamError} Retrying automatically…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
+        item {
+            Text("PERIOD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(rangeFilters) { (value, label) ->
+                    FilterChip(
+                        selected = eventRangeFilter == value,
+                        onClick = { eventRangeFilter = value },
+                        label = { Text(label) }
+                    )
+                }
+            }
+        }
+        item {
+            Text("TYPE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(kindFilters) { (value, label) ->
+                    FilterChip(
+                        selected = eventKindFilter == value,
+                        onClick = { eventKindFilter = value },
+                        label = { Text(label) }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = eventClipsOnly,
+                        onClick = { eventClipsOnly = !eventClipsOnly },
+                        label = { Text("With clips") }
+                    )
+                }
+            }
+        }
+        item {
+            Text(
+                if (eventClipsOnly) "Showing ${filteredEvents.size} event(s) with linked clips." else "Showing ${filteredEvents.size} event(s) in the selected period.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         if (isBackend) {
             when {
                 clipLoadState == OneClipLoadState.LOADING && clips == null -> item {
@@ -2175,7 +2232,6 @@ private fun EventsScreen(
                 }
             }
         }
-        val clipEventIds = clips.orEmpty().map { it.eventId }.toSet()
         when {
             isBackend && homeLoadState == OneHomeLoadState.LOADING && events.isEmpty() -> item {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -2187,7 +2243,10 @@ private fun EventsScreen(
             events.isEmpty() -> item {
                 InfoCard("No events recorded yet", "Reviewable moments will appear here when ONE observes activity.")
             }
-            else -> items(events) { event ->
+            filteredEvents.isEmpty() -> item {
+                InfoCard("No matching events", "Try a wider period or another event type.")
+            }
+            else -> items(filteredEvents) { event ->
                 EventRow(
                     event = event,
                     hasClip = event.id?.let(clipEventIds::contains) == true,

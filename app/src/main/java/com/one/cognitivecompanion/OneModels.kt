@@ -111,7 +111,8 @@ data class OneEvent(
     val time: String,
     val explanation: String,
     val confidence: String,
-    val id: UUID? = null
+    val id: UUID? = null,
+    val observedAt: Instant? = null
 )
 
 data class ConsentChoice(

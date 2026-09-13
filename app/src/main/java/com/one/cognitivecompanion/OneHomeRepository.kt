@@ -44,5 +44,6 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
         confidence >= 0.5 -> "Medium confidence"
         else -> "Low confidence"
     },
-    id = id
+    id = id,
+    observedAt = lastSeenAt
 )

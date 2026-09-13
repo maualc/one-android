@@ -135,6 +135,7 @@ fun OneApp() {
     var onboardingConsentMedication by appState::onboardingConsentMedication
     var onboardingConsentFamily by appState::onboardingConsentFamily
     var selectedCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedEvent by remember { mutableStateOf<OneEvent?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
@@ -167,7 +168,7 @@ fun OneApp() {
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
     Scaffold(
-        bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null) {
+        bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null && selectedEvent == null) {
             {
             NavigationBar(modifier = Modifier.navigationBarsPadding()) {
                 tabs.forEach { tab ->
@@ -215,6 +216,11 @@ fun OneApp() {
                         session = appState.session,
                         onClose = { selectedCameraId = null }
                     )
+                } else if (selectedEvent != null && role == OneRole.CAREGIVER) {
+                    EventDetailScreen(
+                        event = selectedEvent!!,
+                        onClose = { selectedEvent = null }
+                    )
                 } else when (role) {
                     OneRole.CAREGIVER -> when (selectedTab) {
                         "map" -> MapScreen(
@@ -243,7 +249,8 @@ fun OneApp() {
                             homeLoadError = appState.homeLoadError,
                             eventStreamState = appState.eventStreamState,
                             eventStreamError = appState.eventStreamError,
-                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                            onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            onOpenEvent = { selectedEvent = it }
                         )
                         "account" -> AccountScreen(
                             role = role,
@@ -1129,7 +1136,8 @@ private fun EventsScreen(
     homeLoadError: String?,
     eventStreamState: OneEventStreamState,
     eventStreamError: String?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onOpenEvent: (OneEvent) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
@@ -1162,7 +1170,7 @@ private fun EventsScreen(
             events.isEmpty() -> item {
                 InfoCard("No events recorded yet", "Reviewable moments will appear here when ONE observes activity.")
             }
-            else -> items(events) { event -> EventRow(event) }
+            else -> items(events) { event -> EventRow(event, onClick = { onOpenEvent(event) }) }
         }
         item { Text("Observations support human attention. They are not a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber, modifier = Modifier.padding(top = 4.dp)) }
     }
@@ -1183,8 +1191,14 @@ private fun OneEventStreamState.eventStreamTint(): Color = when (this) {
 }
 
 @Composable
-private fun EventRow(event: OneEvent) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+private fun EventRow(event: OneEvent, onClick: (() -> Unit)? = null) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = onClick != null) { onClick?.invoke() },
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
         Row(modifier = Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.Top) {
             Box(Modifier.size(40.dp).background(OneBlue.copy(alpha = 0.1f), CircleShape), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Notifications, contentDescription = null, tint = OneBlue, modifier = Modifier.size(21.dp))
@@ -1196,7 +1210,36 @@ private fun EventRow(event: OneEvent) {
                 Text("${event.location} · ${event.time}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(event.confidence, style = MaterialTheme.typography.labelSmall, color = if (event.confidence.startsWith("High")) OneMint else OneAmber, fontWeight = FontWeight.SemiBold)
+            if (onClick != null) {
+                Spacer(Modifier.width(7.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Review event", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
         }
+    }
+}
+
+@Composable
+private fun EventDetailScreen(event: OneEvent, onClose: () -> Unit) {
+    ScreenScroll {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp).offset(x = (-3).dp).rotate(180f)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("Back")
+            }
+        }
+        ScreenHeader("EVENT REVIEW", event.kind.label, "A human-readable record for caregiver attention.")
+        EventRow(event)
+        SectionHeading("CONTEXT", "What ONE observed")
+        InfoCard("Approximate location", event.location)
+        InfoCard("When it happened", event.time)
+        InfoCard("Explanation", event.explanation)
+        InfoCard("Confidence", event.confidence)
+        InfoCard("Human review", "This observation can support attention and discussion. It is not a diagnosis or medical advice.")
     }
 }
 

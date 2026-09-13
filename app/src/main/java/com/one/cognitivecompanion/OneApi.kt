@@ -49,6 +49,21 @@ data class FamilyInviteAcceptRequest(
     val displayName: String?
 )
 
+data class FamilyInviteRequest(
+    val displayName: String,
+    val email: String? = null,
+    val role: OneRole = OneRole.CAREGIVER,
+    val expiresInSeconds: Long = 86_400
+)
+
+data class OneFamilyInvite(
+    val id: UUID,
+    val code: String,
+    val role: String,
+    val expiresInSeconds: Long,
+    val syntheticDemo: Boolean
+)
+
 data class ConsentRequest(
     val purpose: String,
     val policyVersion: String,
@@ -179,6 +194,7 @@ interface OneApiClient {
     suspend fun startPairing(pairingRequest: PairingStartRequest, bootstrapSecret: String? = null): PairingStartResponse
     suspend fun completePairing(code: String): OneSession
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
+    suspend fun createFamilyInvite(session: OneSession, inviteRequest: FamilyInviteRequest): OneFamilyInvite
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
     suspend fun requestDataExport(session: OneSession): OneDataExport
@@ -250,6 +266,27 @@ class OneHttpApiClient(
         val payload = JSONObject().put("code", inviteRequest.code)
         inviteRequest.displayName?.let { payload.put("display_name", it) }
         return sessionFrom(request("/family/invites/accept", "POST", payload))
+    }
+
+    override suspend fun createFamilyInvite(session: OneSession, inviteRequest: FamilyInviteRequest): OneFamilyInvite {
+        val payload = JSONObject()
+            .put("display_name", inviteRequest.displayName)
+            .put("role", inviteRequest.role.wireValue)
+            .put("expires_in_seconds", inviteRequest.expiresInSeconds)
+        inviteRequest.email?.let { payload.put("email", it) }
+        val body = request(
+            "/homes/${session.homeId}/family/invites",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return OneFamilyInvite(
+            id = body.requiredUuid("id"),
+            code = body.requiredString("code"),
+            role = body.optString("role").takeIf { it.isNotBlank() } ?: inviteRequest.role.wireValue,
+            expiresInSeconds = body.optLong("expires_in_seconds", inviteRequest.expiresInSeconds),
+            syntheticDemo = body.optBoolean("synthetic_demo", false)
+        )
     }
 
     private suspend fun sessionFrom(body: JSONObject): OneSession {

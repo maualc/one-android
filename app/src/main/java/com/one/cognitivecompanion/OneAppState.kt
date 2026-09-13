@@ -47,6 +47,9 @@ class OneAppState(
     var familyMembers by mutableStateOf<List<OneFamilyMember>?>(null)
     var familyLoadState by mutableStateOf(OneFamilyLoadState.IDLE)
     var familyLoadError by mutableStateOf<String?>(null)
+    var familyInviteLoadState by mutableStateOf(OneFamilyInviteLoadState.IDLE)
+    var familyInvite by mutableStateOf<OneFamilyInvite?>(null)
+    var familyInviteLoadError by mutableStateOf<String?>(null)
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
@@ -72,6 +75,11 @@ class OneAppState(
 
     val isAdmin: Boolean
         get() = session?.backendRole?.equals("admin", ignoreCase = true) == true
+
+    val canManageFamily: Boolean
+        get() = backendMode && session?.backendRole?.let { role ->
+            role.equals("admin", ignoreCase = true) || role.equals("caregiver", ignoreCase = true)
+        } == true
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -106,6 +114,9 @@ class OneAppState(
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
+        familyInviteLoadState = OneFamilyInviteLoadState.IDLE
+        familyInvite = null
+        familyInviteLoadError = null
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
@@ -261,6 +272,41 @@ class OneAppState(
         } catch (error: Exception) {
             familyLoadState = OneFamilyLoadState.ERROR
             familyLoadError = error.message ?: "Could not load the care circle."
+        }
+    }
+
+    suspend fun createFamilyInvite(inviteRequest: FamilyInviteRequest) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            familyInviteLoadState = OneFamilyInviteLoadState.ERROR
+            familyInviteLoadError = "Connect a backend session before inviting someone."
+            return
+        }
+        if (!canManageFamily) {
+            familyInviteLoadState = OneFamilyInviteLoadState.ERROR
+            familyInviteLoadError = "Only caregivers can create family invitations."
+            return
+        }
+        val displayName = inviteRequest.displayName.trim()
+        if (displayName.isBlank()) {
+            familyInviteLoadState = OneFamilyInviteLoadState.ERROR
+            familyInviteLoadError = "Enter the invited person's name."
+            return
+        }
+        familyInviteLoadState = OneFamilyInviteLoadState.SUBMITTING
+        familyInviteLoadError = null
+        try {
+            familyInvite = apiClient.createFamilyInvite(
+                authenticatedSession,
+                inviteRequest.copy(
+                    displayName = displayName,
+                    email = inviteRequest.email?.trim()?.takeIf { it.isNotBlank() }
+                )
+            )
+            familyInviteLoadState = OneFamilyInviteLoadState.LOADED
+        } catch (error: Exception) {
+            familyInviteLoadState = OneFamilyInviteLoadState.ERROR
+            familyInviteLoadError = error.message ?: "Could not create the family invitation."
         }
     }
 
@@ -470,6 +516,9 @@ class OneAppState(
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
+        familyInviteLoadState = OneFamilyInviteLoadState.IDLE
+        familyInvite = null
+        familyInviteLoadError = null
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null

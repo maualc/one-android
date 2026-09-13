@@ -259,6 +259,11 @@ fun OneApp() {
                             loadState = appState.familyLoadState,
                             loadError = appState.familyLoadError,
                             onRetry = { coroutineScope.launch { appState.loadFamily() } },
+                            canInvite = appState.canManageFamily,
+                            familyInviteLoadState = appState.familyInviteLoadState,
+                            familyInvite = appState.familyInvite,
+                            familyInviteLoadError = appState.familyInviteLoadError,
+                            onCreateInvite = { invite -> coroutineScope.launch { appState.createFamilyInvite(invite) } },
                             medicationDoses = appState.medicationDoses,
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
@@ -1084,6 +1089,11 @@ private fun FamilyScreen(
     loadState: OneFamilyLoadState,
     loadError: String?,
     onRetry: () -> Unit,
+    canInvite: Boolean,
+    familyInviteLoadState: OneFamilyInviteLoadState,
+    familyInvite: OneFamilyInvite?,
+    familyInviteLoadError: String?,
+    onCreateInvite: (FamilyInviteRequest) -> Unit,
     medicationDoses: List<MedicationDose>?,
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
@@ -1092,9 +1102,26 @@ private fun FamilyScreen(
     medicationActionError: String?,
     onMedicationStatusChange: (MedicationDose, DoseStatus) -> Unit
 ) {
+    var showInviteDialog by rememberSaveable { mutableStateOf(false) }
+    var inviteName by rememberSaveable { mutableStateOf("") }
+    var inviteEmail by rememberSaveable { mutableStateOf("") }
+    var inviteRoleName by rememberSaveable { mutableStateOf(OneRole.CAREGIVER.name) }
+    val inviteRole = if (inviteRoleName == OneRole.RESIDENT.name) OneRole.RESIDENT else OneRole.CAREGIVER
+    val canSubmitInvite = inviteName.trim().isNotBlank() && familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
+
     ScreenScroll {
         ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
-        AssistChip(onClick = { }, label = { Text("Everyone") }, leadingIcon = { Icon(Icons.Default.People, contentDescription = null) })
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AssistChip(onClick = { }, label = { Text("Everyone") }, leadingIcon = { Icon(Icons.Default.People, contentDescription = null) })
+            if (canInvite) {
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = { showInviteDialog = true }) { Text("Invite") }
+            }
+        }
         Text("Showing plans and observations for Everyone. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionHeading("PEOPLE", "Your care circle")
         when {
@@ -1121,6 +1148,27 @@ private fun FamilyScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+        familyInviteLoadError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        familyInvite?.let { invite ->
+            val roleLabel = if (invite.role.equals("resident", ignoreCase = true)) "Resident" else "Caregiver"
+            InfoCard(
+                "Invitation ready",
+                "Share this one-time code with the invited person. Role: $roleLabel · expires in ${invite.expiresInSeconds / 3600}h."
+            )
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = OneBlue.copy(alpha = 0.10f))
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("ONE-TIME INVITE CODE", style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                    Text(invite.code, style = MaterialTheme.typography.headlineMedium, color = OneBlue, fontWeight = FontWeight.Bold)
+                    Text("The code is shown only on this device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -1151,6 +1199,69 @@ private fun FamilyScreen(
             }
         }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (showInviteDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING) showInviteDialog = false
+            },
+            title = { Text("Invite someone to the care circle") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Create a one-time code to share with a trusted person.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = inviteName,
+                        onValueChange = { inviteName = it },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = inviteEmail,
+                        onValueChange = { inviteEmail = it },
+                        label = { Text("Email (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Role", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = inviteRole == OneRole.CAREGIVER,
+                            onClick = { inviteRoleName = OneRole.CAREGIVER.name },
+                            label = { Text("Caregiver") }
+                        )
+                        FilterChip(
+                            selected = inviteRole == OneRole.RESIDENT,
+                            onClick = { inviteRoleName = OneRole.RESIDENT.name },
+                            label = { Text("Resident") }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showInviteDialog = false
+                        onCreateInvite(
+                            FamilyInviteRequest(
+                                displayName = inviteName,
+                                email = inviteEmail,
+                                role = inviteRole
+                            )
+                        )
+                    },
+                    enabled = canSubmitInvite
+                ) {
+                    Text(if (familyInviteLoadState == OneFamilyInviteLoadState.SUBMITTING) "Creating…" else "Create invite")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showInviteDialog = false },
+                    enabled = familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 

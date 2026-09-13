@@ -20,6 +20,13 @@ enum class OneCameraLoadState {
     ERROR
 }
 
+enum class OneCameraActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 interface OneCameraRepository {
     suspend fun load(session: OneSession): List<OneCamera>
 }

@@ -353,9 +353,15 @@ fun OneApp() {
                             homeLoadError = appState.homeLoadError,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
                             cameras = appState.cameras,
+                            rooms = appState.rooms,
                             cameraLoadState = appState.cameraLoadState,
                             cameraLoadError = appState.cameraLoadError,
+                            cameraActionState = appState.cameraActionState,
+                            cameraActionError = appState.cameraActionError,
                             onCameraRetry = { coroutineScope.launch { appState.loadCameras() } },
+                            onRegisterCamera = { name, roomId ->
+                                coroutineScope.launch { appState.registerCamera(name, roomId) }
+                            },
                             onOpenCamera = { selectedCameraId = it.id.toString() }
                         )
                     }
@@ -678,9 +684,13 @@ private fun CaregiverHomeScreen(
     homeLoadError: String?,
     onRetry: () -> Unit,
     cameras: List<OneCamera>?,
+    rooms: List<OneRoom>?,
     cameraLoadState: OneCameraLoadState,
     cameraLoadError: String?,
+    cameraActionState: OneCameraActionState,
+    cameraActionError: String?,
     onCameraRetry: () -> Unit,
+    onRegisterCamera: (String, UUID?) -> Unit,
     onOpenCamera: (OneCamera) -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
@@ -702,9 +712,13 @@ private fun CaregiverHomeScreen(
             isBackendHome -> HomeCameraStatusCard(
                 paused = homeSnapshot?.profile?.paused == true,
                 cameras = cameras,
+                rooms = rooms,
                 loadState = cameraLoadState,
                 loadError = cameraLoadError,
+                actionState = cameraActionState,
+                actionError = cameraActionError,
                 onRetry = onCameraRetry,
+                onRegisterCamera = onRegisterCamera,
                 onOpenCamera = onOpenCamera
             )
             else -> CameraHeroCard()
@@ -730,9 +744,13 @@ private fun CaregiverHomeScreen(
                     HomeCameraStatusCard(
                         paused = homeSnapshot?.profile?.paused == true,
                         cameras = cameras,
+                        rooms = rooms,
                         loadState = cameraLoadState,
                         loadError = cameraLoadError,
+                        actionState = cameraActionState,
+                        actionError = cameraActionError,
                         onRetry = onCameraRetry,
+                        onRegisterCamera = onRegisterCamera,
                         onOpenCamera = onOpenCamera
                     )
                 } else {
@@ -792,17 +810,38 @@ private fun HomeObjectsRow(homeSnapshot: OneHomeSnapshot?, isBackend: Boolean) {
 private fun HomeCameraStatusCard(
     paused: Boolean,
     cameras: List<OneCamera>?,
+    rooms: List<OneRoom>?,
     loadState: OneCameraLoadState,
     loadError: String?,
+    actionState: OneCameraActionState,
+    actionError: String?,
     onRetry: () -> Unit,
+    onRegisterCamera: (String, UUID?) -> Unit,
     onOpenCamera: (OneCamera) -> Unit
 ) {
+    var showCameraDialog by rememberSaveable { mutableStateOf(false) }
+    var cameraName by rememberSaveable { mutableStateOf("") }
+    var cameraRoomId by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraRoomMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    val selectedRoomName = cameraRoomId?.let { id -> rooms.orEmpty().firstOrNull { it.id.toString() == id }?.name }
+        ?: "No room assigned"
+    val selectedRoomId = cameraRoomId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("Camera and room setup", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Camera and room setup", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = {
+                        cameraName = ""
+                        cameraRoomId = null
+                        showCameraDialog = true
+                    },
+                    enabled = actionState != OneCameraActionState.SUBMITTING
+                ) { Text("Register") }
+            }
             Text(
                 if (paused) "Camera capture is paused until the household enables room-data consent."
                 else "Camera viewing is local and consent-based.",
@@ -823,7 +862,75 @@ private fun HomeCameraStatusCard(
                 }
                 else -> cameras.orEmpty().take(3).forEach { camera -> CameraStatusRow(camera, paused, onOpenCamera) }
             }
+            if (actionState == OneCameraActionState.LOADED) {
+                Text("Camera registered. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+            }
+            actionError?.let { error ->
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
+    }
+    if (showCameraDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (actionState != OneCameraActionState.SUBMITTING) showCameraDialog = false
+            },
+            title = { Text("Register household camera") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Register the paired device in ONE. This does not publish this phone's camera or microphone.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = cameraName,
+                        onValueChange = { cameraName = it.take(120) },
+                        label = { Text("Camera name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { cameraRoomMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Room: $selectedRoomName") }
+                        DropdownMenu(
+                            expanded = cameraRoomMenuExpanded,
+                            onDismissRequest = { cameraRoomMenuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("No room assigned") },
+                                onClick = {
+                                    cameraRoomId = null
+                                    cameraRoomMenuExpanded = false
+                                }
+                            )
+                            rooms.orEmpty().forEach { room ->
+                                DropdownMenuItem(
+                                    text = { Text(room.name) },
+                                    onClick = {
+                                        cameraRoomId = room.id.toString()
+                                        cameraRoomMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCameraDialog = false
+                        onRegisterCamera(cameraName, selectedRoomId)
+                    },
+                    enabled = cameraName.trim().isNotBlank() && actionState != OneCameraActionState.SUBMITTING
+                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Registering…" else "Register") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCameraDialog = false },
+                    enabled = actionState != OneCameraActionState.SUBMITTING
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 

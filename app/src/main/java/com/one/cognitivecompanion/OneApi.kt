@@ -154,6 +154,11 @@ data class OneRemoteCamera(
     val lastSeenAt: Instant?
 )
 
+data class CameraRegistrationRequest(
+    val name: String,
+    val roomId: UUID? = null
+)
+
 data class OneRemoteObject(
     val id: UUID,
     val label: String,
@@ -275,6 +280,7 @@ interface OneApiClient {
         coordinateFrame: String = "manual-zones"
     ): OneRoomMap
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
+    suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
@@ -614,6 +620,26 @@ class OneHttpApiClient(
                 )
             }
         }
+    }
+
+    override suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera {
+        val payload = JSONObject().put("name", request.name)
+        request.roomId?.let { payload.put("room_id", it.toString()) }
+        val body = request(
+            "/homes/${session.homeId}/cameras",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return OneRemoteCamera(
+            id = body.requiredUuid("id"),
+            name = body.optString("name").takeIf { it.isNotBlank() } ?: request.name,
+            roomId = body.optNullableUuid("room_id") ?: body.optNullableUuid("roomId") ?: request.roomId,
+            platform = body.optString("platform").takeIf { it.isNotBlank() } ?: "browser",
+            status = body.optString("status").takeIf { it.isNotBlank() } ?: "online",
+            enabled = body.optNullableBoolean("enabled") ?: true,
+            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
+        )
     }
 
     override suspend fun homeObjects(session: OneSession): List<OneRemoteObject> {

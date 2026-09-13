@@ -49,6 +49,9 @@ class OneAppState(
     var cameras by mutableStateOf<List<OneCamera>?>(null)
     var cameraLoadState by mutableStateOf(OneCameraLoadState.IDLE)
     var cameraLoadError by mutableStateOf<String?>(null)
+    var cameraActionState by mutableStateOf(OneCameraActionState.IDLE)
+    var lastRegisteredCamera by mutableStateOf<OneCamera?>(null)
+    var cameraActionError by mutableStateOf<String?>(null)
     var familyMembers by mutableStateOf<List<OneFamilyMember>?>(null)
     var familyLoadState by mutableStateOf(OneFamilyLoadState.IDLE)
     var familyLoadError by mutableStateOf<String?>(null)
@@ -131,6 +134,9 @@ class OneAppState(
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null
+        cameraActionState = OneCameraActionState.IDLE
+        lastRegisteredCamera = null
+        cameraActionError = null
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null
@@ -240,10 +246,60 @@ class OneAppState(
         cameraLoadError = null
         try {
             cameras = cameraRepository.load(authenticatedSession)
+            runCatching { apiClient.homeRooms(authenticatedSession) }
+                .onSuccess { rooms = it }
             cameraLoadState = OneCameraLoadState.LOADED
         } catch (error: Exception) {
             cameraLoadState = OneCameraLoadState.ERROR
             cameraLoadError = error.message ?: "Could not load the household cameras."
+        }
+    }
+
+    suspend fun registerCamera(name: String, roomId: UUID?) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Connect a backend session before registering a camera."
+            return
+        }
+        if (!canManageFamily) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Only caregivers can register household cameras."
+            return
+        }
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Enter a camera name."
+            return
+        }
+        if (roomId != null && rooms?.none { it.id == roomId } == true) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Select a room from this household."
+            return
+        }
+        cameraActionState = OneCameraActionState.SUBMITTING
+        cameraActionError = null
+        try {
+            val remote = apiClient.registerCamera(
+                authenticatedSession,
+                CameraRegistrationRequest(name = cleanName, roomId = roomId)
+            )
+            val camera = OneCamera(
+                id = remote.id,
+                name = remote.name,
+                roomId = remote.roomId,
+                platform = remote.platform,
+                status = remote.status,
+                enabled = remote.enabled,
+                lastSeenAt = remote.lastSeenAt
+            )
+            cameras = (cameras.orEmpty().filterNot { it.id == camera.id } + camera).sortedBy { it.name.lowercase() }
+            lastRegisteredCamera = camera
+            cameraActionState = OneCameraActionState.LOADED
+        } catch (error: Exception) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = error.message ?: "Could not register the camera."
         }
     }
 
@@ -776,6 +832,9 @@ class OneAppState(
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null
+        cameraActionState = OneCameraActionState.IDLE
+        lastRegisteredCamera = null
+        cameraActionError = null
         familyMembers = null
         familyLoadState = OneFamilyLoadState.IDLE
         familyLoadError = null

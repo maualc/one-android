@@ -1,11 +1,14 @@
 package com.one.cognitivecompanion
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.time.Instant
 import java.util.UUID
@@ -64,6 +67,12 @@ data class OneLiveKitToken(
     val participantToken: String,
     val expiresInSeconds: Long,
     val mode: String
+)
+
+data class OneRemoteEventSignal(
+    val eventName: String,
+    val eventId: UUID?,
+    val observedAt: Instant?
 )
 
 data class OneHomeProfile(
@@ -134,6 +143,7 @@ interface OneApiClient {
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun logout(session: OneSession)
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
+    suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
     suspend fun homeProfile(session: OneSession): OneHomeProfile
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
@@ -226,6 +236,64 @@ class OneHttpApiClient(
             expiresInSeconds = body.requiredLong("expires_in"),
             mode = body.optString("mode").takeIf { it.isNotBlank() } ?: requestedMode
         )
+    }
+
+    override suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit) = withContext(Dispatchers.IO) {
+        val connection = (URL(configuration.apiBaseUrl.trimEnd('/') + "/homes/${session.homeId}/events/stream").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 30_000
+            doInput = true
+            setRequestProperty("Accept", "text/event-stream")
+            setRequestProperty("Cache-Control", "no-cache")
+            setRequestProperty("Authorization", "Bearer ${session.accessToken}")
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val raw = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                throw OneApiException("ONE API error ($status): ${raw.problemMessage()}", status)
+            }
+            val reader = connection.inputStream.bufferedReader(Charsets.UTF_8)
+            var eventName: String? = null
+            val data = StringBuilder()
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val line = reader.readLine() ?: break
+                when {
+                    line.startsWith(": connected") -> onEvent(OneRemoteEventSignal("one.connected.v1", null, null))
+                    line.startsWith(":") -> Unit
+                    line.startsWith("event:") -> eventName = line.removePrefix("event:").trim().takeIf { it.isNotBlank() }
+                    line.startsWith("data:") -> {
+                        if (data.length > 1_000_000) throw OneApiException("ONE event payload is too large.")
+                        if (data.isNotEmpty()) data.append('\n')
+                        data.append(line.removePrefix("data:").trim())
+                    }
+                    line.isBlank() -> {
+                        val completedEvent = eventName
+                        val completedData = data.toString()
+                        if (completedEvent != null && completedData.isNotBlank()) {
+                            val payload = runCatching { JSONObject(completedData) }.getOrNull()
+                            if (payload != null) {
+                                onEvent(
+                                    OneRemoteEventSignal(
+                                        eventName = completedEvent,
+                                        eventId = payload.optNullableUuid("event_id"),
+                                        observedAt = payload.optNullableString("observed_at").toInstantOrNull()
+                                    )
+                                )
+                            }
+                        }
+                        eventName = null
+                        data.clear()
+                    }
+                }
+            }
+        } catch (error: SocketTimeoutException) {
+            throw OneApiException("The ONE event stream timed out.", cause = error)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     override suspend fun homeProfile(session: OneSession): OneHomeProfile {

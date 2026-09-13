@@ -4,7 +4,12 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -34,6 +39,8 @@ class OneAppState(
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
     var homeLoadError by mutableStateOf<String?>(null)
+    var eventStreamState by mutableStateOf(OneEventStreamState.IDLE)
+    var eventStreamError by mutableStateOf<String?>(null)
     var cameras by mutableStateOf<List<OneCamera>?>(null)
     var cameraLoadState by mutableStateOf(OneCameraLoadState.IDLE)
     var cameraLoadError by mutableStateOf<String?>(null)
@@ -69,6 +76,8 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        eventStreamState = OneEventStreamState.IDLE
+        eventStreamError = null
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null
@@ -155,6 +164,46 @@ class OneAppState(
         }
     }
 
+    suspend fun observeHomeEvents() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            eventStreamState = OneEventStreamState.IDLE
+            eventStreamError = null
+            return
+        }
+        try {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                eventStreamState = OneEventStreamState.CONNECTING
+                try {
+                    apiClient.streamHomeEvents(authenticatedSession) { signal ->
+                        when (signal.eventName) {
+                            "one.connected.v1", "one.heartbeat.v1" -> {
+                                eventStreamState = OneEventStreamState.CONNECTED
+                                eventStreamError = null
+                            }
+                            "one.event.v1" -> {
+                                eventStreamState = OneEventStreamState.CONNECTED
+                                eventStreamError = null
+                                loadHome()
+                            }
+                        }
+                    }
+                    if (currentCoroutineContext().isActive) delay(1_000)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    eventStreamState = OneEventStreamState.ERROR
+                    eventStreamError = error.message ?: "Live event updates are unavailable."
+                    delay(5_000)
+                }
+            }
+        } catch (error: CancellationException) {
+            eventStreamState = OneEventStreamState.IDLE
+            throw error
+        }
+    }
+
     suspend fun loadFamily() {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
@@ -204,6 +253,8 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        eventStreamState = OneEventStreamState.IDLE
+        eventStreamError = null
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null

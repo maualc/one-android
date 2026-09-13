@@ -148,6 +148,15 @@ fun OneApp() {
             appState.loadCameras()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
+        if (
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.roleName == OneRole.CAREGIVER.name &&
+            appState.selectedTab == "events"
+        ) {
+            appState.observeHomeEvents()
+        }
+    }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") {
             appState.loadFamily()
@@ -232,6 +241,8 @@ fun OneApp() {
                             isBackend = appState.backendMode,
                             homeLoadState = appState.homeLoadState,
                             homeLoadError = appState.homeLoadError,
+                            eventStreamState = appState.eventStreamState,
+                            eventStreamError = appState.eventStreamError,
                             onRetry = { coroutineScope.launch { appState.loadHome() } }
                         )
                         "account" -> AccountScreen(
@@ -1116,6 +1127,8 @@ private fun EventsScreen(
     isBackend: Boolean,
     homeLoadState: OneHomeLoadState,
     homeLoadError: String?,
+    eventStreamState: OneEventStreamState,
+    eventStreamError: String?,
     onRetry: () -> Unit
 ) {
     LazyColumn(
@@ -1123,6 +1136,21 @@ private fun EventsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { ScreenHeader("EVENTS", "Reviewable moments", "A human-readable record of observed activity.") }
+        if (isBackend) {
+            item {
+                val tint = eventStreamState.eventStreamTint()
+                Surface(shape = RoundedCornerShape(50), color = tint.copy(alpha = 0.12f)) {
+                    Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).background(tint, CircleShape))
+                        Spacer(Modifier.width(7.dp))
+                        Text("Live updates · ${eventStreamState.eventStreamLabel()}", style = MaterialTheme.typography.labelMedium, color = tint, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+        if (isBackend && eventStreamState == OneEventStreamState.ERROR && !eventStreamError.isNullOrBlank()) {
+            item { Text("${eventStreamError} Retrying automatically…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
         when {
             isBackend && homeLoadState == OneHomeLoadState.LOADING && events.isEmpty() -> item {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -1138,6 +1166,20 @@ private fun EventsScreen(
         }
         item { Text("Observations support human attention. They are not a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber, modifier = Modifier.padding(top = 4.dp)) }
     }
+}
+
+private fun OneEventStreamState.eventStreamLabel(): String = when (this) {
+    OneEventStreamState.IDLE -> "Paused"
+    OneEventStreamState.CONNECTING -> "Connecting…"
+    OneEventStreamState.CONNECTED -> "Listening"
+    OneEventStreamState.ERROR -> "Retrying"
+}
+
+private fun OneEventStreamState.eventStreamTint(): Color = when (this) {
+    OneEventStreamState.IDLE -> OneBlue
+    OneEventStreamState.CONNECTING -> OneAmber
+    OneEventStreamState.CONNECTED -> OneMint
+    OneEventStreamState.ERROR -> OneAmber
 }
 
 @Composable

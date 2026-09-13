@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.util.UUID
 /**
  * Compose-observable state and session actions for the top-level ONE flow.
  * Screens remain focused on rendering while this object owns persistence and
@@ -50,6 +51,8 @@ class OneAppState(
     var familyInviteLoadState by mutableStateOf(OneFamilyInviteLoadState.IDLE)
     var familyInvite by mutableStateOf<OneFamilyInvite?>(null)
     var familyInviteLoadError by mutableStateOf<String?>(null)
+    var selectedFamilySubjectId by mutableStateOf<UUID?>(null)
+    var familySubjectInitialized by mutableStateOf(false)
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
@@ -117,6 +120,8 @@ class OneAppState(
         familyInviteLoadState = OneFamilyInviteLoadState.IDLE
         familyInvite = null
         familyInviteLoadError = null
+        selectedFamilySubjectId = null
+        familySubjectInitialized = false
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
@@ -268,11 +273,27 @@ class OneAppState(
         familyLoadError = null
         try {
             familyMembers = familyRepository.load(authenticatedSession)
+            if (!familySubjectInitialized) {
+                selectedFamilySubjectId = familyMembers.orEmpty()
+                    .firstOrNull { it.role.equals("resident", ignoreCase = true) }
+                    ?.id
+                    ?: authenticatedSession.userId
+                familySubjectInitialized = true
+            }
             familyLoadState = OneFamilyLoadState.LOADED
         } catch (error: Exception) {
             familyLoadState = OneFamilyLoadState.ERROR
             familyLoadError = error.message ?: "Could not load the care circle."
         }
+    }
+
+    suspend fun selectFamilySubject(subjectUserId: UUID) {
+        if (!backendMode || session == null) return
+        selectedFamilySubjectId = subjectUserId
+        familySubjectInitialized = true
+        medicationDoses = null
+        medicationActionError = null
+        loadMedicationReminders()
     }
 
     suspend fun createFamilyInvite(inviteRequest: FamilyInviteRequest) {
@@ -310,7 +331,7 @@ class OneAppState(
         }
     }
 
-    suspend fun loadMedicationReminders() {
+    suspend fun loadMedicationReminders(subjectUserId: UUID? = selectedFamilySubjectId) {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
             medicationDoses = null
@@ -321,7 +342,7 @@ class OneAppState(
         medicationLoadState = OneMedicationLoadState.LOADING
         medicationLoadError = null
         try {
-            medicationDoses = medicationRepository.load(authenticatedSession)
+            medicationDoses = medicationRepository.load(authenticatedSession, subjectUserId)
             medicationLoadState = OneMedicationLoadState.LOADED
         } catch (error: Exception) {
             medicationLoadState = OneMedicationLoadState.ERROR
@@ -519,6 +540,8 @@ class OneAppState(
         familyInviteLoadState = OneFamilyInviteLoadState.IDLE
         familyInvite = null
         familyInviteLoadError = null
+        selectedFamilySubjectId = null
+        familySubjectInitialized = false
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null

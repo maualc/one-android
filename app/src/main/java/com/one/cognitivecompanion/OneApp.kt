@@ -44,6 +44,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -101,6 +103,7 @@ import io.livekit.android.compose.state.rememberTracks
 import io.livekit.android.compose.ui.VideoTrackView
 import io.livekit.android.room.track.Track
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 private data class OneNavItem(
     val key: String,
@@ -264,6 +267,8 @@ fun OneApp() {
                             familyInvite = appState.familyInvite,
                             familyInviteLoadError = appState.familyInviteLoadError,
                             onCreateInvite = { invite -> coroutineScope.launch { appState.createFamilyInvite(invite) } },
+                            selectedFamilySubjectId = appState.selectedFamilySubjectId,
+                            onSelectFamilySubject = { subjectId -> coroutineScope.launch { appState.selectFamilySubject(subjectId) } },
                             medicationDoses = appState.medicationDoses,
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
@@ -1151,6 +1156,8 @@ private fun FamilyScreen(
     familyInvite: OneFamilyInvite?,
     familyInviteLoadError: String?,
     onCreateInvite: (FamilyInviteRequest) -> Unit,
+    selectedFamilySubjectId: UUID?,
+    onSelectFamilySubject: (UUID) -> Unit,
     medicationDoses: List<MedicationDose>?,
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
@@ -1165,6 +1172,9 @@ private fun FamilyScreen(
     var inviteRoleName by rememberSaveable { mutableStateOf(OneRole.CAREGIVER.name) }
     val inviteRole = if (inviteRoleName == OneRole.RESIDENT.name) OneRole.RESIDENT else OneRole.CAREGIVER
     val canSubmitInvite = inviteName.trim().isNotBlank() && familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
+    var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
+        ?: if (isBackend) "My view" else "Everyone"
 
     ScreenScroll {
         ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
@@ -1173,13 +1183,34 @@ private fun FamilyScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AssistChip(onClick = { }, label = { Text("Everyone") }, leadingIcon = { Icon(Icons.Default.People, contentDescription = null) })
+            Box {
+                AssistChip(
+                    onClick = { subjectMenuExpanded = true },
+                    enabled = isBackend && !members.isNullOrEmpty(),
+                    label = { Text(selectedSubjectName) },
+                    leadingIcon = { Icon(Icons.Default.People, contentDescription = null) }
+                )
+                DropdownMenu(
+                    expanded = subjectMenuExpanded,
+                    onDismissRequest = { subjectMenuExpanded = false }
+                ) {
+                    members.orEmpty().forEach { member ->
+                        DropdownMenuItem(
+                            text = { Text("${member.displayName} · ${member.familyRoleLabel()}") },
+                            onClick = {
+                                subjectMenuExpanded = false
+                                onSelectFamilySubject(member.id)
+                            }
+                        )
+                    }
+                }
+            }
             if (canInvite) {
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(onClick = { showInviteDialog = true }) { Text("Invite") }
             }
         }
-        Text("Showing plans and observations for Everyone. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Showing plans and observations for $selectedSubjectName. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionHeading("PEOPLE", "Your care circle")
         when {
             !isBackend -> DemoFamilyMembersCard()

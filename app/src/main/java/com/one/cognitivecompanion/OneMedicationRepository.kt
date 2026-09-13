@@ -3,6 +3,7 @@ package com.one.cognitivecompanion
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 
 enum class OneMedicationLoadState {
     IDLE,
@@ -12,14 +13,14 @@ enum class OneMedicationLoadState {
 }
 
 interface OneMedicationRepository {
-    suspend fun load(session: OneSession): List<MedicationDose>
+    suspend fun load(session: OneSession, subjectUserId: UUID? = null): List<MedicationDose>
 }
 
 /** Reads today's deterministic, consent-gated reminder list. */
 class OneApiMedicationRepository(
     private val apiClient: OneApiClient
 ) : OneMedicationRepository {
-    override suspend fun load(session: OneSession): List<MedicationDose> = apiClient.medicationReminders(session).map { reminder ->
+    override suspend fun load(session: OneSession, subjectUserId: UUID?): List<MedicationDose> = apiClient.medicationReminders(session, subjectUserId = subjectUserId).map { reminder ->
         MedicationDose(
             name = reminder.name,
             instructions = listOf(reminder.dose, reminder.instructions)

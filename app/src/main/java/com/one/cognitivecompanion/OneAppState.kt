@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.util.UUID
 /**
  * Compose-observable state and session actions for the top-level ONE flow.
@@ -69,6 +70,10 @@ class OneAppState(
     var medicationPlans by mutableStateOf<List<OneMedicationPlan>?>(null)
     var medicationPlansLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationPlansLoadError by mutableStateOf<String?>(null)
+    var medicationCheckIns by mutableStateOf<List<OneRemoteMedicationCheckIn>?>(null)
+    var medicationCheckInsLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
+    var medicationCheckInsLoadError by mutableStateOf<String?>(null)
+    var medicationHistoryDays by mutableStateOf(7)
     var medicationPlanActionState by mutableStateOf(OneMedicationPlanActionState.IDLE)
     var lastMedicationPlan by mutableStateOf<OneMedicationPlan?>(null)
     var medicationPlanActionError by mutableStateOf<String?>(null)
@@ -157,6 +162,10 @@ class OneAppState(
         medicationPlans = null
         medicationPlansLoadState = OneMedicationLoadState.IDLE
         medicationPlansLoadError = null
+        medicationCheckIns = null
+        medicationCheckInsLoadState = OneMedicationLoadState.IDLE
+        medicationCheckInsLoadError = null
+        medicationHistoryDays = 7
         medicationPlanActionState = OneMedicationPlanActionState.IDLE
         lastMedicationPlan = null
         medicationPlanActionError = null
@@ -508,6 +517,7 @@ class OneAppState(
         familyAssistantLoadError = null
         loadMedicationReminders()
         loadMedicationPlans()
+        loadMedicationCheckIns()
     }
 
     suspend fun createFamilyInvite(inviteRequest: FamilyInviteRequest) {
@@ -580,6 +590,36 @@ class OneAppState(
         } catch (error: Exception) {
             medicationPlansLoadState = OneMedicationLoadState.ERROR
             medicationPlansLoadError = error.message ?: "Could not load medication plans."
+        }
+    }
+
+    suspend fun loadMedicationCheckIns(
+        subjectUserId: UUID? = selectedFamilySubjectId,
+        days: Int = medicationHistoryDays
+    ) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            medicationCheckIns = null
+            medicationCheckInsLoadState = OneMedicationLoadState.IDLE
+            medicationCheckInsLoadError = null
+            return
+        }
+        val boundedDays = days.coerceIn(1, 30)
+        medicationHistoryDays = boundedDays
+        medicationCheckInsLoadState = OneMedicationLoadState.LOADING
+        medicationCheckInsLoadError = null
+        try {
+            val now = Instant.now()
+            medicationCheckIns = apiClient.medicationCheckIns(
+                session = authenticatedSession,
+                subjectUserId = subjectUserId,
+                scheduledFrom = now.minusSeconds(boundedDays.toLong() * 86_400L),
+                scheduledTo = now.plusSeconds(86_400L)
+            )
+            medicationCheckInsLoadState = OneMedicationLoadState.LOADED
+        } catch (error: Exception) {
+            medicationCheckInsLoadState = OneMedicationLoadState.ERROR
+            medicationCheckInsLoadError = error.message ?: "Could not load medication check-in history."
         }
     }
 
@@ -950,6 +990,10 @@ class OneAppState(
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
+        medicationCheckIns = null
+        medicationCheckInsLoadState = OneMedicationLoadState.IDLE
+        medicationCheckInsLoadError = null
+        medicationHistoryDays = 7
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }

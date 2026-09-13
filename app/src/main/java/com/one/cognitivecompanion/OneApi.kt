@@ -214,6 +214,16 @@ data class OneRemoteMedicationReminder(
     val assignedCaregiverName: String?
 )
 
+data class OneRemoteMedicationCheckIn(
+    val id: UUID?,
+    val planId: UUID,
+    val subjectUserId: UUID?,
+    val scheduledFor: Instant,
+    val status: String,
+    val note: String?,
+    val updatedAt: Instant?
+)
+
 data class MedicationPlanRequest(
     val subjectUserId: UUID,
     val name: String,
@@ -293,6 +303,12 @@ interface OneApiClient {
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
+    suspend fun medicationCheckIns(
+        session: OneSession,
+        subjectUserId: UUID? = null,
+        scheduledFrom: Instant? = null,
+        scheduledTo: Instant? = null
+    ): List<OneRemoteMedicationCheckIn>
     suspend fun medicationPlans(session: OneSession, subjectUserId: UUID? = null, activeOnly: Boolean = true): List<OneMedicationPlan>
     suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
     suspend fun updateMedicationPlan(session: OneSession, planId: UUID, request: MedicationPlanUpdateRequest): OneMedicationPlan
@@ -789,6 +805,42 @@ class OneHttpApiClient(
                 )
             }
         }
+    }
+
+    override suspend fun medicationCheckIns(
+        session: OneSession,
+        subjectUserId: UUID?,
+        scheduledFrom: Instant?,
+        scheduledTo: Instant?
+    ): List<OneRemoteMedicationCheckIn> {
+        val query = buildList {
+            subjectUserId?.let { add("subject_user_id=$it") }
+            scheduledFrom?.let { add("scheduled_from=$it") }
+            scheduledTo?.let { add("scheduled_to=$it") }
+        }.joinToString("&").takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
+        val rows = request(
+            "/homes/${session.homeId}/medication-check-ins$query",
+            "GET",
+            token = session.accessToken
+        ).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val planId = runCatching { UUID.fromString(row.optString("plan_id")) }.getOrNull() ?: continue
+                val scheduledFor = row.optNullableString("scheduled_for")?.toInstantOrNull() ?: continue
+                add(
+                    OneRemoteMedicationCheckIn(
+                        id = row.optNullableUuid("id"),
+                        planId = planId,
+                        subjectUserId = row.optNullableUuid("subject_user_id"),
+                        scheduledFor = scheduledFor,
+                        status = row.optString("status").takeIf { it.isNotBlank() } ?: "pending",
+                        note = row.optNullableString("note"),
+                        updatedAt = row.optNullableString("updated_at")?.toInstantOrNull()
+                    )
+                )
+            }
+        }.sortedByDescending { it.scheduledFor }
     }
 
     override suspend fun medicationPlans(session: OneSession, subjectUserId: UUID?, activeOnly: Boolean): List<OneMedicationPlan> {

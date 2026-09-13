@@ -179,6 +179,7 @@ fun OneApp() {
             appState.loadFamily()
             appState.loadMedicationReminders()
             appState.loadMedicationPlans()
+            appState.loadMedicationCheckIns()
         }
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
@@ -292,6 +293,12 @@ fun OneApp() {
                             medicationPlansLoadState = appState.medicationPlansLoadState,
                             medicationPlansLoadError = appState.medicationPlansLoadError,
                             onMedicationPlansRetry = { coroutineScope.launch { appState.loadMedicationPlans() } },
+                            medicationCheckIns = appState.medicationCheckIns,
+                            medicationCheckInsLoadState = appState.medicationCheckInsLoadState,
+                            medicationCheckInsLoadError = appState.medicationCheckInsLoadError,
+                            medicationHistoryDays = appState.medicationHistoryDays,
+                            onMedicationHistoryRetry = { coroutineScope.launch { appState.loadMedicationCheckIns() } },
+                            onMedicationHistoryRangeChange = { days -> coroutineScope.launch { appState.loadMedicationCheckIns(days = days) } },
                             medicationPlanActionState = appState.medicationPlanActionState,
                             lastMedicationPlan = appState.lastMedicationPlan,
                             medicationPlanActionError = appState.medicationPlanActionError,
@@ -1450,6 +1457,12 @@ private fun FamilyScreen(
     medicationPlansLoadState: OneMedicationLoadState,
     medicationPlansLoadError: String?,
     onMedicationPlansRetry: () -> Unit,
+    medicationCheckIns: List<OneRemoteMedicationCheckIn>?,
+    medicationCheckInsLoadState: OneMedicationLoadState,
+    medicationCheckInsLoadError: String?,
+    medicationHistoryDays: Int,
+    onMedicationHistoryRetry: () -> Unit,
+    onMedicationHistoryRangeChange: (Int) -> Unit,
     medicationPlanActionState: OneMedicationPlanActionState,
     lastMedicationPlan: OneMedicationPlan?,
     medicationPlanActionError: String?,
@@ -1476,6 +1489,7 @@ private fun FamilyScreen(
     var planDose by rememberSaveable { mutableStateOf("") }
     var planSchedule by rememberSaveable { mutableStateOf("08:00") }
     var planInstructions by rememberSaveable { mutableStateOf("") }
+    var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
     var familyAssistantMessage by rememberSaveable { mutableStateOf("") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
@@ -1678,6 +1692,61 @@ private fun FamilyScreen(
             }
         }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SectionHeading("HISTORY", "Medication check-ins")
+        if (!isBackend) {
+            InfoCard("Backend-only history", "Connect a backend to review recorded medication check-ins by date and status.")
+        } else {
+            val historyFilters = listOf("all" to "All", "pending" to "Pending", "taken" to "Taken", "skipped" to "Skipped", "missed" to "Missed")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(historyFilters) { (value, label) ->
+                    FilterChip(
+                        selected = medicationHistoryStatus == value,
+                        onClick = { medicationHistoryStatus = value },
+                        label = { Text(label) }
+                    )
+                }
+            }
+            Text("Showing the last ${medicationHistoryDays} day(s) plus upcoming check-ins.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when {
+                medicationCheckIns == null && (medicationCheckInsLoadState == OneMedicationLoadState.IDLE || medicationCheckInsLoadState == OneMedicationLoadState.LOADING) -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading check-in history…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                medicationCheckIns == null && medicationCheckInsLoadState == OneMedicationLoadState.ERROR -> {
+                    InfoCard("History unavailable", medicationCheckInsLoadError ?: "ONE could not load medication check-ins.")
+                    OutlinedButton(onClick = onMedicationHistoryRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry history") }
+                }
+                else -> {
+                    val visibleCheckIns = medicationCheckIns.orEmpty().filter { checkIn ->
+                        medicationHistoryStatus == "all" || checkIn.status.equals(medicationHistoryStatus, ignoreCase = true)
+                    }
+                    if (visibleCheckIns.isEmpty()) {
+                        InfoCard("No matching check-ins", "No medication check-ins match this period and status.")
+                    } else {
+                        visibleCheckIns.take(30).forEach { checkIn ->
+                            val planLabel = medicationPlans.orEmpty().firstOrNull { it.id == checkIn.planId }?.name ?: "Medication plan"
+                            val statusTint = if (checkIn.status.equals("taken", ignoreCase = true)) OneMint else OneAmber
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                            ) {
+                                Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(planLabel, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                        Text(checkIn.status.humanLabel(), style = MaterialTheme.typography.labelSmall, color = statusTint, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Text(checkIn.scheduledFor.toString().replace('T', ' ').take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    checkIn.note?.takeIf { it.isNotBlank() }?.let { note ->
+                                        Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         SectionHeading("FAMILY ASSISTANT", "Bounded administrative summary")
         if (!isBackend) {
             InfoCard("Backend-only assistant", "Connect a backend to ask about the selected person's medication plans and check-ins.")

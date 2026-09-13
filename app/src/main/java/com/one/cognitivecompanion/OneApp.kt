@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
@@ -368,6 +369,9 @@ fun OneApp() {
                             onRegisterCamera = { name, roomId ->
                                 coroutineScope.launch { appState.registerCamera(name, roomId) }
                             },
+                            onUpdateCamera = { camera, name, roomId, enabled ->
+                                coroutineScope.launch { appState.updateCamera(camera, name, roomId, enabled) }
+                            },
                             onOpenCamera = { selectedCameraId = it.id.toString() }
                         )
                     }
@@ -702,6 +706,7 @@ private fun CaregiverHomeScreen(
     cameraActionError: String?,
     onCameraRetry: () -> Unit,
     onRegisterCamera: (String, UUID?) -> Unit,
+    onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
     onOpenCamera: (OneCamera) -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
@@ -730,6 +735,7 @@ private fun CaregiverHomeScreen(
                 actionError = cameraActionError,
                 onRetry = onCameraRetry,
                 onRegisterCamera = onRegisterCamera,
+                onUpdateCamera = onUpdateCamera,
                 onOpenCamera = onOpenCamera
             )
             else -> CameraHeroCard()
@@ -762,6 +768,7 @@ private fun CaregiverHomeScreen(
                         actionError = cameraActionError,
                         onRetry = onCameraRetry,
                         onRegisterCamera = onRegisterCamera,
+                        onUpdateCamera = onUpdateCamera,
                         onOpenCamera = onOpenCamera
                     )
                 } else {
@@ -828,12 +835,16 @@ private fun HomeCameraStatusCard(
     actionError: String?,
     onRetry: () -> Unit,
     onRegisterCamera: (String, UUID?) -> Unit,
+    onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
     onOpenCamera: (OneCamera) -> Unit
 ) {
     var showCameraDialog by rememberSaveable { mutableStateOf(false) }
+    var editingCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraName by rememberSaveable { mutableStateOf("") }
     var cameraRoomId by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraEnabled by rememberSaveable { mutableStateOf(true) }
     var cameraRoomMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    val editingCamera = editingCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
     val selectedRoomName = cameraRoomId?.let { id -> rooms.orEmpty().firstOrNull { it.id.toString() == id }?.name }
         ?: "No room assigned"
     val selectedRoomId = cameraRoomId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
@@ -846,8 +857,10 @@ private fun HomeCameraStatusCard(
                 Text("Camera and room setup", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 OutlinedButton(
                     onClick = {
+                        editingCameraId = null
                         cameraName = ""
                         cameraRoomId = null
+                        cameraEnabled = true
                         showCameraDialog = true
                     },
                     enabled = actionState != OneCameraActionState.SUBMITTING
@@ -871,10 +884,23 @@ private fun HomeCameraStatusCard(
                 cameras.orEmpty().isEmpty() -> {
                     Text("No cameras are paired with this household yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                else -> cameras.orEmpty().take(3).forEach { camera -> CameraStatusRow(camera, paused, onOpenCamera) }
+                else -> cameras.orEmpty().take(3).forEach { camera ->
+                    CameraStatusRow(
+                        camera = camera,
+                        paused = paused,
+                        onOpenCamera = onOpenCamera,
+                        onEditCamera = {
+                            editingCameraId = camera.id.toString()
+                            cameraName = camera.name
+                            cameraRoomId = camera.roomId?.toString()
+                            cameraEnabled = camera.enabled
+                            showCameraDialog = true
+                        }
+                    )
+                }
             }
             if (actionState == OneCameraActionState.LOADED) {
-                Text("Camera registered. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                Text("Camera saved. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
             }
             actionError?.let { error ->
                 Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -886,7 +912,7 @@ private fun HomeCameraStatusCard(
             onDismissRequest = {
                 if (actionState != OneCameraActionState.SUBMITTING) showCameraDialog = false
             },
-            title = { Text("Register household camera") },
+            title = { Text(if (editingCamera == null) "Register household camera" else "Edit household camera") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Register the paired device in ONE. This does not publish this phone's camera or microphone.", style = MaterialTheme.typography.bodySmall)
@@ -924,20 +950,35 @@ private fun HomeCameraStatusCard(
                             }
                         }
                     }
+                    if (editingCamera != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Camera enabled", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            Switch(checked = cameraEnabled, onCheckedChange = { cameraEnabled = it })
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         showCameraDialog = false
-                        onRegisterCamera(cameraName, selectedRoomId)
+                        val camera = editingCamera
+                        if (camera == null) {
+                            onRegisterCamera(cameraName, selectedRoomId)
+                        } else {
+                            onUpdateCamera(camera, cameraName, selectedRoomId, cameraEnabled)
+                        }
+                        editingCameraId = null
                     },
                     enabled = cameraName.trim().isNotBlank() && actionState != OneCameraActionState.SUBMITTING
-                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Registering…" else "Register") }
+                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Saving…" else if (editingCamera == null) "Register" else "Save") }
             },
             dismissButton = {
                 TextButton(
-                    onClick = { showCameraDialog = false },
+                    onClick = {
+                        showCameraDialog = false
+                        editingCameraId = null
+                    },
                     enabled = actionState != OneCameraActionState.SUBMITTING
                 ) { Text("Cancel") }
             }
@@ -946,7 +987,12 @@ private fun HomeCameraStatusCard(
 }
 
 @Composable
-private fun CameraStatusRow(camera: OneCamera, paused: Boolean, onOpenCamera: (OneCamera) -> Unit) {
+private fun CameraStatusRow(
+    camera: OneCamera,
+    paused: Boolean,
+    onOpenCamera: (OneCamera) -> Unit,
+    onEditCamera: (() -> Unit)? = null
+) {
     val status = if (paused) "Paused" else camera.status.cameraStatusLabel(camera.enabled)
     val tint = if (paused) OneAmber else camera.status.cameraStatusTint(camera.enabled)
     Row(
@@ -972,6 +1018,11 @@ private fun CameraStatusRow(camera: OneCamera, paused: Boolean, onOpenCamera: (O
         Box(Modifier.size(9.dp).background(tint, CircleShape))
         Spacer(Modifier.width(6.dp))
         Text(status, style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Bold)
+        onEditCamera?.let {
+            IconButton(onClick = it) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit camera", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
+        }
         if (camera.enabled && !paused) {
             Spacer(Modifier.width(7.dp))
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open camera", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))

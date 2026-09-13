@@ -159,6 +159,12 @@ data class CameraRegistrationRequest(
     val roomId: UUID? = null
 )
 
+data class CameraUpdateRequest(
+    val name: String? = null,
+    val roomId: UUID? = null,
+    val enabled: Boolean? = null
+)
+
 data class OneRemoteObject(
     val id: UUID,
     val label: String,
@@ -281,6 +287,7 @@ interface OneApiClient {
     ): OneRoomMap
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
+    suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
@@ -638,6 +645,36 @@ class OneHttpApiClient(
             platform = body.optString("platform").takeIf { it.isNotBlank() } ?: "browser",
             status = body.optString("status").takeIf { it.isNotBlank() } ?: "online",
             enabled = body.optNullableBoolean("enabled") ?: true,
+            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
+        )
+    }
+
+    override suspend fun updateCamera(
+        session: OneSession,
+        cameraId: UUID,
+        request: CameraUpdateRequest
+    ): OneRemoteCamera {
+        val payload = JSONObject()
+        request.name?.let { payload.put("name", it) }
+        if (request.roomId == null) {
+            payload.put("room_id", JSONObject.NULL)
+        } else {
+            payload.put("room_id", request.roomId.toString())
+        }
+        request.enabled?.let { payload.put("enabled", it) }
+        val body = request(
+            "/homes/${session.homeId}/cameras/$cameraId",
+            "PATCH",
+            payload,
+            token = session.accessToken
+        )
+        return OneRemoteCamera(
+            id = body.requiredUuid("id"),
+            name = body.optString("name").takeIf { it.isNotBlank() } ?: request.name.orEmpty(),
+            roomId = body.optNullableUuid("room_id") ?: body.optNullableUuid("roomId"),
+            platform = body.optString("platform").takeIf { it.isNotBlank() } ?: "browser",
+            status = body.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
+            enabled = body.optNullableBoolean("enabled") ?: request.enabled ?: true,
             lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
         )
     }

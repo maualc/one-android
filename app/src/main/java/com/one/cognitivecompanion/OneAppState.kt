@@ -327,6 +327,55 @@ class OneAppState(
         }
     }
 
+    suspend fun updateCamera(camera: OneCamera, name: String, roomId: UUID?, enabled: Boolean) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Connect a backend session before updating a camera."
+            return
+        }
+        if (!canManageFamily) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Only caregivers can update household cameras."
+            return
+        }
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Enter a camera name."
+            return
+        }
+        if (roomId != null && rooms?.none { it.id == roomId } == true) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Select a room from this household."
+            return
+        }
+        cameraActionState = OneCameraActionState.SUBMITTING
+        cameraActionError = null
+        try {
+            val remote = apiClient.updateCamera(
+                authenticatedSession,
+                camera.id,
+                CameraUpdateRequest(name = cleanName, roomId = roomId, enabled = enabled)
+            )
+            val updated = OneCamera(
+                id = remote.id,
+                name = remote.name,
+                roomId = remote.roomId,
+                platform = remote.platform,
+                status = remote.status,
+                enabled = remote.enabled,
+                lastSeenAt = remote.lastSeenAt
+            )
+            cameras = cameras.orEmpty().map { if (it.id == updated.id) updated else it }
+            lastRegisteredCamera = updated
+            cameraActionState = OneCameraActionState.LOADED
+        } catch (error: Exception) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = error.message ?: "Could not update the camera."
+        }
+    }
+
     suspend fun loadRoomMap() {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {

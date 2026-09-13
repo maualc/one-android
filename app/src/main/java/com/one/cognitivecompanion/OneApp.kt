@@ -123,8 +123,9 @@ fun OneApp() {
     val cameraRepository = remember(apiClient) { OneApiCameraRepository(apiClient) }
     val familyRepository = remember(apiClient) { OneApiFamilyRepository(apiClient) }
     val medicationRepository = remember(apiClient) { OneApiMedicationRepository(apiClient) }
-    val appState = remember(secureStore, apiClient, homeRepository, cameraRepository, familyRepository, medicationRepository) {
-        OneAppState(apiClient, secureStore, homeRepository, cameraRepository, familyRepository, medicationRepository)
+    val clipRepository = remember(apiClient) { OneApiClipRepository(apiClient) }
+    val appState = remember(secureStore, apiClient, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository) {
+        OneAppState(apiClient, secureStore, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository)
     }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
@@ -155,6 +156,7 @@ fun OneApp() {
             appState.roleName == OneRole.CAREGIVER.name &&
             appState.selectedTab == "events"
         ) {
+            appState.loadClips()
             appState.observeHomeEvents()
         }
     }
@@ -219,6 +221,9 @@ fun OneApp() {
                 } else if (selectedEvent != null && role == OneRole.CAREGIVER) {
                     EventDetailScreen(
                         event = selectedEvent!!,
+                        clips = appState.clips,
+                        clipLoadState = appState.clipLoadState,
+                        clipLoadError = appState.clipLoadError,
                         onClose = { selectedEvent = null }
                     )
                 } else when (role) {
@@ -249,7 +254,11 @@ fun OneApp() {
                             homeLoadError = appState.homeLoadError,
                             eventStreamState = appState.eventStreamState,
                             eventStreamError = appState.eventStreamError,
+                            clips = appState.clips,
+                            clipLoadState = appState.clipLoadState,
+                            clipLoadError = appState.clipLoadError,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            onClipRetry = { coroutineScope.launch { appState.loadClips() } },
                             onOpenEvent = { selectedEvent = it }
                         )
                         "account" -> AccountScreen(
@@ -1136,7 +1145,11 @@ private fun EventsScreen(
     homeLoadError: String?,
     eventStreamState: OneEventStreamState,
     eventStreamError: String?,
+    clips: List<OneClip>?,
+    clipLoadState: OneClipLoadState,
+    clipLoadError: String?,
     onRetry: () -> Unit,
+    onClipRetry: () -> Unit,
     onOpenEvent: (OneEvent) -> Unit
 ) {
     LazyColumn(
@@ -1159,6 +1172,18 @@ private fun EventsScreen(
         if (isBackend && eventStreamState == OneEventStreamState.ERROR && !eventStreamError.isNullOrBlank()) {
             item { Text("${eventStreamError} Retrying automatically…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
+        if (isBackend) {
+            when {
+                clipLoadState == OneClipLoadState.LOADING && clips == null -> item {
+                    Text("Checking linked event clips…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                clipLoadState == OneClipLoadState.ERROR -> item {
+                    Text(clipLoadError ?: "ONE could not load linked event clips.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onClipRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry clip check") }
+                }
+            }
+        }
+        val clipEventIds = clips.orEmpty().map { it.eventId }.toSet()
         when {
             isBackend && homeLoadState == OneHomeLoadState.LOADING && events.isEmpty() -> item {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -1170,7 +1195,13 @@ private fun EventsScreen(
             events.isEmpty() -> item {
                 InfoCard("No events recorded yet", "Reviewable moments will appear here when ONE observes activity.")
             }
-            else -> items(events) { event -> EventRow(event, onClick = { onOpenEvent(event) }) }
+            else -> items(events) { event ->
+                EventRow(
+                    event = event,
+                    hasClip = event.id?.let(clipEventIds::contains) == true,
+                    onClick = { onOpenEvent(event) }
+                )
+            }
         }
         item { Text("Observations support human attention. They are not a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber, modifier = Modifier.padding(top = 4.dp)) }
     }
@@ -1191,7 +1222,7 @@ private fun OneEventStreamState.eventStreamTint(): Color = when (this) {
 }
 
 @Composable
-private fun EventRow(event: OneEvent, onClick: (() -> Unit)? = null) {
+private fun EventRow(event: OneEvent, hasClip: Boolean = false, onClick: (() -> Unit)? = null) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1210,6 +1241,12 @@ private fun EventRow(event: OneEvent, onClick: (() -> Unit)? = null) {
                 Text("${event.location} · ${event.time}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(event.confidence, style = MaterialTheme.typography.labelSmall, color = if (event.confidence.startsWith("High")) OneMint else OneAmber, fontWeight = FontWeight.SemiBold)
+            if (hasClip) {
+                Spacer(Modifier.width(7.dp))
+                Surface(shape = RoundedCornerShape(50), color = OneCyan.copy(alpha = 0.14f)) {
+                    Text("CLIP", modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                }
+            }
             if (onClick != null) {
                 Spacer(Modifier.width(7.dp))
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Review event", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
@@ -1219,7 +1256,14 @@ private fun EventRow(event: OneEvent, onClick: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun EventDetailScreen(event: OneEvent, onClose: () -> Unit) {
+private fun EventDetailScreen(
+    event: OneEvent,
+    clips: List<OneClip>?,
+    clipLoadState: OneClipLoadState,
+    clipLoadError: String?,
+    onClose: () -> Unit
+) {
+    val linkedClips = event.id?.let { eventId -> clips?.filter { it.eventId == eventId } }
     ScreenScroll {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) {
@@ -1233,12 +1277,20 @@ private fun EventDetailScreen(event: OneEvent, onClose: () -> Unit) {
             }
         }
         ScreenHeader("EVENT REVIEW", event.kind.label, "A human-readable record for caregiver attention.")
-        EventRow(event)
+        EventRow(event, hasClip = !linkedClips.isNullOrEmpty())
         SectionHeading("CONTEXT", "What ONE observed")
         InfoCard("Approximate location", event.location)
         InfoCard("When it happened", event.time)
         InfoCard("Explanation", event.explanation)
         InfoCard("Confidence", event.confidence)
+        if (event.id != null) {
+            when {
+                clipLoadState == OneClipLoadState.LOADING && clips == null -> InfoCard("Linked evidence", "Checking whether this observation has a consented event clip.")
+                clipLoadState == OneClipLoadState.ERROR -> InfoCard("Linked evidence unavailable", clipLoadError ?: "ONE could not check event clips right now.")
+                !linkedClips.isNullOrEmpty() -> InfoCard("Linked evidence", "A consented event clip is linked to this observation. Media playback will be added in the next review slice.")
+                else -> InfoCard("Linked evidence", "No retained event clip is linked to this observation.")
+            }
+        }
         InfoCard("Human review", "This observation can support attention and discussion. It is not a diagnosis or medical advice.")
     }
 }

@@ -1,5 +1,7 @@
 package com.one.cognitivecompanion
 
+import java.util.UUID
+
 /** The two product experiences exposed by the current iOS MVP. */
 enum class OneRole {
     CAREGIVER,
@@ -41,7 +43,8 @@ data class OneEvent(
     val location: String,
     val time: String,
     val explanation: String,
-    val confidence: String
+    val confidence: String,
+    val id: UUID? = null
 )
 
 data class ConsentChoice(

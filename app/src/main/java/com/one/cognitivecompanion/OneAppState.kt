@@ -24,7 +24,8 @@ class OneAppState(
     private val homeRepository: OneHomeRepository,
     private val cameraRepository: OneCameraRepository,
     private val familyRepository: OneFamilyRepository,
-    private val medicationRepository: OneMedicationRepository
+    private val medicationRepository: OneMedicationRepository,
+    private val clipRepository: OneClipRepository
 ) {
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
@@ -50,6 +51,9 @@ class OneAppState(
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
+    var clips by mutableStateOf<List<OneClip>?>(null)
+    var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
+    var clipLoadError by mutableStateOf<String?>(null)
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -87,6 +91,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        clips = null
+        clipLoadState = OneClipLoadState.IDLE
+        clipLoadError = null
         if (usedBackend && authenticatedSession != null) {
             runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
         }
@@ -242,6 +249,25 @@ class OneAppState(
         }
     }
 
+    suspend fun loadClips() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            clips = null
+            clipLoadState = OneClipLoadState.IDLE
+            clipLoadError = null
+            return
+        }
+        clipLoadState = OneClipLoadState.LOADING
+        clipLoadError = null
+        try {
+            clips = clipRepository.load(authenticatedSession)
+            clipLoadState = OneClipLoadState.LOADED
+        } catch (error: Exception) {
+            clipLoadState = OneClipLoadState.ERROR
+            clipLoadError = error.message ?: "Could not load event clips."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -264,6 +290,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        clips = null
+        clipLoadState = OneClipLoadState.IDLE
+        clipLoadError = null
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }

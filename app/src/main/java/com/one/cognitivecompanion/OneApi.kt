@@ -113,6 +113,14 @@ data class OneRemoteEvent(
     val lastSeenAt: Instant?
 )
 
+data class OneRemoteClip(
+    val id: UUID,
+    val eventId: UUID,
+    val startsAt: Instant?,
+    val endsAt: Instant?,
+    val expiresAt: Instant?
+)
+
 data class OneRemoteFamilyMember(
     val id: UUID,
     val displayName: String,
@@ -148,6 +156,7 @@ interface OneApiClient {
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
+    suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
 }
@@ -368,6 +377,26 @@ class OneHttpApiClient(
                         explanation = row.optString("explanation").takeIf { it.isNotBlank() } ?: "No explanation provided.",
                         confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
                         lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull()
+                    )
+                )
+            }
+        }
+    }
+
+    override suspend fun homeClips(session: OneSession): List<OneRemoteClip> {
+        val rows = request("/homes/${session.homeId}/clips", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                val eventId = runCatching { UUID.fromString(row.optString("event_id")) }.getOrNull() ?: continue
+                add(
+                    OneRemoteClip(
+                        id = id,
+                        eventId = eventId,
+                        startsAt = row.optNullableString("starts_at")?.toInstantOrNull(),
+                        endsAt = row.optNullableString("ends_at")?.toInstantOrNull(),
+                        expiresAt = row.optNullableString("expires_at")?.toInstantOrNull()
                     )
                 )
             }

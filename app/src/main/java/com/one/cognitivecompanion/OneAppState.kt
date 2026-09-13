@@ -40,6 +40,10 @@ class OneAppState(
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
     var homeLoadError by mutableStateOf<String?>(null)
+    var rooms by mutableStateOf<List<OneRoom>?>(null)
+    var currentRoomMap by mutableStateOf<OneRoomMap?>(null)
+    var mapLoadState by mutableStateOf(OneMapLoadState.IDLE)
+    var mapLoadError by mutableStateOf<String?>(null)
     var eventStreamState by mutableStateOf(OneEventStreamState.IDLE)
     var eventStreamError by mutableStateOf<String?>(null)
     var cameras by mutableStateOf<List<OneCamera>?>(null)
@@ -109,6 +113,10 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        rooms = null
+        currentRoomMap = null
+        mapLoadState = OneMapLoadState.IDLE
+        mapLoadError = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null
@@ -218,6 +226,61 @@ class OneAppState(
         } catch (error: Exception) {
             cameraLoadState = OneCameraLoadState.ERROR
             cameraLoadError = error.message ?: "Could not load the household cameras."
+        }
+    }
+
+    suspend fun loadRoomMap() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            rooms = null
+            currentRoomMap = null
+            mapLoadState = OneMapLoadState.IDLE
+            mapLoadError = null
+            return
+        }
+        mapLoadState = OneMapLoadState.LOADING
+        mapLoadError = null
+        try {
+            rooms = apiClient.homeRooms(authenticatedSession)
+            currentRoomMap = apiClient.currentRoomMap(authenticatedSession)
+            mapLoadState = OneMapLoadState.LOADED
+        } catch (error: Exception) {
+            mapLoadState = OneMapLoadState.ERROR
+            mapLoadError = error.message ?: "Could not load the room map."
+        }
+    }
+
+    suspend fun createManualRoomMap(roomName: String, zoneNames: List<String>) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            mapLoadState = OneMapLoadState.ERROR
+            mapLoadError = "Connect a backend session before updating the room map."
+            return
+        }
+        val cleanRoomName = roomName.trim()
+        val cleanZones = zoneNames.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanRoomName.isBlank()) {
+            mapLoadState = OneMapLoadState.ERROR
+            mapLoadError = "Enter a room name."
+            return
+        }
+        if (cleanZones.isEmpty()) {
+            mapLoadState = OneMapLoadState.ERROR
+            mapLoadError = "Enter at least one zone."
+            return
+        }
+        mapLoadState = OneMapLoadState.SUBMITTING
+        mapLoadError = null
+        try {
+            val room = rooms.orEmpty().firstOrNull { it.name.equals(cleanRoomName, ignoreCase = true) }
+                ?: apiClient.createRoom(authenticatedSession, cleanRoomName)
+            currentRoomMap = apiClient.uploadRoomMap(authenticatedSession, room.id, cleanZones)
+            rooms = (rooms.orEmpty().filterNot { it.id == room.id } + room).sortedBy { it.name.lowercase() }
+            mapLoadState = OneMapLoadState.LOADED
+            loadHome()
+        } catch (error: Exception) {
+            mapLoadState = OneMapLoadState.ERROR
+            mapLoadError = error.message ?: "Could not save the room map."
         }
     }
 
@@ -529,6 +592,10 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        rooms = null
+        currentRoomMap = null
+        mapLoadState = OneMapLoadState.IDLE
+        mapLoadError = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null

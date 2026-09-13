@@ -128,6 +128,22 @@ data class OneHomeProfile(
     val paused: Boolean
 )
 
+data class OneRoom(
+    val id: UUID,
+    val homeId: UUID?,
+    val name: String
+)
+
+data class OneRoomMap(
+    val id: UUID,
+    val homeId: UUID?,
+    val roomId: UUID?,
+    val revision: Int,
+    val coordinateFrame: String,
+    val zones: List<String>,
+    val createdAt: Instant?
+)
+
 data class OneRemoteCamera(
     val id: UUID,
     val name: String,
@@ -204,6 +220,15 @@ interface OneApiClient {
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
     fun clipContentUrl(session: OneSession, clipId: UUID): String
     suspend fun homeProfile(session: OneSession): OneHomeProfile
+    suspend fun homeRooms(session: OneSession): List<OneRoom>
+    suspend fun createRoom(session: OneSession, name: String): OneRoom
+    suspend fun currentRoomMap(session: OneSession): OneRoomMap?
+    suspend fun uploadRoomMap(
+        session: OneSession,
+        roomId: UUID?,
+        zones: List<String>,
+        coordinateFrame: String = "manual-zones"
+    ): OneRoomMap
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
@@ -452,6 +477,70 @@ class OneHttpApiClient(
         )
     }
 
+    override suspend fun homeRooms(session: OneSession): List<OneRoom> {
+        val rows = request("/homes/${session.homeId}/rooms", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                val name = row.optString("name").takeIf { it.isNotBlank() } ?: continue
+                add(OneRoom(id = id, homeId = row.optNullableUuid("home_id"), name = name))
+            }
+        }
+    }
+
+    override suspend fun createRoom(session: OneSession, name: String): OneRoom {
+        val body = request(
+            "/homes/${session.homeId}/rooms",
+            "POST",
+            JSONObject().put("name", name),
+            token = session.accessToken
+        )
+        return OneRoom(
+            id = body.requiredUuid("id"),
+            homeId = body.optNullableUuid("home_id") ?: session.homeId,
+            name = body.requiredString("name")
+        )
+    }
+
+    override suspend fun currentRoomMap(session: OneSession): OneRoomMap? {
+        return try {
+            parseRoomMap(
+                body = request("/homes/${session.homeId}/maps/current", "GET", token = session.accessToken),
+                homeId = session.homeId
+            )
+        } catch (error: OneApiException) {
+            if (error.statusCode == 404) null else throw error
+        }
+    }
+
+    override suspend fun uploadRoomMap(
+        session: OneSession,
+        roomId: UUID?,
+        zones: List<String>,
+        coordinateFrame: String
+    ): OneRoomMap {
+        val zoneRows = JSONArray()
+        zones.map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { zoneRows.put(JSONObject().put("label", it)) }
+        val mapData = JSONObject()
+            .put("source", "android-manual")
+            .put("zones", zoneRows)
+        val payload = JSONObject()
+            .put("room_id", roomId?.toString() ?: JSONObject.NULL)
+            .put("coordinate_frame", coordinateFrame)
+            .put("map_data", mapData)
+        val body = request(
+            "/homes/${session.homeId}/maps",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return parseRoomMap(body, homeId = session.homeId, fallbackRoomId = roomId, fallbackZones = zones)
+    }
+
     override suspend fun homeCameras(session: OneSession): List<OneRemoteCamera> {
         val rows = request("/homes/${session.homeId}/cameras", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
         return buildList {
@@ -637,6 +726,38 @@ class OneHttpApiClient(
             evidenceIds = evidenceIds,
             limitations = body.optString("limitations").takeIf { it.isNotBlank() } ?: "This is an administrative summary, not medical advice.",
             degraded = body.optBoolean("degraded", false)
+        )
+    }
+
+    private fun parseRoomMap(
+        body: JSONObject,
+        homeId: UUID,
+        fallbackRoomId: UUID? = null,
+        fallbackZones: List<String> = emptyList()
+    ): OneRoomMap {
+        val mapData = body.optJSONObject("map_data")
+        val zoneRows = mapData?.optJSONArray("zones")
+        val zones = if (zoneRows == null) {
+            fallbackZones.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        } else {
+            buildList {
+                for (index in 0 until zoneRows.length()) {
+                    when (val value = zoneRows.opt(index)) {
+                        is JSONObject -> value.optString("label").takeIf { it.isNotBlank() }
+                            ?.let(::add)
+                        is String -> value.takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                }
+            }
+        }
+        return OneRoomMap(
+            id = body.requiredUuid("id"),
+            homeId = body.optNullableUuid("home_id") ?: homeId,
+            roomId = body.optNullableUuid("room_id") ?: fallbackRoomId,
+            revision = body.optInt("revision", 0),
+            coordinateFrame = body.optString("coordinate_frame").takeIf { it.isNotBlank() } ?: "unknown",
+            zones = zones,
+            createdAt = body.optNullableString("created_at")?.toInstantOrNull()
         )
     }
 

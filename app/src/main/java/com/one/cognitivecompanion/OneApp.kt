@@ -179,6 +179,11 @@ fun OneApp() {
             appState.loadMedicationReminders()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "map") {
+            appState.loadRoomMap()
+        }
+    }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "account") {
             appState.loadConsents()
@@ -254,7 +259,14 @@ fun OneApp() {
                             isBackend = appState.backendMode,
                             loadState = appState.homeLoadState,
                             loadError = appState.homeLoadError,
-                            onRetry = { coroutineScope.launch { appState.loadHome() } }
+                            onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            currentRoomMap = appState.currentRoomMap,
+                            mapLoadState = appState.mapLoadState,
+                            mapLoadError = appState.mapLoadError,
+                            onMapRetry = { coroutineScope.launch { appState.loadRoomMap() } },
+                            onCreateManualMap = { roomName, zones ->
+                                coroutineScope.launch { appState.createManualRoomMap(roomName, zones) }
+                            }
                         )
                         "family" -> FamilyScreen(
                             members = appState.familyMembers,
@@ -1028,8 +1040,19 @@ private fun MapScreen(
     isBackend: Boolean,
     loadState: OneHomeLoadState,
     loadError: String?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    currentRoomMap: OneRoomMap?,
+    mapLoadState: OneMapLoadState,
+    mapLoadError: String?,
+    onMapRetry: () -> Unit,
+    onCreateManualMap: (String, List<String>) -> Unit
 ) {
+    var showManualMapDialog by rememberSaveable { mutableStateOf(false) }
+    var manualRoomName by rememberSaveable { mutableStateOf("") }
+    var manualZones by rememberSaveable { mutableStateOf("") }
+    val manualZoneNames = manualZones.split(",", ";", "\n").map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    val canSubmitManualMap = manualRoomName.trim().isNotBlank() && manualZoneNames.isNotEmpty() && mapLoadState != OneMapLoadState.SUBMITTING
+
     ScreenScroll {
         ScreenHeader("MAP", "Home map", "Approximate locations · local view")
         when {
@@ -1043,6 +1066,27 @@ private fun MapScreen(
             }
             else -> MapCanvas(objects = objects, isBackend = isBackend)
         }
+        if (isBackend) {
+            when {
+                mapLoadState == OneMapLoadState.LOADING && currentRoomMap == null -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading the current room map…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                mapLoadState == OneMapLoadState.ERROR -> {
+                    InfoCard("Room map unavailable", mapLoadError ?: "ONE could not load the current room map.")
+                }
+                currentRoomMap == null -> {
+                    InfoCard("No room map uploaded yet", "Create a manual zone map below, or upload a scan from a supported device.")
+                }
+                else -> {
+                    val zones = currentRoomMap.zones.joinToString(" · ").ifBlank { "No named zones" }
+                    InfoCard(
+                        "Room map revision ${currentRoomMap.revision}",
+                        "${currentRoomMap.coordinateFrame} · $zones"
+                    )
+                }
+            }
+        }
         SectionHeading("EVIDENCE", "Recent observations")
         val visibleEvents = events ?: if (isBackend) emptyList() else demoEvents
         if (visibleEvents.isEmpty()) {
@@ -1052,14 +1096,19 @@ private fun MapScreen(
         }
         if (isBackend) {
             OutlinedButton(
-                onClick = onRetry,
-                enabled = loadState != OneHomeLoadState.LOADING,
+                onClick = onMapRetry,
+                enabled = mapLoadState != OneMapLoadState.LOADING && mapLoadState != OneMapLoadState.SUBMITTING,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Map, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (loadState == OneHomeLoadState.LOADING) "Refreshing…" else "Refresh room map")
+                Text(if (mapLoadState == OneMapLoadState.LOADING) "Refreshing…" else "Refresh room map")
             }
+            OutlinedButton(
+                onClick = { showManualMapDialog = true },
+                enabled = mapLoadState != OneMapLoadState.SUBMITTING,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (mapLoadState == OneMapLoadState.SUBMITTING) "Saving room map…" else "Create manual room map") }
         } else {
             Text(
                 "Demo map uses local fixtures. Connect a backend to refresh room observations.",
@@ -1067,6 +1116,52 @@ private fun MapScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+    if (showManualMapDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (mapLoadState != OneMapLoadState.SUBMITTING) showManualMapDialog = false
+            },
+            title = { Text("Create a manual room map") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Name the room and enter zones separated by commas.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = manualRoomName,
+                        onValueChange = { manualRoomName = it },
+                        label = { Text("Room name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = manualZones,
+                        onValueChange = { manualZones = it },
+                        label = { Text("Zones") },
+                        placeholder = { Text("Kitchen, living room, entry") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (mapLoadError != null) {
+                        Text(mapLoadError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showManualMapDialog = false
+                        onCreateManualMap(manualRoomName, manualZoneNames)
+                    },
+                    enabled = canSubmitManualMap
+                ) { Text(if (mapLoadState == OneMapLoadState.SUBMITTING) "Saving…" else "Save map") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showManualMapDialog = false },
+                    enabled = mapLoadState != OneMapLoadState.SUBMITTING
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 

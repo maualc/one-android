@@ -177,6 +177,7 @@ fun OneApp() {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") {
             appState.loadFamily()
             appState.loadMedicationReminders()
+            appState.loadMedicationPlans()
         }
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
@@ -285,11 +286,20 @@ fun OneApp() {
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
                             onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
+                            medicationPlans = appState.medicationPlans,
+                            medicationPlansLoadState = appState.medicationPlansLoadState,
+                            medicationPlansLoadError = appState.medicationPlansLoadError,
+                            onMedicationPlansRetry = { coroutineScope.launch { appState.loadMedicationPlans() } },
                             medicationPlanActionState = appState.medicationPlanActionState,
                             lastMedicationPlan = appState.lastMedicationPlan,
                             medicationPlanActionError = appState.medicationPlanActionError,
                             onCreateMedicationPlan = { name, dose, schedule, instructions ->
                                 coroutineScope.launch { appState.createMedicationPlan(name, dose, schedule, instructions) }
+                            },
+                            onUpdateMedicationPlan = { plan, name, dose, schedule, instructions, active ->
+                                coroutineScope.launch {
+                                    appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active)
+                                }
                             },
                             familyAssistantLoadState = appState.familyAssistantLoadState,
                             familyAssistantResult = appState.familyAssistantResult,
@@ -1267,10 +1277,15 @@ private fun FamilyScreen(
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
     onMedicationRetry: () -> Unit,
+    medicationPlans: List<OneMedicationPlan>?,
+    medicationPlansLoadState: OneMedicationLoadState,
+    medicationPlansLoadError: String?,
+    onMedicationPlansRetry: () -> Unit,
     medicationPlanActionState: OneMedicationPlanActionState,
     lastMedicationPlan: OneMedicationPlan?,
     medicationPlanActionError: String?,
     onCreateMedicationPlan: (String, String, String, String) -> Unit,
+    onUpdateMedicationPlan: (OneMedicationPlan, String, String, String, String, Boolean) -> Unit,
     familyAssistantLoadState: OneFamilyAssistantLoadState,
     familyAssistantResult: OneFamilyAssistantResult?,
     familyAssistantLoadError: String?,
@@ -1287,6 +1302,7 @@ private fun FamilyScreen(
     val canSubmitInvite = inviteName.trim().isNotBlank() && familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
     var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var showMedicationPlanDialog by rememberSaveable { mutableStateOf(false) }
+    var editingMedicationPlanId by rememberSaveable { mutableStateOf<String?>(null) }
     var planName by rememberSaveable { mutableStateOf("") }
     var planDose by rememberSaveable { mutableStateOf("") }
     var planSchedule by rememberSaveable { mutableStateOf("08:00") }
@@ -1294,6 +1310,7 @@ private fun FamilyScreen(
     var familyAssistantMessage by rememberSaveable { mutableStateOf("") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
+    val editingMedicationPlan = editingMedicationPlanId?.let { id -> medicationPlans.orEmpty().firstOrNull { it.id.toString() == id } }
     val canCreateMedicationPlan = isBackend && selectedFamilySubjectId != null && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
     val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
 
@@ -1384,7 +1401,14 @@ private fun FamilyScreen(
         SectionHeading("TODAY'S PLAN", "Medication reminders")
         if (canCreateMedicationPlan) {
             OutlinedButton(
-                onClick = { showMedicationPlanDialog = true },
+                onClick = {
+                    editingMedicationPlanId = null
+                    planName = ""
+                    planDose = ""
+                    planSchedule = "08:00"
+                    planInstructions = ""
+                    showMedicationPlanDialog = true
+                },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Add medication plan for $selectedSubjectName") }
         }
@@ -1396,6 +1420,68 @@ private fun FamilyScreen(
                 "Medication plan saved",
                 "${plan.name} · ${plan.dose} · ${plan.schedule}. Reminders are administrative only; confirm decisions with the resident and care team."
             )
+        }
+        if (isBackend && canCreateMedicationPlan) {
+            when {
+                medicationPlans == null && (medicationPlansLoadState == OneMedicationLoadState.IDLE || medicationPlansLoadState == OneMedicationLoadState.LOADING) -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading active medication plans…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                medicationPlans == null && medicationPlansLoadState == OneMedicationLoadState.ERROR -> {
+                    InfoCard("Medication plans unavailable", medicationPlansLoadError ?: "ONE could not load active medication plans.")
+                    OutlinedButton(onClick = onMedicationPlansRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry plan loading") }
+                }
+                medicationPlans.isNullOrEmpty() -> {
+                    InfoCard("No active plans", "Create a plan above to schedule administrative reminders for this person.")
+                }
+                else -> {
+                    medicationPlans.orEmpty().forEach { plan ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(22.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.Top) {
+                                    Icon(Icons.Default.Schedule, contentDescription = null, tint = OneBlue, modifier = Modifier.size(26.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(plan.name, style = MaterialTheme.typography.titleMedium)
+                                        Text("${plan.dose} · ${plan.schedule}", style = MaterialTheme.typography.bodyMedium)
+                                        if (plan.instructions.isNotBlank()) {
+                                            Text(plan.instructions, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    Surface(shape = RoundedCornerShape(50), color = OneMint.copy(alpha = 0.12f)) {
+                                        Text("ACTIVE", modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = OneMint, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            editingMedicationPlanId = plan.id.toString()
+                                            planName = plan.name
+                                            planDose = plan.dose
+                                            planSchedule = plan.schedule
+                                            planInstructions = plan.instructions
+                                            showMedicationPlanDialog = true
+                                        },
+                                        enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Edit") }
+                                    TextButton(
+                                        onClick = {
+                                            onUpdateMedicationPlan(plan, plan.name, plan.dose, plan.schedule, plan.instructions, false)
+                                        },
+                                        enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Deactivate") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (!isBackend) {
             demoMedicationDoses.forEach { dose -> MedicationRow(dose) }
@@ -1530,9 +1616,12 @@ private fun FamilyScreen(
     if (showMedicationPlanDialog) {
         AlertDialog(
             onDismissRequest = {
-                if (medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING) showMedicationPlanDialog = false
+                if (medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING) {
+                    showMedicationPlanDialog = false
+                    editingMedicationPlanId = null
+                }
             },
-            title = { Text("Add a medication plan") },
+            title = { Text(if (editingMedicationPlan == null) "Add a medication plan" else "Edit medication plan") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Enter the plan exactly as provided by the resident's care team.", style = MaterialTheme.typography.bodySmall)
@@ -1574,14 +1663,23 @@ private fun FamilyScreen(
                 Button(
                     onClick = {
                         showMedicationPlanDialog = false
-                        onCreateMedicationPlan(planName, planDose, planSchedule, planInstructions)
+                        val plan = editingMedicationPlan
+                        if (plan == null) {
+                            onCreateMedicationPlan(planName, planDose, planSchedule, planInstructions)
+                        } else {
+                            onUpdateMedicationPlan(plan, planName, planDose, planSchedule, planInstructions, true)
+                        }
+                        editingMedicationPlanId = null
                     },
                     enabled = canSubmitMedicationPlan
-                ) { Text(if (medicationPlanActionState == OneMedicationPlanActionState.SUBMITTING) "Saving…" else "Save plan") }
+                ) { Text(if (medicationPlanActionState == OneMedicationPlanActionState.SUBMITTING) "Saving…" else if (editingMedicationPlan == null) "Save plan" else "Save changes") }
             },
             dismissButton = {
                 TextButton(
-                    onClick = { showMedicationPlanDialog = false },
+                    onClick = {
+                        showMedicationPlanDialog = false
+                        editingMedicationPlanId = null
+                    },
                     enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
                 ) { Text("Cancel") }
             }

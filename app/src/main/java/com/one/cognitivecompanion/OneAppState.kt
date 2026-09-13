@@ -60,6 +60,9 @@ class OneAppState(
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
+    var medicationPlans by mutableStateOf<List<OneMedicationPlan>?>(null)
+    var medicationPlansLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
+    var medicationPlansLoadError by mutableStateOf<String?>(null)
     var medicationPlanActionState by mutableStateOf(OneMedicationPlanActionState.IDLE)
     var lastMedicationPlan by mutableStateOf<OneMedicationPlan?>(null)
     var medicationPlanActionError by mutableStateOf<String?>(null)
@@ -139,6 +142,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationPlans = null
+        medicationPlansLoadState = OneMedicationLoadState.IDLE
+        medicationPlansLoadError = null
         medicationPlanActionState = OneMedicationPlanActionState.IDLE
         lastMedicationPlan = null
         medicationPlanActionError = null
@@ -372,6 +378,7 @@ class OneAppState(
         familyAssistantResult = null
         familyAssistantLoadError = null
         loadMedicationReminders()
+        loadMedicationPlans()
     }
 
     suspend fun createFamilyInvite(inviteRequest: FamilyInviteRequest) {
@@ -428,6 +435,25 @@ class OneAppState(
         }
     }
 
+    suspend fun loadMedicationPlans(subjectUserId: UUID? = selectedFamilySubjectId) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            medicationPlans = null
+            medicationPlansLoadState = OneMedicationLoadState.IDLE
+            medicationPlansLoadError = null
+            return
+        }
+        medicationPlansLoadState = OneMedicationLoadState.LOADING
+        medicationPlansLoadError = null
+        try {
+            medicationPlans = apiClient.medicationPlans(authenticatedSession, subjectUserId = subjectUserId)
+            medicationPlansLoadState = OneMedicationLoadState.LOADED
+        } catch (error: Exception) {
+            medicationPlansLoadState = OneMedicationLoadState.ERROR
+            medicationPlansLoadError = error.message ?: "Could not load medication plans."
+        }
+    }
+
     suspend fun createMedicationPlan(name: String, dose: String, schedule: String, instructions: String) {
         val authenticatedSession = session
         val subjectUserId = selectedFamilySubjectId
@@ -470,9 +496,62 @@ class OneAppState(
             )
             medicationPlanActionState = OneMedicationPlanActionState.LOADED
             loadMedicationReminders(subjectUserId)
+            loadMedicationPlans(subjectUserId)
         } catch (error: Exception) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = error.message ?: "Could not create the medication plan."
+        }
+    }
+
+    suspend fun updateMedicationPlan(
+        plan: OneMedicationPlan,
+        name: String,
+        dose: String,
+        schedule: String,
+        instructions: String,
+        active: Boolean
+    ) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Connect a backend session before updating a medication plan."
+            return
+        }
+        if (!canManageFamily) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Only caregivers can update medication plans."
+            return
+        }
+        val cleanName = name.trim()
+        val cleanDose = dose.trim()
+        val cleanSchedule = schedule.trim()
+        val cleanInstructions = instructions.trim()
+        if (cleanName.isBlank() || cleanDose.isBlank() || cleanSchedule.isBlank()) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Name, dose and schedule are required."
+            return
+        }
+        medicationPlanActionState = OneMedicationPlanActionState.SUBMITTING
+        medicationPlanActionError = null
+        try {
+            lastMedicationPlan = apiClient.updateMedicationPlan(
+                authenticatedSession,
+                plan.id,
+                MedicationPlanUpdateRequest(
+                    name = cleanName,
+                    dose = cleanDose,
+                    schedule = cleanSchedule,
+                    instructions = cleanInstructions,
+                    active = active,
+                    version = plan.version
+                )
+            )
+            medicationPlanActionState = OneMedicationPlanActionState.LOADED
+            loadMedicationReminders(plan.subjectUserId)
+            loadMedicationPlans(plan.subjectUserId)
+        } catch (error: Exception) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = error.message ?: "Could not update the medication plan."
         }
     }
 
@@ -708,6 +787,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationPlans = null
+        medicationPlansLoadState = OneMedicationLoadState.IDLE
+        medicationPlansLoadError = null
         medicationPlanActionState = OneMedicationPlanActionState.IDLE
         lastMedicationPlan = null
         medicationPlanActionError = null

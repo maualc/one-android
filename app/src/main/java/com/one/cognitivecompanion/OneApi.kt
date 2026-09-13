@@ -213,6 +213,16 @@ data class MedicationPlanRequest(
     val assignedCaregiverId: UUID? = null
 )
 
+data class MedicationPlanUpdateRequest(
+    val name: String? = null,
+    val dose: String? = null,
+    val schedule: String? = null,
+    val instructions: String? = null,
+    val active: Boolean? = null,
+    val assignedCaregiverId: UUID? = null,
+    val version: Int? = null
+)
+
 data class OneMedicationPlan(
     val id: UUID,
     val homeId: UUID?,
@@ -270,7 +280,9 @@ interface OneApiClient {
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
+    suspend fun medicationPlans(session: OneSession, subjectUserId: UUID? = null, activeOnly: Boolean = true): List<OneMedicationPlan>
     suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
+    suspend fun updateMedicationPlan(session: OneSession, planId: UUID, request: MedicationPlanUpdateRequest): OneMedicationPlan
     suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID): OneFamilyAssistantResult
     suspend fun markMedicationCheckIn(
         session: OneSession,
@@ -290,6 +302,9 @@ interface OneApiClient {
 class OneHttpApiClient(
     private val configuration: RuntimeConfiguration = RuntimeConfiguration()
 ) : OneApiClient {
+    val apiBaseUrl: String
+        get() = configuration.apiBaseUrl
+
     override fun clipContentUrl(session: OneSession, clipId: UUID): String =
         configuration.apiBaseUrl.trimEnd('/') + "/clips/$clipId/content"
 
@@ -713,6 +728,25 @@ class OneHttpApiClient(
         }
     }
 
+    override suspend fun medicationPlans(session: OneSession, subjectUserId: UUID?, activeOnly: Boolean): List<OneMedicationPlan> {
+        val query = buildList {
+            subjectUserId?.let { add("subject_user_id=$it") }
+            add("active_only=$activeOnly")
+        }.joinToString("&")
+        val rows = request(
+            "/homes/${session.homeId}/medication-plans?$query",
+            "GET",
+            token = session.accessToken
+        ).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                rows.optJSONObject(index)?.let { row ->
+                    runCatching { parseMedicationPlan(row, session.homeId) }.getOrNull()?.let(::add)
+                }
+            }
+        }
+    }
+
     override suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan {
         val payload = JSONObject()
             .put("subject_user_id", request.subjectUserId.toString())
@@ -726,6 +760,30 @@ class OneHttpApiClient(
             request(
                 "/homes/${session.homeId}/medication-plans",
                 "POST",
+                payload,
+                token = session.accessToken
+            ),
+            session.homeId
+        )
+    }
+
+    override suspend fun updateMedicationPlan(
+        session: OneSession,
+        planId: UUID,
+        request: MedicationPlanUpdateRequest
+    ): OneMedicationPlan {
+        val payload = JSONObject()
+        request.name?.let { payload.put("name", it) }
+        request.dose?.let { payload.put("dose", it) }
+        request.schedule?.let { payload.put("schedule", it) }
+        request.instructions?.let { payload.put("instructions", it) }
+        request.active?.let { payload.put("active", it) }
+        request.assignedCaregiverId?.let { payload.put("assigned_caregiver_id", it.toString()) }
+        request.version?.let { payload.put("version", it) }
+        return parseMedicationPlan(
+            request(
+                "/homes/${session.homeId}/medication-plans/$planId",
+                "PATCH",
                 payload,
                 token = session.accessToken
             ),

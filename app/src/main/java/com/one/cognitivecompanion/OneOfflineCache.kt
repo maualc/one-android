@@ -62,14 +62,14 @@ class OneOfflineCache(context: Context) {
             val rows = payload.optJSONArray("rooms") ?: JSONArray()
             for (index in 0 until rows.length()) {
                 val row = rows.optJSONObject(index) ?: continue
-                add(OneRoom(UUID.fromString(row.getString("id")), row.optString("home_id").takeIf { it.isNotBlank() }?.let(UUID::fromString), row.optString("name")))
+                add(OneRoom(UUID.fromString(row.getString("id")), row.optNullableString("home_id")?.let(UUID::fromString), row.optString("name")))
             }
         }
         val map = payload.optJSONObject("map")?.let { row ->
             OneRoomMap(
                 id = UUID.fromString(row.getString("id")),
                 homeId = row.optString("home_id").takeIf { it.isNotBlank() }?.let(UUID::fromString),
-                roomId = row.optString("room_id").takeIf { it.isNotBlank() }?.let(UUID::fromString),
+                roomId = row.optNullableString("room_id")?.let(UUID::fromString),
                 revision = row.optInt("revision"),
                 coordinateFrame = row.optString("coordinate_frame"),
                 zones = row.optJSONArray("zones").toStringList(),
@@ -89,6 +89,7 @@ class OneOfflineCache(context: Context) {
     private fun eventJson(value: OneEvent) = JSONObject()
         .put("id", value.id?.toString() ?: JSONObject.NULL).put("kind", value.kind.name).put("location", value.location)
         .put("time", value.time).put("explanation", value.explanation).put("confidence", value.confidence)
+        .put("evidence_ids", JSONArray(value.evidenceIds))
         .put("observed_at", value.observedAt?.toString() ?: JSONObject.NULL)
 
     private fun cameraJson(value: OneCamera) = JSONObject()
@@ -99,14 +100,14 @@ class OneOfflineCache(context: Context) {
         .put("id", value.id.toString()).put("home_id", value.homeId?.toString() ?: JSONObject.NULL).put("room_id", value.roomId?.toString() ?: JSONObject.NULL)
         .put("revision", value.revision).put("coordinate_frame", value.coordinateFrame).put("zones", JSONArray(value.zones)).put("created_at", value.createdAt?.toString() ?: JSONObject.NULL)
 
-    private fun JSONArray?.toObjects(): List<OneRemoteObject> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneRemoteObject(UUID.fromString(row.getString("id")), row.optString("label"), row.optString("status"), row.optString("zone").takeIf { it.isNotBlank() }, row.optNullableDouble("x"), row.optNullableDouble("y"), row.optString("last_seen_at").toInstantOrNull(), row.optDouble("confidence"), row.optDouble("radius"))) } } } } ?: emptyList()
-    private fun JSONArray?.toEvents(): List<OneEvent> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneEvent(EventKind.valueOf(row.optString("kind")), row.optString("location"), row.optString("time"), row.optString("explanation"), row.optString("confidence"), row.optString("id").takeIf { it.isNotBlank() }?.let(UUID::fromString), row.optString("observed_at").toInstantOrNull())) } } } } ?: emptyList()
-    private fun JSONArray?.toCameras(): List<OneCamera> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneCamera(UUID.fromString(row.getString("id")), row.optString("name"), row.optString("room_id").takeIf { it.isNotBlank() }?.let(UUID::fromString), row.optString("platform"), row.optString("status"), row.optBoolean("enabled", true), row.optString("last_seen_at").toInstantOrNull())) } } } } ?: emptyList()
+    private fun JSONArray?.toObjects(): List<OneRemoteObject> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneRemoteObject(UUID.fromString(row.getString("id")), row.optString("label"), row.optString("status"), row.optNullableString("zone"), row.optNullableDouble("x"), row.optNullableDouble("y"), row.optNullableString("last_seen_at").toInstantOrNull(), row.optDouble("confidence"), row.optDouble("radius"))) } } } } ?: emptyList()
+    private fun JSONArray?.toEvents(): List<OneEvent> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneEvent(runCatching { EventKind.valueOf(row.optString("kind")) }.getOrDefault(EventKind.OTHER), row.optString("location"), row.optString("time"), row.optString("explanation"), row.optString("confidence"), row.optNullableString("id")?.let(UUID::fromString), row.optNullableString("observed_at").toInstantOrNull(), row.optJSONArray("evidence_ids").toStringList())) } } } } ?: emptyList()
+    private fun JSONArray?.toCameras(): List<OneCamera> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneCamera(UUID.fromString(row.getString("id")), row.optString("name"), row.optNullableString("room_id")?.let(UUID::fromString), row.optString("platform"), row.optString("status"), row.optBoolean("enabled", true), row.optNullableString("last_seen_at").toInstantOrNull())) } } } } ?: emptyList()
     private fun JSONArray?.toStringList(): List<String> = this?.let { rows -> buildList { for (index in 0 until rows.length()) rows.optString(index).takeIf { it.isNotBlank() }?.let(::add) } } ?: emptyList()
 
     private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
+    private fun JSONObject.optNullableString(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
     private fun String?.toInstantOrNull(): Instant? = this?.takeIf { it.isNotBlank() && it != "null" }?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
     private companion object { const val PREFERENCES = "one.offline.cache" }
 }
-

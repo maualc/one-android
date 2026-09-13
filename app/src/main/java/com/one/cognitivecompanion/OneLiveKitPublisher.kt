@@ -52,6 +52,11 @@ class OneLiveKitPublisherService : LifecycleService() {
             stopPublishing()
             return
         }
+        if (session.role != OneRole.PUBLISHER && !session.backendRole.equals("publisher", ignoreCase = true)) {
+            updateNotification("Publisher pairing is required for this device")
+            stopPublishing()
+            return
+        }
         runCatching {
             val token = OneHttpApiClient().liveKitToken(session, mode = "publish")
             val liveRoom = LiveKit.create(applicationContext)

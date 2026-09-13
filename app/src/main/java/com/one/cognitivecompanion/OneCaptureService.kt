@@ -51,6 +51,8 @@ class OneCaptureService : LifecycleService() {
     private val knownObjectIds = mutableMapOf<String, UUID>()
     private val lastObservationAt = mutableMapOf<String, Long>()
     private var objectsLoaded = false
+    private var videoConsentCheckedAt = 0L
+    private var videoConsentGranted = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
@@ -122,6 +124,16 @@ class OneCaptureService : LifecycleService() {
         uploadJob?.cancel()
         uploadJob = serviceScope.launch {
             val session = OneSecureStore(applicationContext).restore()?.session ?: return@launch
+            if (session.role != OneRole.CAREGIVER && !session.backendRole.equals("admin", ignoreCase = true)) {
+                updateNotification("Only a caregiver can run household sampling")
+                stopCapture()
+                return@launch
+            }
+            if (!hasActiveVideoConsent(session)) {
+                updateNotification("Capture paused · enable room and camera consent")
+                stopCapture()
+                return@launch
+            }
             val result = runCatching {
                 OneHttpApiClient().ingestVisionFrame(
                     session = session,
@@ -143,6 +155,20 @@ class OneCaptureService : LifecycleService() {
                 updateNotification("Camera active · waiting for network")
             }
         }
+    }
+
+    private suspend fun hasActiveVideoConsent(session: OneSession): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (now - videoConsentCheckedAt < CONSENT_RECHECK_INTERVAL_MS) return videoConsentGranted
+        videoConsentCheckedAt = now
+        videoConsentGranted = runCatching {
+            val latest = OneHttpApiClient().homeConsents(session)
+                .asSequence()
+                .filter { it.subjectUserId == session.userId && it.purpose == "video_capture" }
+                .firstOrNull()
+            latest?.revokedAt == null && latest?.grantedAt != null
+        }.getOrDefault(false)
+        return videoConsentGranted
     }
 
     private suspend fun persistDetections(session: OneSession, selectedCamera: UUID, result: OneVisionFrameResult) {
@@ -284,6 +310,7 @@ class OneCaptureService : LifecycleService() {
         const val JPEG_QUALITY = 70
         const val MAX_LABELS = 20
         const val OBSERVATION_INTERVAL_MS = 30_000L
+        const val CONSENT_RECHECK_INTERVAL_MS = 30_000L
         val DEFAULT_LABELS = listOf("keys", "glasses", "mug", "wallet", "phone")
 
         fun start(context: Context, cameraId: UUID, candidateLabels: List<String> = DEFAULT_LABELS) {

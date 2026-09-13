@@ -44,6 +44,20 @@ data class PairingStartResponse(
     val role: String
 )
 
+/** Pairing response for a camera/microphone publisher device. */
+data class PublisherPairingStartRequest(
+    val label: String,
+    val expiresInSeconds: Long = 600
+)
+
+data class PublisherPairingStartResponse(
+    val pairingId: UUID,
+    val pairingCode: String,
+    val expiresInSeconds: Long,
+    val homeId: UUID,
+    val userId: UUID
+)
+
 data class FamilyInviteAcceptRequest(
     val code: String,
     val displayName: String?
@@ -230,7 +244,8 @@ data class OneRemoteEvent(
     val status: String,
     val explanation: String,
     val confidence: Double,
-    val lastSeenAt: Instant?
+    val lastSeenAt: Instant?,
+    val evidenceIds: List<String> = emptyList()
 )
 
 data class OneRemoteClip(
@@ -321,6 +336,7 @@ class OneApiException(message: String, val statusCode: Int? = null, cause: Throw
 interface OneApiClient {
     suspend fun health(): BackendHealth
     suspend fun startPairing(pairingRequest: PairingStartRequest, bootstrapSecret: String? = null): PairingStartResponse
+    suspend fun startPublisherPairing(session: OneSession, request: PublisherPairingStartRequest): PublisherPairingStartResponse
     suspend fun completePairing(code: String): OneSession
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun createFamilyInvite(session: OneSession, inviteRequest: FamilyInviteRequest): OneFamilyInvite
@@ -345,7 +361,13 @@ interface OneApiClient {
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
     suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
-    suspend fun createCalibration(session: OneSession, cameraId: UUID, mapId: UUID, accuracyM: Double? = null): OneCameraCalibration
+    suspend fun createCalibration(
+        session: OneSession,
+        cameraId: UUID,
+        mapId: UUID,
+        accuracyM: Double? = null,
+        anchorLabels: List<String> = emptyList()
+    ): OneCameraCalibration
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun ingestVisionFrame(
         session: OneSession,
@@ -420,6 +442,31 @@ class OneHttpApiClient(
             homeId = body.requiredUuid("home_id"),
             userId = body.requiredUuid("user_id"),
             role = body.requiredString("role")
+        )
+    }
+
+    override suspend fun startPublisherPairing(
+        session: OneSession,
+        request: PublisherPairingStartRequest
+    ): PublisherPairingStartResponse {
+        val label = request.label.trim().take(120)
+        require(label.isNotBlank()) { "Enter a device label." }
+        val payload = JSONObject()
+            .put("label", label)
+            .put("expires_in_seconds", request.expiresInSeconds.coerceIn(60, 900))
+        val body = request(
+            "/homes/${session.homeId}/pairing/start",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        val pairingCode = body.optNullableString("pairing_code") ?: body.requiredString("code")
+        return PublisherPairingStartResponse(
+            pairingId = body.optNullableUuid("pairing_id") ?: body.requiredUuid("user_id"),
+            pairingCode = pairingCode,
+            expiresInSeconds = body.optLong("expires_in_seconds", request.expiresInSeconds),
+            homeId = body.optNullableUuid("home_id") ?: session.homeId,
+            userId = body.requiredUuid("user_id")
         )
     }
 
@@ -759,15 +806,19 @@ class OneHttpApiClient(
         session: OneSession,
         cameraId: UUID,
         mapId: UUID,
-        accuracyM: Double?
+        accuracyM: Double?,
+        anchorLabels: List<String>
     ): OneCameraCalibration {
+        val anchors = anchorLabels.map(String::trim).filter(String::isNotBlank).distinct().take(10)
         val intrinsics = JSONObject()
             .put("source", "android-manual")
             .put("calibration_mode", "manual-anchors")
+            .put("anchor_labels", JSONArray(anchors))
         val extrinsics = JSONObject()
             .put("source", "android-manual")
             .put("calibration_mode", "manual-anchors")
             .put("coordinate_frame", "map")
+            .put("anchor_count", anchors.size)
         val payload = JSONObject()
             .put("camera_id", cameraId.toString())
             .put("map_id", mapId.toString())
@@ -930,7 +981,8 @@ class OneHttpApiClient(
                         status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
                         explanation = row.optString("explanation").takeIf { it.isNotBlank() } ?: "No explanation provided.",
                         confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
-                        lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull()
+                        lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull(),
+                        evidenceIds = row.evidenceIds()
                     )
                 )
             }
@@ -1274,9 +1326,17 @@ class OneHttpApiClient(
 }
 
 internal val OneRole.wireValue: String
-    get() = if (this == OneRole.RESIDENT) "resident" else "caregiver"
+    get() = when (this) {
+        OneRole.RESIDENT -> "resident"
+        OneRole.PUBLISHER -> "publisher"
+        OneRole.CAREGIVER -> "caregiver"
+    }
 
-internal fun String.toOneRole(): OneRole = if (equals("resident", ignoreCase = true)) OneRole.RESIDENT else OneRole.CAREGIVER
+internal fun String.toOneRole(): OneRole = when {
+    equals("resident", ignoreCase = true) -> OneRole.RESIDENT
+    equals("publisher", ignoreCase = true) -> OneRole.PUBLISHER
+    else -> OneRole.CAREGIVER
+}
 
 private fun JSONObject.requiredString(key: String): String = optString(key).takeIf { it.isNotBlank() } ?: throw OneApiException("ONE API response is missing '$key'.")
 
@@ -1289,6 +1349,18 @@ private fun JSONObject.optNullableString(key: String): String? = optString(key).
 private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
 
 private fun JSONObject.optNullableUuid(key: String): UUID? = optNullableString(key)?.let { value -> runCatching { UUID.fromString(value) }.getOrNull() }
+
+private fun JSONObject.evidenceIds(): List<String> {
+    val array = optJSONArray("evidence_ids") ?: optString("evidence_ids")
+        .takeIf { it.isNotBlank() && it != "null" }
+        ?.let { raw -> runCatching { JSONArray(raw) }.getOrNull() }
+        ?: return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+        }
+    }
+}
 
 private fun JSONObject.optNullableBoolean(key: String): Boolean? {
     if (!has(key) || isNull(key)) return null

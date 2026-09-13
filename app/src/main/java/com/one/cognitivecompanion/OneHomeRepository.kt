@@ -34,7 +34,9 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
     kind = when (type.lowercase()) {
         "check_in", "check-in", "checkin" -> EventKind.CHECK_IN
         "assistant", "assistant_request" -> EventKind.ASSISTANT
-        else -> EventKind.MOVEMENT
+        "object_observed", "object-observed", "observation" -> EventKind.OBJECT_OBSERVED
+        "movement", "motion" -> EventKind.MOVEMENT
+        else -> EventKind.OTHER
     },
     location = "Home · approximate",
     time = lastSeenAt?.toString() ?: "Time unavailable",
@@ -45,5 +47,6 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
         else -> "Low confidence"
     },
     id = id,
-    observedAt = lastSeenAt
+    observedAt = lastSeenAt,
+    evidenceIds = evidenceIds
 )

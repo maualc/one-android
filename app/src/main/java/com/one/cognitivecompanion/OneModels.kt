@@ -3,10 +3,11 @@ package com.one.cognitivecompanion
 import java.time.Instant
 import java.util.UUID
 
-/** The two product experiences exposed by the current iOS MVP. */
+/** Product experiences exposed by ONE. Publisher is a device-only role. */
 enum class OneRole {
     CAREGIVER,
-    RESIDENT
+    RESIDENT,
+    PUBLISHER
 }
 
 enum class AuthStage {
@@ -116,7 +117,9 @@ data class MedicationDose(
 enum class EventKind(val label: String) {
     CHECK_IN("Daily check-in"),
     MOVEMENT("Movement observed"),
-    ASSISTANT("Assistant request")
+    ASSISTANT("Assistant request"),
+    OBJECT_OBSERVED("Object observed"),
+    OTHER("Observed activity")
 }
 
 data class OneEvent(
@@ -126,7 +129,8 @@ data class OneEvent(
     val explanation: String,
     val confidence: String,
     val id: UUID? = null,
-    val observedAt: Instant? = null
+    val observedAt: Instant? = null,
+    val evidenceIds: List<String> = emptyList()
 )
 
 data class ConsentChoice(

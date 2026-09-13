@@ -39,6 +39,7 @@ class OneAppState(
     var onboardingConsentMic by mutableStateOf(false)
     var onboardingConsentMedication by mutableStateOf(false)
     var onboardingConsentFamily by mutableStateOf(false)
+    var onboardingConsentFamilyAssistant by mutableStateOf(false)
     var backendMode by mutableStateOf(false)
     var backendHealth by mutableStateOf<BackendHealth?>(null)
     var backendHealthLoadState by mutableStateOf(OneBackendHealthLoadState.IDLE)
@@ -101,6 +102,8 @@ class OneAppState(
     var familyAssistantResult by mutableStateOf<OneFamilyAssistantResult?>(null)
     var familyAssistantLoadError by mutableStateOf<String?>(null)
     var consentStates by mutableStateOf<Map<String, Boolean>?>(null)
+    /** Latest consent state keyed by the represented subject, never mixed across people. */
+    var consentStatesBySubject by mutableStateOf<Map<UUID, Map<String, Boolean>>>(emptyMap())
     var consentLoadState by mutableStateOf(OneConsentLoadState.IDLE)
     var consentLoadError by mutableStateOf<String?>(null)
     var consentUpdatePurpose by mutableStateOf<String?>(null)
@@ -114,6 +117,9 @@ class OneAppState(
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
+    var publisherPairing by mutableStateOf<PublisherPairingStartResponse?>(null)
+    var publisherPairingLoadState by mutableStateOf(OneFamilyInviteLoadState.IDLE)
+    var publisherPairingError by mutableStateOf<String?>(null)
 
     val isAdmin: Boolean
         get() = session?.backendRole?.equals("admin", ignoreCase = true) == true
@@ -123,13 +129,21 @@ class OneAppState(
             role.equals("admin", ignoreCase = true) || role.equals("caregiver", ignoreCase = true)
         } == true
 
+    private fun consentIsKnownAndDenied(purpose: String, subjectUserId: UUID?): Boolean =
+        backendMode && subjectUserId != null && consentStatesBySubject.containsKey(subjectUserId) &&
+            consentStatesBySubject[subjectUserId]?.get(purpose) != true
+
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
         session = restored.session
         backendMode = true
         roleName = restored.session.role.name
-        selectedTab = if (restored.session.role == OneRole.CAREGIVER) "home" else "today"
-        if (restored.onboardingComplete) {
+        selectedTab = when (restored.session.role) {
+            OneRole.RESIDENT -> "today"
+            OneRole.PUBLISHER -> "publisher"
+            OneRole.CAREGIVER -> "home"
+        }
+        if (restored.onboardingComplete || restored.session.role == OneRole.PUBLISHER) {
             onboardingStep = 3
             authStageName = AuthStage.AUTHENTICATED.name
         } else {
@@ -137,6 +151,7 @@ class OneAppState(
             onboardingConsentMic = false
             onboardingConsentMedication = false
             onboardingConsentFamily = false
+            onboardingConsentFamilyAssistant = false
             onboardingStep = 0
             authStageName = AuthStage.ONBOARDING.name
         }
@@ -205,6 +220,7 @@ class OneAppState(
         familyAssistantResult = null
         familyAssistantLoadError = null
         consentStates = null
+        consentStatesBySubject = emptyMap()
         consentLoadState = OneConsentLoadState.IDLE
         consentLoadError = null
         consentUpdatePurpose = null
@@ -218,12 +234,29 @@ class OneAppState(
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
+        publisherPairing = null
+        publisherPairingLoadState = OneFamilyInviteLoadState.IDLE
+        publisherPairingError = null
+        onboardingConsentRoom = false
+        onboardingConsentMic = false
+        onboardingConsentMedication = false
+        onboardingConsentFamily = false
+        onboardingConsentFamilyAssistant = false
         if (usedBackend && authenticatedSession != null) {
             runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
         }
         roleName = authenticatedSession?.role?.name ?: OneRole.CAREGIVER.name
-        onboardingStep = 0
-        authStageName = AuthStage.ONBOARDING.name
+        onboardingStep = if (authenticatedSession?.role == OneRole.PUBLISHER) 3 else 0
+        authStageName = if (authenticatedSession?.role == OneRole.PUBLISHER) {
+            AuthStage.AUTHENTICATED.name
+        } else {
+            AuthStage.ONBOARDING.name
+        }
+        selectedTab = when (authenticatedSession?.role) {
+            OneRole.RESIDENT -> "today"
+            OneRole.PUBLISHER -> "publisher"
+            else -> "home"
+        }
     }
 
     suspend fun recordOnboardingConsents() {
@@ -233,7 +266,8 @@ class OneAppState(
             "audio_capture" to onboardingConsentMic,
             "video_capture" to onboardingConsentRoom,
             "medication_management" to onboardingConsentMedication,
-            "family_mode" to onboardingConsentFamily
+            "family_mode" to onboardingConsentFamily,
+            "family_assistant" to onboardingConsentFamilyAssistant
         )
         choices.forEach { (purpose, granted) ->
             apiClient.recordConsent(
@@ -254,7 +288,43 @@ class OneAppState(
         }
         onboardingStep = 3
         authStageName = AuthStage.AUTHENTICATED.name
-        selectedTab = if (roleName == OneRole.RESIDENT.name) "today" else "home"
+        selectedTab = when (roleName) {
+            OneRole.RESIDENT.name -> "today"
+            OneRole.PUBLISHER.name -> "publisher"
+            else -> "home"
+        }
+    }
+
+    suspend fun createPublisherPairing(label: String) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
+            publisherPairingError = "Connect a caregiver backend session before pairing a publisher device."
+            return
+        }
+        if (!canManageFamily) {
+            publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
+            publisherPairingError = "Only a caregiver or administrator can pair a publisher device."
+            return
+        }
+        val cleanLabel = label.trim()
+        if (cleanLabel.isBlank()) {
+            publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
+            publisherPairingError = "Enter a label for the publisher device."
+            return
+        }
+        publisherPairingLoadState = OneFamilyInviteLoadState.SUBMITTING
+        publisherPairingError = null
+        try {
+            publisherPairing = apiClient.startPublisherPairing(
+                authenticatedSession,
+                PublisherPairingStartRequest(cleanLabel)
+            )
+            publisherPairingLoadState = OneFamilyInviteLoadState.LOADED
+        } catch (error: Exception) {
+            publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
+            publisherPairingError = error.message ?: "Could not create the publisher pairing code."
+        }
     }
 
     suspend fun checkBackendHealth() {
@@ -448,7 +518,7 @@ class OneAppState(
         }
     }
 
-    suspend fun createManualRoomMap(roomName: String, zoneNames: List<String>) {
+    suspend fun createManualRoomMap(roomName: String, zoneNames: List<String>, coordinateFrame: String = "manual-zones") {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
             mapLoadState = OneMapLoadState.ERROR
@@ -472,7 +542,12 @@ class OneAppState(
         try {
             val room = rooms.orEmpty().firstOrNull { it.name.equals(cleanRoomName, ignoreCase = true) }
                 ?: apiClient.createRoom(authenticatedSession, cleanRoomName)
-            currentRoomMap = apiClient.uploadRoomMap(authenticatedSession, room.id, cleanZones)
+            currentRoomMap = apiClient.uploadRoomMap(
+                authenticatedSession,
+                room.id,
+                cleanZones,
+                coordinateFrame.trim().ifBlank { "manual-zones" }.take(80)
+            )
             rooms = (rooms.orEmpty().filterNot { it.id == room.id } + room).sortedBy { it.name.lowercase() }
             mapLoadState = OneMapLoadState.LOADED
             loadHome()
@@ -482,7 +557,7 @@ class OneAppState(
         }
     }
 
-    suspend fun calibrateCamera(cameraId: UUID, mapId: UUID, accuracyM: Double?) {
+    suspend fun calibrateCamera(cameraId: UUID, mapId: UUID, accuracyM: Double?, anchorLabels: List<String>) {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
             calibrationActionState = OneCalibrationActionState.ERROR
@@ -504,6 +579,11 @@ class OneAppState(
             calibrationActionError = "Refresh the current room map before calibrating."
             return
         }
+        if (anchorLabels.map(String::trim).filter(String::isNotBlank).distinct().size < 3) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Add at least three named anchors (for example door, sofa and table)."
+            return
+        }
         if (accuracyM != null && (accuracyM.isNaN() || accuracyM < 0.0 || accuracyM > 100.0)) {
             calibrationActionState = OneCalibrationActionState.ERROR
             calibrationActionError = "Accuracy must be between 0 and 100 metres."
@@ -512,7 +592,7 @@ class OneAppState(
         calibrationActionState = OneCalibrationActionState.SUBMITTING
         calibrationActionError = null
         try {
-            lastCalibration = apiClient.createCalibration(authenticatedSession, cameraId, mapId, accuracyM)
+            lastCalibration = apiClient.createCalibration(authenticatedSession, cameraId, mapId, accuracyM, anchorLabels)
             calibrationActionState = OneCalibrationActionState.LOADED
         } catch (error: Exception) {
             calibrationActionState = OneCalibrationActionState.ERROR
@@ -803,6 +883,11 @@ class OneAppState(
             medicationPlanActionError = "Select a person before creating a medication plan."
             return
         }
+        if (consentIsKnownAndDenied("medication_management", subjectUserId)) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Active medication_management consent is required for this person."
+            return
+        }
         val cleanName = name.trim()
         val cleanDose = dose.trim()
         val cleanSchedule = schedule.trim()
@@ -853,6 +938,11 @@ class OneAppState(
             medicationPlanActionError = "Only caregivers can update medication plans."
             return
         }
+        if (consentIsKnownAndDenied("medication_management", plan.subjectUserId)) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Active medication_management consent is required for this person."
+            return
+        }
         val cleanName = name.trim()
         val cleanDose = dose.trim()
         val cleanSchedule = schedule.trim()
@@ -893,6 +983,10 @@ class OneAppState(
         val wireStatus = status.medicationCheckInValue()
         if (!backendMode || authenticatedSession == null || planId == null || scheduledFor == null || wireStatus == null) {
             medicationActionError = "This reminder is not linked to a backend check-in."
+            return
+        }
+        if (consentIsKnownAndDenied("medication_management", selectedFamilySubjectId ?: authenticatedSession.userId)) {
+            medicationActionError = "Active medication_management consent is required for this person."
             return
         }
 
@@ -983,6 +1077,11 @@ class OneAppState(
             familyAssistantLoadError = "Select a person before asking the family assistant."
             return
         }
+        if (consentIsKnownAndDenied("family_assistant", subjectUserId)) {
+            familyAssistantLoadState = OneFamilyAssistantLoadState.ERROR
+            familyAssistantLoadError = "Active family_assistant consent is required for this person."
+            return
+        }
         familyAssistantLoadState = OneFamilyAssistantLoadState.SUBMITTING
         familyAssistantLoadError = null
         try {
@@ -1009,13 +1108,15 @@ class OneAppState(
         consentLoadState = OneConsentLoadState.LOADING
         consentLoadError = null
         try {
-            val latestByPurpose = linkedMapOf<String, Boolean>()
+            val latestBySubject = linkedMapOf<UUID, LinkedHashMap<String, Boolean>>()
             apiClient.homeConsents(authenticatedSession).forEach { consent ->
-                if (!latestByPurpose.containsKey(consent.purpose)) {
-                    latestByPurpose[consent.purpose] = consent.revokedAt == null
+                val subject = latestBySubject.getOrPut(consent.subjectUserId) { linkedMapOf() }
+                if (!subject.containsKey(consent.purpose)) {
+                    subject[consent.purpose] = consent.revokedAt == null
                 }
             }
-            consentStates = latestByPurpose
+            consentStatesBySubject = latestBySubject
+            consentStates = latestBySubject[authenticatedSession.userId].orEmpty()
             consentLoadState = OneConsentLoadState.LOADED
         } catch (error: Exception) {
             consentLoadState = OneConsentLoadState.ERROR
@@ -1023,7 +1124,7 @@ class OneAppState(
         }
     }
 
-    suspend fun updateConsent(purpose: String, granted: Boolean) {
+    suspend fun updateConsent(purpose: String, granted: Boolean, subjectUserId: UUID? = session?.userId) {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) return
         consentUpdatePurpose = purpose
@@ -1034,11 +1135,36 @@ class OneAppState(
                 consentRequest = ConsentRequest(
                     purpose = purpose,
                     policyVersion = "2026-09",
-                    granted = granted
+                    granted = granted,
+                    subjectUserId = subjectUserId
                 )
             )
-            consentStates = (consentStates ?: emptyMap()) + (purpose to granted)
-            if (purpose == "medication_management" && !granted) OneMedicationScheduler.cancelAll(appContext)
+            val subject = subjectUserId ?: authenticatedSession.userId
+            val updatedForSubject = (consentStatesBySubject[subject].orEmpty() + (purpose to granted))
+            consentStatesBySubject = consentStatesBySubject + (subject to updatedForSubject)
+            if (subject == authenticatedSession.userId) consentStates = updatedForSubject
+            if (!granted) {
+                when (purpose) {
+                    "video_capture" -> {
+                        OneCaptureService.stop(appContext)
+                        OneLiveKitPublisherService.stop(appContext)
+                    }
+                    "medication_management" -> {
+                        OneMedicationScheduler.cancelAll(appContext)
+                        if (subject == selectedFamilySubjectId || subject == authenticatedSession.userId) {
+                            medicationDoses = null
+                            medicationPlans = null
+                            medicationCheckIns = null
+                        }
+                    }
+                    "family_mode" -> {
+                        if (subject == authenticatedSession.userId) familyMembers = null
+                    }
+                    "family_assistant" -> {
+                        if (subject == selectedFamilySubjectId) familyAssistantResult = null
+                    }
+                }
+            }
             consentLoadState = OneConsentLoadState.LOADED
         } catch (error: Exception) {
             consentUpdateError = error.message ?: "Could not update this privacy setting."
@@ -1154,6 +1280,7 @@ class OneAppState(
         familyAssistantResult = null
         familyAssistantLoadError = null
         consentStates = null
+        consentStatesBySubject = emptyMap()
         consentLoadState = OneConsentLoadState.IDLE
         consentLoadError = null
         consentUpdatePurpose = null
@@ -1167,6 +1294,9 @@ class OneAppState(
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
+        publisherPairing = null
+        publisherPairingLoadState = OneFamilyInviteLoadState.IDLE
+        publisherPairingError = null
         medicationCheckIns = null
         medicationCheckInsLoadState = OneMedicationLoadState.IDLE
         medicationCheckInsLoadError = null

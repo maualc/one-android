@@ -7,16 +7,18 @@ import org.junit.Test
 
 class OneApiTest {
     @Test
-    fun backendRolesMapToTheTwoProductExperiences() {
+    fun backendRolesMapToTheProductExperiences() {
         assertEquals(OneRole.RESIDENT, "resident".toOneRole())
         assertEquals(OneRole.CAREGIVER, "admin".toOneRole())
         assertEquals(OneRole.CAREGIVER, "caregiver".toOneRole())
+        assertEquals(OneRole.PUBLISHER, "publisher".toOneRole())
     }
 
     @Test
     fun roleWireValuesMatchTheBackendContract() {
         assertEquals("resident", OneRole.RESIDENT.wireValue)
         assertEquals("caregiver", OneRole.CAREGIVER.wireValue)
+        assertEquals("publisher", OneRole.PUBLISHER.wireValue)
     }
 
     @Test

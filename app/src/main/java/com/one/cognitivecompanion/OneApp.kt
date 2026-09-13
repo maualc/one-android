@@ -188,6 +188,7 @@ fun OneApp() {
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "account") {
             appState.loadConsents()
+            appState.checkBackendHealth()
         }
     }
 
@@ -328,6 +329,11 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             isBackend = appState.backendMode,
+                            apiBaseUrl = apiClient.apiBaseUrl,
+                            backendHealth = appState.backendHealth,
+                            backendHealthLoadState = appState.backendHealthLoadState,
+                            backendHealthError = appState.backendHealthError,
+                            onBackendHealthRetry = { coroutineScope.launch { appState.checkBackendHealth() } },
                             consentStates = appState.consentStates,
                             consentLoadState = appState.consentLoadState,
                             consentLoadError = appState.consentLoadError,
@@ -378,6 +384,11 @@ fun OneApp() {
                         "account" -> AccountScreen(
                             role = role,
                             isBackend = appState.backendMode,
+                            apiBaseUrl = apiClient.apiBaseUrl,
+                            backendHealth = appState.backendHealth,
+                            backendHealthLoadState = appState.backendHealthLoadState,
+                            backendHealthError = appState.backendHealthError,
+                            onBackendHealthRetry = { coroutineScope.launch { appState.checkBackendHealth() } },
                             consentStates = appState.consentStates,
                             consentLoadState = appState.consentLoadState,
                             consentLoadError = appState.consentLoadError,
@@ -2223,6 +2234,11 @@ private fun String.humanLabel(): String = replace('_', ' ').replace('-', ' ').re
 private fun AccountScreen(
     role: OneRole,
     isBackend: Boolean,
+    apiBaseUrl: String,
+    backendHealth: BackendHealth?,
+    backendHealthLoadState: OneBackendHealthLoadState,
+    backendHealthError: String?,
+    onBackendHealthRetry: () -> Unit,
     consentStates: Map<String, Boolean>?,
     consentLoadState: OneConsentLoadState,
     consentLoadError: String?,
@@ -2259,6 +2275,47 @@ private fun AccountScreen(
 
     ScreenScroll {
         ScreenHeader("ACCOUNT", "Privacy and control.", "Your home, your choices.")
+        SectionHeading("BACKEND", "Connection status")
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("Configured endpoint", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(apiBaseUrl, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                when {
+                    !isBackend -> {
+                        Text("Demo mode · no backend session is connected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    backendHealthLoadState == OneBackendHealthLoadState.LOADING && backendHealth == null -> {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("Checking API health…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    backendHealthLoadState == OneBackendHealthLoadState.ERROR && backendHealth == null -> {
+                        Text(backendHealthError ?: "ONE could not reach the backend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry backend check") }
+                    }
+                    backendHealth != null -> {
+                        val health = backendHealth
+                        val statusTint = if (health.status.equals("ok", ignoreCase = true)) OneMint else OneAmber
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(9.dp).background(statusTint, CircleShape))
+                            Spacer(Modifier.width(7.dp))
+                            Text("API ${health.status.humanLabel()}", style = MaterialTheme.typography.titleSmall, color = statusTint, fontWeight = FontWeight.SemiBold)
+                        }
+                        Text("Database: ${health.databaseStatus ?: health.database ?: "unknown"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        health.localInferenceModel?.let { model ->
+                            Text("Inference model: $model", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (backendHealthLoadState == OneBackendHealthLoadState.ERROR) {
+                            Text(backendHealthError ?: "The last health check failed; showing the previous result.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                            OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Check again") }
+                        }
+                    }
+                }
+            }
+        }
         if (isBackend) {
             when {
                 consentLoadState == OneConsentLoadState.LOADING && consentStates == null -> {

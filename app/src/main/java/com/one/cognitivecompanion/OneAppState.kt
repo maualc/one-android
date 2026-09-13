@@ -36,6 +36,9 @@ class OneAppState(
     var onboardingConsentMedication by mutableStateOf(false)
     var onboardingConsentFamily by mutableStateOf(false)
     var backendMode by mutableStateOf(false)
+    var backendHealth by mutableStateOf<BackendHealth?>(null)
+    var backendHealthLoadState by mutableStateOf(OneBackendHealthLoadState.IDLE)
+    var backendHealthError by mutableStateOf<String?>(null)
     var session by mutableStateOf<OneSession?>(null)
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
@@ -122,6 +125,9 @@ class OneAppState(
     fun applyAuthenticatedSession(authenticatedSession: OneSession?, usedBackend: Boolean) {
         session = authenticatedSession
         backendMode = usedBackend
+        backendHealth = null
+        backendHealthLoadState = OneBackendHealthLoadState.IDLE
+        backendHealthError = null
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
@@ -213,6 +219,24 @@ class OneAppState(
         onboardingStep = 3
         authStageName = AuthStage.AUTHENTICATED.name
         selectedTab = if (roleName == OneRole.RESIDENT.name) "today" else "home"
+    }
+
+    suspend fun checkBackendHealth() {
+        if (!backendMode) {
+            backendHealth = null
+            backendHealthLoadState = OneBackendHealthLoadState.IDLE
+            backendHealthError = null
+            return
+        }
+        backendHealthLoadState = OneBackendHealthLoadState.LOADING
+        backendHealthError = null
+        try {
+            backendHealth = apiClient.health()
+            backendHealthLoadState = OneBackendHealthLoadState.LOADED
+        } catch (error: Exception) {
+            backendHealthLoadState = OneBackendHealthLoadState.ERROR
+            backendHealthError = error.message ?: "Could not reach the ONE backend."
+        }
     }
 
     suspend fun loadHome() {
@@ -820,6 +844,9 @@ class OneAppState(
         withContext(Dispatchers.IO) { runCatching { secureStore.clear() } }
         session = null
         backendMode = false
+        backendHealth = null
+        backendHealthLoadState = OneBackendHealthLoadState.IDLE
+        backendHealthError = null
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null

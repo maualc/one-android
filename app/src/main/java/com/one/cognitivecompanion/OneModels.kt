@@ -50,6 +50,13 @@ enum class OneDeletionLoadState {
     ERROR
 }
 
+enum class OneBackendHealthLoadState {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR
+}
+
 enum class OneFamilyInviteLoadState {
     IDLE,
     SUBMITTING,

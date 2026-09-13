@@ -203,6 +203,31 @@ data class OneRemoteMedicationReminder(
     val assignedCaregiverName: String?
 )
 
+data class MedicationPlanRequest(
+    val subjectUserId: UUID,
+    val name: String,
+    val dose: String,
+    val schedule: String,
+    val instructions: String = "",
+    val active: Boolean = true,
+    val assignedCaregiverId: UUID? = null
+)
+
+data class OneMedicationPlan(
+    val id: UUID,
+    val homeId: UUID?,
+    val subjectUserId: UUID,
+    val name: String,
+    val dose: String,
+    val schedule: String,
+    val instructions: String,
+    val active: Boolean,
+    val version: Int,
+    val assignedCaregiverId: UUID?,
+    val createdAt: Instant?,
+    val updatedAt: Instant?
+)
+
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
 
 interface OneApiClient {
@@ -235,6 +260,7 @@ interface OneApiClient {
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
+    suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
     suspend fun markMedicationCheckIn(
         session: OneSession,
         planId: UUID,
@@ -676,6 +702,26 @@ class OneHttpApiClient(
         }
     }
 
+    override suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan {
+        val payload = JSONObject()
+            .put("subject_user_id", request.subjectUserId.toString())
+            .put("name", request.name)
+            .put("dose", request.dose)
+            .put("schedule", request.schedule)
+            .put("instructions", request.instructions)
+            .put("active", request.active)
+        request.assignedCaregiverId?.let { payload.put("assigned_caregiver_id", it.toString()) }
+        return parseMedicationPlan(
+            request(
+                "/homes/${session.homeId}/medication-plans",
+                "POST",
+                payload,
+                token = session.accessToken
+            ),
+            session.homeId
+        )
+    }
+
     override suspend fun markMedicationCheckIn(
         session: OneSession,
         planId: UUID,
@@ -760,6 +806,21 @@ class OneHttpApiClient(
             createdAt = body.optNullableString("created_at")?.toInstantOrNull()
         )
     }
+
+    private fun parseMedicationPlan(body: JSONObject, homeId: UUID): OneMedicationPlan = OneMedicationPlan(
+        id = body.requiredUuid("id"),
+        homeId = body.optNullableUuid("home_id") ?: homeId,
+        subjectUserId = body.requiredUuid("subject_user_id"),
+        name = body.requiredString("name"),
+        dose = body.requiredString("dose"),
+        schedule = body.requiredString("schedule"),
+        instructions = body.optString("instructions"),
+        active = body.optNullableBoolean("active") ?: true,
+        version = body.optInt("version", 1),
+        assignedCaregiverId = body.optNullableUuid("assigned_caregiver_id"),
+        createdAt = body.optNullableString("created_at")?.toInstantOrNull(),
+        updatedAt = body.optNullableString("updated_at")?.toInstantOrNull()
+    )
 
     private suspend fun request(
         path: String,

@@ -12,6 +12,13 @@ enum class OneMedicationLoadState {
     ERROR
 }
 
+enum class OneMedicationPlanActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 interface OneMedicationRepository {
     suspend fun load(session: OneSession, subjectUserId: UUID? = null): List<MedicationDose>
 }

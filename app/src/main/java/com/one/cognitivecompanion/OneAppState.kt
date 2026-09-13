@@ -60,6 +60,9 @@ class OneAppState(
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
+    var medicationPlanActionState by mutableStateOf(OneMedicationPlanActionState.IDLE)
+    var lastMedicationPlan by mutableStateOf<OneMedicationPlan?>(null)
+    var medicationPlanActionError by mutableStateOf<String?>(null)
     var medicationActionKey by mutableStateOf<String?>(null)
     var medicationActionError by mutableStateOf<String?>(null)
     var assistantLoadState by mutableStateOf(OneAssistantLoadState.IDLE)
@@ -133,6 +136,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationPlanActionState = OneMedicationPlanActionState.IDLE
+        lastMedicationPlan = null
+        medicationPlanActionError = null
         medicationActionKey = null
         medicationActionError = null
         assistantLoadState = OneAssistantLoadState.IDLE
@@ -413,6 +419,54 @@ class OneAppState(
         }
     }
 
+    suspend fun createMedicationPlan(name: String, dose: String, schedule: String, instructions: String) {
+        val authenticatedSession = session
+        val subjectUserId = selectedFamilySubjectId
+        if (!backendMode || authenticatedSession == null) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Connect a backend session before creating a medication plan."
+            return
+        }
+        if (!canManageFamily) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Only caregivers can create medication plans."
+            return
+        }
+        if (subjectUserId == null) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Select a person before creating a medication plan."
+            return
+        }
+        val cleanName = name.trim()
+        val cleanDose = dose.trim()
+        val cleanSchedule = schedule.trim()
+        val cleanInstructions = instructions.trim()
+        if (cleanName.isBlank() || cleanDose.isBlank() || cleanSchedule.isBlank()) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = "Name, dose and schedule are required."
+            return
+        }
+        medicationPlanActionState = OneMedicationPlanActionState.SUBMITTING
+        medicationPlanActionError = null
+        try {
+            lastMedicationPlan = apiClient.createMedicationPlan(
+                authenticatedSession,
+                MedicationPlanRequest(
+                    subjectUserId = subjectUserId,
+                    name = cleanName,
+                    dose = cleanDose,
+                    schedule = cleanSchedule,
+                    instructions = cleanInstructions
+                )
+            )
+            medicationPlanActionState = OneMedicationPlanActionState.LOADED
+            loadMedicationReminders(subjectUserId)
+        } catch (error: Exception) {
+            medicationPlanActionState = OneMedicationPlanActionState.ERROR
+            medicationPlanActionError = error.message ?: "Could not create the medication plan."
+        }
+    }
+
     suspend fun updateMedicationDose(dose: MedicationDose, status: DoseStatus) {
         val authenticatedSession = session
         val planId = dose.planId
@@ -612,6 +666,9 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationPlanActionState = OneMedicationPlanActionState.IDLE
+        lastMedicationPlan = null
+        medicationPlanActionError = null
         medicationActionKey = null
         medicationActionError = null
         assistantLoadState = OneAssistantLoadState.IDLE

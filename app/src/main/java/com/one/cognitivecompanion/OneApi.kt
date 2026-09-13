@@ -25,7 +25,8 @@ data class OneSession(
     val homeId: UUID,
     val userId: UUID,
     val role: OneRole,
-    val expiresAt: Instant?
+    val expiresAt: Instant?,
+    val backendRole: String = role.wireValue
 )
 
 data class PairingStartRequest(
@@ -68,6 +69,11 @@ data class OneDataExport(
     val homeId: UUID,
     val exportedAt: Instant?,
     val recordCounts: Map<String, Int>
+)
+
+data class OneDataDeletion(
+    val requestId: UUID?,
+    val status: String
 )
 
 data class BackendHealth(
@@ -176,6 +182,7 @@ interface OneApiClient {
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
     suspend fun requestDataExport(session: OneSession): OneDataExport
+    suspend fun requestDataDeletion(session: OneSession): OneDataDeletion
     suspend fun logout(session: OneSession)
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
@@ -250,10 +257,11 @@ class OneHttpApiClient(
         val homeId = body.requiredUuid("home_id")
         val userId = body.requiredUuid("user_id")
         val expiresAt = body.optLong("expires_in", -1).takeIf { it >= 0 }?.let { Instant.now().plusSeconds(it) }
-        val role = runCatching {
+        val backendRole = runCatching {
             request("/me", "GET", token = accessToken).getJSONObject("actor").optString("role")
-        }.getOrDefault("caregiver").toOneRole()
-        return OneSession(accessToken, homeId, userId, role, expiresAt)
+        }.getOrDefault("caregiver")
+        val role = backendRole.toOneRole()
+        return OneSession(accessToken, homeId, userId, role, expiresAt, backendRole)
     }
 
     override suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest) {
@@ -306,6 +314,14 @@ class OneHttpApiClient(
             homeId = body.optNullableUuid("home_id") ?: session.homeId,
             exportedAt = body.optNullableString("exported_at")?.toInstantOrNull(),
             recordCounts = recordCounts
+        )
+    }
+
+    override suspend fun requestDataDeletion(session: OneSession): OneDataDeletion {
+        val body = request("/homes/${session.homeId}/privacy/delete", "POST", token = session.accessToken)
+        return OneDataDeletion(
+            requestId = body.optNullableUuid("request_id"),
+            status = body.optString("status").takeIf { it.isNotBlank() } ?: "unknown"
         )
     }
 

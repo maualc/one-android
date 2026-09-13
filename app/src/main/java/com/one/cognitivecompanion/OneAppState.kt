@@ -63,9 +63,15 @@ class OneAppState(
     var exportLoadState by mutableStateOf(OneExportLoadState.IDLE)
     var dataExport by mutableStateOf<OneDataExport?>(null)
     var exportLoadError by mutableStateOf<String?>(null)
+    var deletionLoadState by mutableStateOf(OneDeletionLoadState.IDLE)
+    var dataDeletion by mutableStateOf<OneDataDeletion?>(null)
+    var deletionLoadError by mutableStateOf<String?>(null)
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
+
+    val isAdmin: Boolean
+        get() = session?.backendRole?.equals("admin", ignoreCase = true) == true
 
     suspend fun restoreSession() {
         val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
@@ -116,6 +122,9 @@ class OneAppState(
         exportLoadState = OneExportLoadState.IDLE
         dataExport = null
         exportLoadError = null
+        deletionLoadState = OneDeletionLoadState.IDLE
+        dataDeletion = null
+        deletionLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
@@ -419,6 +428,29 @@ class OneAppState(
         }
     }
 
+    suspend fun requestDataDeletion() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            deletionLoadState = OneDeletionLoadState.ERROR
+            deletionLoadError = "Connect a backend session before requesting deletion."
+            return
+        }
+        if (!isAdmin) {
+            deletionLoadState = OneDeletionLoadState.ERROR
+            deletionLoadError = "Only the household administrator can request deletion."
+            return
+        }
+        deletionLoadState = OneDeletionLoadState.SUBMITTING
+        deletionLoadError = null
+        try {
+            dataDeletion = apiClient.requestDataDeletion(authenticatedSession)
+            deletionLoadState = OneDeletionLoadState.LOADED
+        } catch (error: Exception) {
+            deletionLoadState = OneDeletionLoadState.ERROR
+            deletionLoadError = error.message ?: "Could not request household deletion."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -454,6 +486,9 @@ class OneAppState(
         exportLoadState = OneExportLoadState.IDLE
         dataExport = null
         exportLoadError = null
+        deletionLoadState = OneDeletionLoadState.IDLE
+        dataDeletion = null
+        deletionLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null

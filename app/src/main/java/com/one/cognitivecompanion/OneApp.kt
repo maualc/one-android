@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -296,6 +297,11 @@ fun OneApp() {
                             dataExport = appState.dataExport,
                             exportLoadError = appState.exportLoadError,
                             onExport = { coroutineScope.launch { appState.requestDataExport() } },
+                            isAdmin = appState.isAdmin,
+                            deletionLoadState = appState.deletionLoadState,
+                            dataDeletion = appState.dataDeletion,
+                            deletionLoadError = appState.deletionLoadError,
+                            onDelete = { coroutineScope.launch { appState.requestDataDeletion() } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -335,6 +341,11 @@ fun OneApp() {
                             dataExport = appState.dataExport,
                             exportLoadError = appState.exportLoadError,
                             onExport = { coroutineScope.launch { appState.requestDataExport() } },
+                            isAdmin = appState.isAdmin,
+                            deletionLoadState = appState.deletionLoadState,
+                            dataDeletion = appState.dataDeletion,
+                            deletionLoadError = appState.deletionLoadError,
+                            onDelete = { coroutineScope.launch { appState.requestDataDeletion() } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -1583,6 +1594,11 @@ private fun AccountScreen(
     dataExport: OneDataExport?,
     exportLoadError: String?,
     onExport: () -> Unit,
+    isAdmin: Boolean,
+    deletionLoadState: OneDeletionLoadState,
+    dataDeletion: OneDataDeletion?,
+    deletionLoadError: String?,
+    onDelete: () -> Unit,
     onRoleChange: (OneRole) -> Unit,
     onSignOut: () -> Unit
 ) {
@@ -1590,7 +1606,9 @@ private fun AccountScreen(
     var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
     var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
     var demoFamilyConsent by rememberSaveable { mutableStateOf(false) }
+    var showDeletionConfirmation by rememberSaveable { mutableStateOf(false) }
     val canEditConsents = !isBackend || consentLoadState == OneConsentLoadState.LOADED
+    val canRequestDeletion = isBackend && isAdmin && deletionLoadState != OneDeletionLoadState.SUBMITTING && dataDeletion == null
     val consentValue: (String, Boolean) -> Boolean = { purpose, demoValue ->
         if (isBackend) consentStates?.get(purpose) ?: false else demoValue
     }
@@ -1675,11 +1693,68 @@ private fun AccountScreen(
                 "${export.exportedAt ?: "Timestamp unavailable"} · $totalRecords records${recordSummary.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}. The payload is not stored on this device."
             )
         }
-        OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Request deletion") }
+        OutlinedButton(
+            onClick = { showDeletionConfirmation = true },
+            enabled = canRequestDeletion,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                when {
+                    deletionLoadState == OneDeletionLoadState.SUBMITTING -> "Deleting…"
+                    dataDeletion != null -> "Deletion completed"
+                    else -> "Request deletion"
+                }
+            )
+        }
+        when {
+            !isBackend -> Text(
+                "Connect a backend session to manage household deletion.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            !isAdmin -> Text(
+                "Only the household administrator can request deletion.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        deletionLoadError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        dataDeletion?.let { deletion ->
+            val status = deletion.status.replace('_', ' ').replaceFirstChar { it.uppercase() }
+            InfoCard(
+                "Deletion completed",
+                "Status: $status · Request ${deletion.requestId ?: "recorded"}. Household data is no longer available."
+            )
+        }
         TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
-            Text("Preview signed-out flow")
+            Text(if (dataDeletion != null) "Finish and sign out" else "Preview signed-out flow")
         }
         Text("Observations support human attention. They are not medical advice or a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+    }
+    if (showDeletionConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeletionConfirmation = false },
+            title = { Text("Delete household data?") },
+            text = {
+                Text("This permanently removes the household records, maps, clips, events and medication history. This cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeletionConfirmation = false
+                        onDelete()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete permanently")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeletionConfirmation = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 

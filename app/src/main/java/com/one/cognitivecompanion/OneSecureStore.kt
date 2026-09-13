@@ -28,6 +28,7 @@ internal object OneSessionEnvelopeCodec {
             .put("home_id", session.homeId.toString())
             .put("user_id", session.userId.toString())
             .put("role", session.role.wireValue)
+            .put("backend_role", session.backendRole)
             .put("expires_at", session.expiresAt?.epochSecond ?: JSONObject.NULL)
             .put("onboarding_complete", stored.onboardingComplete)
             .toString()
@@ -44,13 +45,16 @@ internal object OneSessionEnvelopeCodec {
         } else {
             Instant.ofEpochSecond(body.getLong("expires_at"))
         }
+        val role = body.optString("role").toOneRole()
+        val backendRole = body.optString("backend_role").takeIf { it.isNotBlank() } ?: role.wireValue
         StoredOneSession(
             session = OneSession(
                 accessToken = accessToken,
                 homeId = homeId,
                 userId = userId,
-                role = body.optString("role").toOneRole(),
-                expiresAt = expiresAt
+                role = role,
+                expiresAt = expiresAt,
+                backendRole = backendRole
             ),
             onboardingComplete = body.optBoolean("onboarding_complete", false)
         )

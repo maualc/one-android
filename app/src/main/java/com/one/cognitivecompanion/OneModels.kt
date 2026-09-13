@@ -22,6 +22,13 @@ enum class OneAssistantLoadState {
     ERROR
 }
 
+enum class OneFamilyAssistantLoadState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 enum class OneConsentLoadState {
     IDLE,
     LOADING,

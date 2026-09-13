@@ -68,6 +68,9 @@ class OneAppState(
     var assistantLoadState by mutableStateOf(OneAssistantLoadState.IDLE)
     var assistantResult by mutableStateOf<OneCheckInResult?>(null)
     var assistantLoadError by mutableStateOf<String?>(null)
+    var familyAssistantLoadState by mutableStateOf(OneFamilyAssistantLoadState.IDLE)
+    var familyAssistantResult by mutableStateOf<OneFamilyAssistantResult?>(null)
+    var familyAssistantLoadError by mutableStateOf<String?>(null)
     var consentStates by mutableStateOf<Map<String, Boolean>?>(null)
     var consentLoadState by mutableStateOf(OneConsentLoadState.IDLE)
     var consentLoadError by mutableStateOf<String?>(null)
@@ -144,6 +147,9 @@ class OneAppState(
         assistantLoadState = OneAssistantLoadState.IDLE
         assistantResult = null
         assistantLoadError = null
+        familyAssistantLoadState = OneFamilyAssistantLoadState.IDLE
+        familyAssistantResult = null
+        familyAssistantLoadError = null
         consentStates = null
         consentLoadState = OneConsentLoadState.IDLE
         consentLoadError = null
@@ -362,6 +368,9 @@ class OneAppState(
         familySubjectInitialized = true
         medicationDoses = null
         medicationActionError = null
+        familyAssistantLoadState = OneFamilyAssistantLoadState.IDLE
+        familyAssistantResult = null
+        familyAssistantLoadError = null
         loadMedicationReminders()
     }
 
@@ -546,6 +555,39 @@ class OneAppState(
         }
     }
 
+    suspend fun submitFamilyAssistant(message: String) {
+        val authenticatedSession = session
+        val subjectUserId = selectedFamilySubjectId
+        if (!backendMode || authenticatedSession == null) {
+            familyAssistantLoadState = OneFamilyAssistantLoadState.ERROR
+            familyAssistantLoadError = "Connect a backend session before using the family assistant."
+            return
+        }
+        if (!canManageFamily) {
+            familyAssistantLoadState = OneFamilyAssistantLoadState.ERROR
+            familyAssistantLoadError = "Only caregivers can use the family assistant."
+            return
+        }
+        if (subjectUserId == null) {
+            familyAssistantLoadState = OneFamilyAssistantLoadState.ERROR
+            familyAssistantLoadError = "Select a person before asking the family assistant."
+            return
+        }
+        familyAssistantLoadState = OneFamilyAssistantLoadState.SUBMITTING
+        familyAssistantLoadError = null
+        try {
+            familyAssistantResult = apiClient.familyAssistant(
+                session = authenticatedSession,
+                message = message.trim().ifBlank { "Provide a concise administrative summary." },
+                subjectUserId = subjectUserId
+            )
+            familyAssistantLoadState = OneFamilyAssistantLoadState.LOADED
+        } catch (error: Exception) {
+            familyAssistantLoadState = OneFamilyAssistantLoadState.ERROR
+            familyAssistantLoadError = error.message ?: "Could not prepare the family assistant summary."
+        }
+    }
+
     suspend fun loadConsents() {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
@@ -674,6 +716,9 @@ class OneAppState(
         assistantLoadState = OneAssistantLoadState.IDLE
         assistantResult = null
         assistantLoadError = null
+        familyAssistantLoadState = OneFamilyAssistantLoadState.IDLE
+        familyAssistantResult = null
+        familyAssistantLoadError = null
         consentStates = null
         consentLoadState = OneConsentLoadState.IDLE
         consentLoadError = null

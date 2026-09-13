@@ -291,6 +291,10 @@ fun OneApp() {
                             onCreateMedicationPlan = { name, dose, schedule, instructions ->
                                 coroutineScope.launch { appState.createMedicationPlan(name, dose, schedule, instructions) }
                             },
+                            familyAssistantLoadState = appState.familyAssistantLoadState,
+                            familyAssistantResult = appState.familyAssistantResult,
+                            familyAssistantLoadError = appState.familyAssistantLoadError,
+                            onFamilyAssistantSubmit = { message -> coroutineScope.launch { appState.submitFamilyAssistant(message) } },
                             medicationActionKey = appState.medicationActionKey,
                             medicationActionError = appState.medicationActionError,
                             onMedicationStatusChange = { dose, status ->
@@ -1267,6 +1271,10 @@ private fun FamilyScreen(
     lastMedicationPlan: OneMedicationPlan?,
     medicationPlanActionError: String?,
     onCreateMedicationPlan: (String, String, String, String) -> Unit,
+    familyAssistantLoadState: OneFamilyAssistantLoadState,
+    familyAssistantResult: OneFamilyAssistantResult?,
+    familyAssistantLoadError: String?,
+    onFamilyAssistantSubmit: (String) -> Unit,
     medicationActionKey: String?,
     medicationActionError: String?,
     onMedicationStatusChange: (MedicationDose, DoseStatus) -> Unit
@@ -1283,6 +1291,7 @@ private fun FamilyScreen(
     var planDose by rememberSaveable { mutableStateOf("") }
     var planSchedule by rememberSaveable { mutableStateOf("08:00") }
     var planInstructions by rememberSaveable { mutableStateOf("") }
+    var familyAssistantMessage by rememberSaveable { mutableStateOf("") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
     val canCreateMedicationPlan = isBackend && selectedFamilySubjectId != null && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
@@ -1414,6 +1423,46 @@ private fun FamilyScreen(
             }
         }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SectionHeading("FAMILY ASSISTANT", "Bounded administrative summary")
+        if (!isBackend) {
+            InfoCard("Backend-only assistant", "Connect a backend to ask about the selected person's medication plans and check-ins.")
+        } else {
+            OutlinedTextField(
+                value = familyAssistantMessage,
+                onValueChange = { familyAssistantMessage = it.take(1_000) },
+                label = { Text("Question (optional)") },
+                placeholder = { Text("What should I review with the care team?") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = { onFamilyAssistantSubmit(familyAssistantMessage) },
+                enabled = selectedFamilySubjectId != null && familyAssistantLoadState != OneFamilyAssistantLoadState.SUBMITTING,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (familyAssistantLoadState == OneFamilyAssistantLoadState.SUBMITTING) "Preparing summary…" else "Ask family assistant")
+            }
+            Text("Only the selected person's active medication plans and bounded check-ins are sent. An active family-assistant consent is required.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            familyAssistantLoadError?.let { error ->
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            familyAssistantResult?.let { result ->
+                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("Summary for $selectedSubjectName", style = MaterialTheme.typography.titleMedium)
+                        Text(result.summary, style = MaterialTheme.typography.bodyLarge)
+                        Text("Next action: ${result.nextAction}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Limitations: ${result.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (result.evidenceIds.isNotEmpty()) {
+                            Text("Bounded evidence: ${result.evidenceIds.size} record(s).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (result.degraded) {
+                            Text("This response used a limited local fallback.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                        }
+                    }
+                }
+            }
+        }
     }
     if (showInviteDialog) {
         AlertDialog(
@@ -1992,6 +2041,7 @@ private fun AccountScreen(
     var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
     var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
     var demoFamilyConsent by rememberSaveable { mutableStateOf(false) }
+    var demoFamilyAssistantConsent by rememberSaveable { mutableStateOf(false) }
     var showDeletionConfirmation by rememberSaveable { mutableStateOf(false) }
     val canEditConsents = !isBackend || consentLoadState == OneConsentLoadState.LOADED
     val canRequestDeletion = isBackend && isAdmin && deletionLoadState != OneDeletionLoadState.SUBMITTING && dataDeletion == null
@@ -2044,6 +2094,13 @@ private fun AccountScreen(
                     enabled = consentValue("family_mode", demoFamilyConsent),
                     interactive = updateEnabled("family_mode"),
                     onChanged = { granted -> if (isBackend) onConsentChange("family_mode", granted) else demoFamilyConsent = granted }
+                )
+                HorizontalDivider()
+                ConsentRow(
+                    label = "Family assistant summary",
+                    enabled = consentValue("family_assistant", demoFamilyAssistantConsent),
+                    interactive = updateEnabled("family_assistant"),
+                    onChanged = { granted -> if (isBackend) onConsentChange("family_assistant", granted) else demoFamilyAssistantConsent = granted }
                 )
             }
         }

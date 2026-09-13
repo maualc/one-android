@@ -228,6 +228,16 @@ data class OneMedicationPlan(
     val updatedAt: Instant?
 )
 
+data class OneFamilyAssistantResult(
+    val summary: String,
+    val nextAction: String,
+    val evidenceIds: List<String>,
+    val limitations: String,
+    val degraded: Boolean,
+    val inferenceStatus: String?,
+    val modelVersion: String?
+)
+
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
 
 interface OneApiClient {
@@ -261,6 +271,7 @@ interface OneApiClient {
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
     suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
+    suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID): OneFamilyAssistantResult
     suspend fun markMedicationCheckIn(
         session: OneSession,
         planId: UUID,
@@ -719,6 +730,37 @@ class OneHttpApiClient(
                 token = session.accessToken
             ),
             session.homeId
+        )
+    }
+
+    override suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID): OneFamilyAssistantResult {
+        val body = request(
+            "/homes/${session.homeId}/family-assistant",
+            "POST",
+            JSONObject()
+                .put("message", message.take(1_000))
+                .put("subject_user_id", subjectUserId.toString()),
+            token = session.accessToken
+        )
+        val data = body.optJSONObject("data") ?: throw OneApiException("ONE API response is missing the family assistant result.")
+        val evidenceRows = data.optJSONArray("evidence_ids")
+        val evidenceIds = if (evidenceRows == null) {
+            emptyList()
+        } else {
+            buildList {
+                for (index in 0 until evidenceRows.length()) {
+                    evidenceRows.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }
+        return OneFamilyAssistantResult(
+            summary = data.optString("summary").takeIf { it.isNotBlank() } ?: "No summary was returned.",
+            nextAction = data.optString("next_action").takeIf { it.isNotBlank() } ?: "Review the reminder list with the resident or care team.",
+            evidenceIds = evidenceIds,
+            limitations = data.optString("limitations").takeIf { it.isNotBlank() } ?: "This is an administrative summary, not medical advice.",
+            degraded = body.optBoolean("degraded", false),
+            inferenceStatus = body.optNullableString("inference_status"),
+            modelVersion = body.optNullableString("model_version")
         )
     }
 

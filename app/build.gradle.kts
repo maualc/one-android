@@ -5,6 +5,7 @@ plugins {
 
 android {
     namespace = "com.one.cognitivecompanion"
+    val configuredApiBaseUrl = providers.gradleProperty("oneApiBaseUrl").orNull
     compileSdk {
         version = release(37)
     }
@@ -18,7 +19,11 @@ android {
 
         // The emulator reaches a backend running on the development machine
         // through 10.0.2.2. Release configuration will provide an HTTPS URL.
-        buildConfigField("String", "ONE_API_BASE_URL", "\"http://10.0.2.2:8000/api/v1\"")
+        buildConfigField(
+            "String",
+            "ONE_API_BASE_URL",
+            "\"${configuredApiBaseUrl ?: "http://10.0.2.2:8000/api/v1"}\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -28,6 +33,11 @@ android {
             optimization {
                 enable = false
             }
+            buildConfigField("Boolean", "ONE_PRODUCTION_BUILD", "true")
+            buildConfigField("String", "ONE_API_BASE_URL", "\"${configuredApiBaseUrl ?: "https://configure-me.invalid/api/v1"}\"")
+        }
+        debug {
+            buildConfigField("Boolean", "ONE_PRODUCTION_BUILD", "false")
         }
     }
     compileOptions {
@@ -54,6 +64,11 @@ dependencies {
     implementation(libs.livekit.android.compose.components)
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.lifecycle.service)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

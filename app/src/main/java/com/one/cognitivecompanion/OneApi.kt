@@ -184,6 +184,46 @@ data class OneRemoteObject(
     val confidenceRadiusM: Double
 )
 
+data class OneVisionDetection(
+    val label: String,
+    val confidence: Double,
+    val boundingBox: List<Double>,
+    val zone: String?,
+    val worldPoint: List<Double?>?,
+    val uncertaintyM: Double?,
+    val projectionQuality: String?
+)
+
+data class OneVisionFrameResult(
+    val detections: List<OneVisionDetection>,
+    val detectorVersion: String,
+    val persisted: Boolean,
+    val privacy: String
+)
+
+data class OneObjectRequest(
+    val label: String,
+    val displayName: String? = null
+)
+
+data class OneObservationRequest(
+    val objectId: UUID? = null,
+    val cameraId: UUID? = null,
+    val mapId: UUID? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+    val z: Double? = null,
+    val uncertaintyM: Double? = null,
+    val confidence: Double = 0.0,
+    val detectorVersion: String = "android-manual-v1"
+)
+
+data class OneObservationResult(
+    val observationId: UUID?,
+    val eventId: UUID?,
+    val approximateLocation: List<Double?>
+)
+
 data class OneRemoteEvent(
     val id: UUID,
     val type: String,
@@ -307,6 +347,18 @@ interface OneApiClient {
     suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
     suspend fun createCalibration(session: OneSession, cameraId: UUID, mapId: UUID, accuracyM: Double? = null): OneCameraCalibration
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
+    suspend fun ingestVisionFrame(
+        session: OneSession,
+        cameraId: UUID,
+        frameBase64: String,
+        width: Int,
+        height: Int,
+        candidateLabels: List<String>,
+        capturedAt: Instant? = null,
+        depthM: Double? = null
+    ): OneVisionFrameResult
+    suspend fun createObject(session: OneSession, request: OneObjectRequest): OneRemoteObject
+    suspend fun submitObservation(session: OneSession, request: OneObservationRequest): OneObservationResult
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
@@ -759,6 +811,111 @@ class OneHttpApiClient(
         }
     }
 
+    override suspend fun ingestVisionFrame(
+        session: OneSession,
+        cameraId: UUID,
+        frameBase64: String,
+        width: Int,
+        height: Int,
+        candidateLabels: List<String>,
+        capturedAt: Instant?,
+        depthM: Double?
+    ): OneVisionFrameResult {
+        require(width in 1..7_680 && height in 1..4_320) { "Frame dimensions are not supported." }
+        require(frameBase64.length <= 4_000_000) { "Frame is too large." }
+        val labels = candidateLabels.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(20)
+        require(labels.isNotEmpty()) { "At least one candidate label is required." }
+        val payload = JSONObject()
+            .put("camera_id", cameraId.toString())
+            .put("frame_base64", frameBase64)
+            .put("width", width)
+            .put("height", height)
+            .put("candidate_labels", JSONArray(labels))
+        capturedAt?.let { payload.put("captured_at", it.toString()) }
+        depthM?.let { payload.put("depth_m", it) }
+        val body = request(
+            "/homes/${session.homeId}/vision/frames",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        val rows = body.optJSONArray("data") ?: JSONArray()
+        val detections = buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val box = row.optJSONArray("bbox")?.toDoubleList().orEmpty()
+                val projection = row.optJSONObject("projection")
+                val world = projection?.optJSONArray("world_xyz")?.toNullableDoubleList()
+                add(
+                    OneVisionDetection(
+                        label = row.optString("label").takeIf { it.isNotBlank() } ?: "unknown",
+                        confidence = row.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
+                        boundingBox = box,
+                        zone = projection?.optString("zone")?.takeIf { it.isNotBlank() },
+                        worldPoint = world,
+                        uncertaintyM = projection?.optNullableDouble("uncertainty_m"),
+                        projectionQuality = projection?.optString("quality")?.takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+        }
+        return OneVisionFrameResult(
+            detections = detections,
+            detectorVersion = body.optString("detector_version").takeIf { it.isNotBlank() } ?: "unknown",
+            persisted = body.optBoolean("persisted", false),
+            privacy = body.optString("privacy").takeIf { it.isNotBlank() } ?: "Frame processed in memory."
+        )
+    }
+
+    override suspend fun createObject(session: OneSession, request: OneObjectRequest): OneRemoteObject {
+        val label = request.label.trim().take(80)
+        require(label.isNotBlank()) { "Object label is required." }
+        val payload = JSONObject().put("label", label)
+        request.displayName?.trim()?.takeIf { it.isNotBlank() }?.let { payload.put("display_name", it.take(120)) }
+        val body = request(
+            "/homes/${session.homeId}/objects",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return OneRemoteObject(
+            id = body.requiredUuid("id"),
+            label = body.optString("display_name").takeIf { it.isNotBlank() } ?: body.optString("label").ifBlank { label },
+            status = "unknown",
+            zone = null,
+            pointX = null,
+            pointY = null,
+            lastSeenAt = null,
+            confidence = 0.0,
+            confidenceRadiusM = 0.0
+        )
+    }
+
+    override suspend fun submitObservation(session: OneSession, request: OneObservationRequest): OneObservationResult {
+        val payload = JSONObject()
+        request.objectId?.let { payload.put("object_id", it.toString()) }
+        request.cameraId?.let { payload.put("camera_id", it.toString()) }
+        request.mapId?.let { payload.put("map_id", it.toString()) }
+        request.x?.let { payload.put("x", it) }
+        request.y?.let { payload.put("y", it) }
+        request.z?.let { payload.put("z", it) }
+        request.uncertaintyM?.let { payload.put("uncertainty_m", it.coerceIn(0.0, 100.0)) }
+        payload.put("confidence", request.confidence.coerceIn(0.0, 1.0))
+        payload.put("detector_version", request.detectorVersion.take(80))
+        val body = request(
+            "/homes/${session.homeId}/observations",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        val point = body.optJSONObject("approximate_location")
+        return OneObservationResult(
+            observationId = body.optNullableUuid("observation_id"),
+            eventId = body.optNullableUuid("event_id"),
+            approximateLocation = listOf(point?.optNullableDouble("x"), point?.optNullableDouble("y"), point?.optNullableDouble("z"))
+        )
+    }
+
     override suspend fun homeEvents(session: OneSession, limit: Int): List<OneRemoteEvent> {
         val boundedLimit = limit.coerceIn(1, 100)
         val rows = request("/homes/${session.homeId}/events?limit=$boundedLimit", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
@@ -1140,6 +1297,19 @@ private fun JSONObject.optNullableBoolean(key: String): Boolean? {
         is Number -> value.toInt() != 0
         is String -> value.equals("true", ignoreCase = true) || value == "1"
         else -> null
+    }
+}
+
+private fun JSONArray.toDoubleList(): List<Double> = buildList {
+    for (index in 0 until length()) {
+        val value = optDouble(index, Double.NaN)
+        if (!value.isNaN()) add(value)
+    }
+}
+
+private fun JSONArray.toNullableDoubleList(): List<Double?> = buildList {
+    for (index in 0 until length()) {
+        if (isNull(index)) add(null) else add(optDouble(index, Double.NaN).takeUnless { it.isNaN() })
     }
 }
 

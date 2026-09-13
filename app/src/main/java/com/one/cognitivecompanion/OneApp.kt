@@ -1,5 +1,11 @@
 package com.one.cognitivecompanion
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -81,11 +87,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.one.cognitivecompanion.ui.theme.OneAmber
 import com.one.cognitivecompanion.ui.theme.OneBlue
 import com.one.cognitivecompanion.ui.theme.OneCyan
@@ -104,6 +115,8 @@ import io.livekit.android.compose.state.rememberTracks
 import io.livekit.android.compose.ui.VideoTrackView
 import io.livekit.android.room.track.Track
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.UUID
 
@@ -133,14 +146,15 @@ fun OneApp() {
     // Account screen exposes a signed-out preview for demo and backend auth.
     val appContext = LocalContext.current.applicationContext
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
+    val offlineCache = remember(appContext) { OneOfflineCache(appContext) }
     val apiClient = remember { OneHttpApiClient() }
     val homeRepository = remember(apiClient) { OneApiHomeRepository(apiClient) }
     val cameraRepository = remember(apiClient) { OneApiCameraRepository(apiClient) }
     val familyRepository = remember(apiClient) { OneApiFamilyRepository(apiClient) }
     val medicationRepository = remember(apiClient) { OneApiMedicationRepository(apiClient) }
     val clipRepository = remember(apiClient) { OneApiClipRepository(apiClient) }
-    val appState = remember(secureStore, apiClient, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository) {
-        OneAppState(apiClient, secureStore, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository)
+    val appState = remember(secureStore, apiClient, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository, offlineCache) {
+        OneAppState(appContext, apiClient, secureStore, homeRepository, cameraRepository, familyRepository, medicationRepository, clipRepository, offlineCache)
     }
     var authStageName by appState::authStageName
     var roleName by appState::roleName
@@ -151,6 +165,8 @@ fun OneApp() {
     var onboardingConsentMedication by appState::onboardingConsentMedication
     var onboardingConsentFamily by appState::onboardingConsentFamily
     var selectedCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var captureCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var liveKitPublishing by rememberSaveable { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<OneEvent?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
@@ -205,7 +221,7 @@ fun OneApp() {
                     NavigationBarItem(
                         selected = selectedTab == tab.key,
                         onClick = { selectedTab = tab.key },
-                        icon = { Icon(tab.icon, contentDescription = null) },
+                        icon = { Icon(tab.icon, contentDescription = tab.label) },
                         label = { Text(tab.label) }
                     )
                 }
@@ -278,6 +294,14 @@ fun OneApp() {
                             onMapRetry = { coroutineScope.launch { appState.loadRoomMap() } },
                             onCreateManualMap = { roomName, zones ->
                                 coroutineScope.launch { appState.createManualRoomMap(roomName, zones) }
+                            },
+                            objectActionState = appState.objectActionState,
+                            objectActionError = appState.objectActionError,
+                            observationActionState = appState.observationActionState,
+                            observationActionError = appState.observationActionError,
+                            onCreateObject = { label, displayName -> coroutineScope.launch { appState.createObject(label, displayName) } },
+                            onSubmitObservation = { objectId, cameraId, mapId, x, y, uncertaintyM, confidence ->
+                                coroutineScope.launch { appState.submitObservation(objectId, cameraId, mapId, x, y, uncertaintyM, confidence) }
                             }
                         )
                         "family" -> FamilyScreen(
@@ -373,6 +397,7 @@ fun OneApp() {
                             homeSnapshot = appState.homeSnapshot,
                             homeLoadState = appState.homeLoadState,
                             homeLoadError = appState.homeLoadError,
+                            homeIsStale = appState.homeIsStale,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
                             cameras = appState.cameras,
                             rooms = appState.rooms,
@@ -387,7 +412,25 @@ fun OneApp() {
                             onUpdateCamera = { camera, name, roomId, enabled ->
                                 coroutineScope.launch { appState.updateCamera(camera, name, roomId, enabled) }
                             },
-                            onOpenCamera = { selectedCameraId = it.id.toString() }
+                            onOpenCamera = { selectedCameraId = it.id.toString() },
+                            captureCameraId = captureCameraId,
+                            liveKitPublishing = liveKitPublishing,
+                            onStartCapture = { camera ->
+                                OneCaptureService.start(appContext, camera.id)
+                                captureCameraId = camera.id.toString()
+                            },
+                            onStopCapture = {
+                                OneCaptureService.stop(appContext)
+                                captureCameraId = null
+                            },
+                            onStartLiveKit = {
+                                OneLiveKitPublisherService.start(appContext)
+                                liveKitPublishing = true
+                            },
+                            onStopLiveKit = {
+                                OneLiveKitPublisherService.stop(appContext)
+                                liveKitPublishing = false
+                            }
                         )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
@@ -712,6 +755,7 @@ private fun CaregiverHomeScreen(
     homeSnapshot: OneHomeSnapshot?,
     homeLoadState: OneHomeLoadState,
     homeLoadError: String?,
+    homeIsStale: Boolean,
     onRetry: () -> Unit,
     cameras: List<OneCamera>?,
     rooms: List<OneRoom>?,
@@ -722,7 +766,13 @@ private fun CaregiverHomeScreen(
     onCameraRetry: () -> Unit,
     onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
-    onOpenCamera: (OneCamera) -> Unit
+    onOpenCamera: (OneCamera) -> Unit,
+    captureCameraId: String?,
+    liveKitPublishing: Boolean,
+    onStartCapture: (OneCamera) -> Unit,
+    onStopCapture: () -> Unit,
+    onStartLiveKit: () -> Unit,
+    onStopLiveKit: () -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
     var selectedHomeFilter by rememberSaveable { mutableStateOf("Today") }
@@ -734,6 +784,9 @@ private fun CaregiverHomeScreen(
             subtitle = homeSnapshot?.profile?.residentName?.let { "A calm view of ${it}'s home, with consent." }
                 ?: "A calm, human-readable picture of today."
         )
+        if (homeIsStale) {
+            AssistChip(onClick = onRetry, label = { Text("Offline · showing last known data") })
+        }
         when {
             homeLoadState == OneHomeLoadState.LOADING && homeSnapshot == null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             homeLoadState == OneHomeLoadState.ERROR && homeSnapshot == null -> {
@@ -751,7 +804,13 @@ private fun CaregiverHomeScreen(
                 onRetry = onCameraRetry,
                 onRegisterCamera = onRegisterCamera,
                 onUpdateCamera = onUpdateCamera,
-                onOpenCamera = onOpenCamera
+                onOpenCamera = onOpenCamera,
+                captureCameraId = captureCameraId,
+                liveKitPublishing = liveKitPublishing,
+                onStartCapture = onStartCapture,
+                onStopCapture = onStopCapture,
+                onStartLiveKit = onStartLiveKit,
+                onStopLiveKit = onStopLiveKit
             )
             else -> CameraHeroCard()
         }
@@ -784,7 +843,13 @@ private fun CaregiverHomeScreen(
                         onRetry = onCameraRetry,
                         onRegisterCamera = onRegisterCamera,
                         onUpdateCamera = onUpdateCamera,
-                        onOpenCamera = onOpenCamera
+                        onOpenCamera = onOpenCamera,
+                        captureCameraId = captureCameraId,
+                        liveKitPublishing = liveKitPublishing,
+                        onStartCapture = onStartCapture,
+                        onStopCapture = onStopCapture,
+                        onStartLiveKit = onStartLiveKit,
+                        onStopLiveKit = onStopLiveKit
                     )
                 } else {
                     InfoCard("Camera preview", "Connect a backend to see paired household cameras and open a consented live view.")
@@ -851,7 +916,13 @@ private fun HomeCameraStatusCard(
     onRetry: () -> Unit,
     onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
-    onOpenCamera: (OneCamera) -> Unit
+    onOpenCamera: (OneCamera) -> Unit,
+    captureCameraId: String?,
+    liveKitPublishing: Boolean,
+    onStartCapture: (OneCamera) -> Unit,
+    onStopCapture: () -> Unit,
+    onStartLiveKit: () -> Unit,
+    onStopLiveKit: () -> Unit
 ) {
     var showCameraDialog by rememberSaveable { mutableStateOf(false) }
     var editingCameraId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -863,6 +934,52 @@ private fun HomeCameraStatusCard(
     val selectedRoomName = cameraRoomId?.let { id -> rooms.orEmpty().firstOrNull { it.id.toString() == id }?.name }
         ?: "No room assigned"
     val selectedRoomId = cameraRoomId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+    var permissionRequest by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var permissionError by rememberSaveable { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        val requested = permissionRequest
+        permissionRequest = null
+        val cameraGranted = grants[Manifest.permission.CAMERA] == true || ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val audioGranted = grants[Manifest.permission.RECORD_AUDIO] == true || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (requested == "capture" && cameraGranted) {
+            cameras.orEmpty().firstOrNull { it.id.toString() == pendingCameraId }?.let(onStartCapture)
+            pendingCameraId = null
+            permissionError = null
+        } else if (requested == "livekit" && cameraGranted && audioGranted) {
+            onStartLiveKit()
+            permissionError = null
+        } else if (requested != null) {
+            permissionError = "ONE necesita permisos de cámara${if (requested == "livekit") " y micrófono" else ""} para continuar."
+        }
+    }
+
+    fun requestMediaPermissions(action: String, camera: OneCamera? = null) {
+        if (action == "capture" && camera != null) {
+            val cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            val notificationGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (cameraGranted && notificationGranted) {
+                onStartCapture(camera)
+                permissionError = null
+            } else {
+                permissionRequest = action
+                pendingCameraId = camera.id.toString()
+                permissionLauncher.launch((listOf(Manifest.permission.CAMERA) + if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()).toTypedArray())
+            }
+        } else {
+            val cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            val audioGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            val notificationGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (cameraGranted && audioGranted && notificationGranted) {
+                onStartLiveKit()
+                permissionError = null
+            } else {
+                permissionRequest = action
+                permissionLauncher.launch((listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO) + if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()).toTypedArray())
+            }
+        }
+    }
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -913,6 +1030,26 @@ private fun HomeCameraStatusCard(
                         }
                     )
                 }
+            }
+            cameras.orEmpty().firstOrNull()?.let { primaryCamera ->
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text("Capture controls", style = MaterialTheme.typography.titleSmall)
+                Text("Sampling sends compressed frames to the consented vision endpoint; LiveKit publishes a real-time feed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { if (captureCameraId == primaryCamera.id.toString()) onStopCapture() else requestMediaPermissions("capture", primaryCamera) },
+                        enabled = primaryCamera.enabled && !paused && !liveKitPublishing,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (captureCameraId == primaryCamera.id.toString()) "Stop sampling" else "Start sampling") }
+                    OutlinedButton(
+                        onClick = { if (liveKitPublishing) onStopLiveKit() else requestMediaPermissions("livekit") },
+                        enabled = primaryCamera.enabled && !paused && (captureCameraId == null || liveKitPublishing),
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (liveKitPublishing) "Stop LiveKit" else "Publish live") }
+                }
+                if (captureCameraId != null) Text("Camera sampling is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                if (liveKitPublishing) Text("LiveKit publishing is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                permissionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             }
             if (actionState == OneCameraActionState.LOADED) {
                 Text("Camera saved. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
@@ -1014,7 +1151,8 @@ private fun CameraStatusRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 6.dp)
-            .clickable(enabled = camera.enabled && !paused) { onOpenCamera(camera) }
+            .clickable(enabled = camera.enabled && !paused, role = Role.Button) { onOpenCamera(camera) }
+            .semantics(mergeDescendants = true) { contentDescription = "Open camera ${camera.name}. Status: $status" }
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1254,7 +1392,13 @@ private fun MapScreen(
     mapLoadState: OneMapLoadState,
     mapLoadError: String?,
     onMapRetry: () -> Unit,
-    onCreateManualMap: (String, List<String>) -> Unit
+    onCreateManualMap: (String, List<String>) -> Unit,
+    objectActionState: OneObjectActionState,
+    objectActionError: String?,
+    observationActionState: OneObservationActionState,
+    observationActionError: String?,
+    onCreateObject: (String, String?) -> Unit,
+    onSubmitObservation: (UUID?, UUID?, UUID?, Double?, Double?, Double?, Double) -> Unit
 ) {
     var showManualMapDialog by rememberSaveable { mutableStateOf(false) }
     var manualRoomName by rememberSaveable { mutableStateOf("") }
@@ -1263,6 +1407,37 @@ private fun MapScreen(
     var calibrationCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var calibrationAccuracy by rememberSaveable { mutableStateOf("") }
     var calibrationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var showObjectDialog by rememberSaveable { mutableStateOf(false) }
+    var objectLabel by rememberSaveable { mutableStateOf("") }
+    var objectDisplayName by rememberSaveable { mutableStateOf("") }
+    var showObservationDialog by rememberSaveable { mutableStateOf(false) }
+    var observationObjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var observationCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var observationX by rememberSaveable { mutableStateOf("") }
+    var observationY by rememberSaveable { mutableStateOf("") }
+    var observationUncertainty by rememberSaveable { mutableStateOf("2") }
+    var observationConfidence by rememberSaveable { mutableStateOf("0.8") }
+    var observationObjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var observationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var importError by rememberSaveable { mutableStateOf<String?>(null) }
+    val appContext = LocalContext.current.applicationContext
+    val mapCoroutineScope = rememberCoroutineScope()
+    val mapImportLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        mapCoroutineScope.launch {
+            val result = runCatching {
+                val content = withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("No se pudo leer el archivo seleccionado.")
+                }
+                parseOneMapImport(content)
+            }
+            result.onSuccess {
+                importError = null
+                onCreateManualMap(it.roomName, it.zones)
+            }.onFailure { importError = it.message ?: "No se pudo importar el mapa." }
+        }
+    }
     val manualZoneNames = manualZones.split(",", ";", "\n").map { it.trim() }.filter { it.isNotBlank() }.distinct()
     val canSubmitManualMap = manualRoomName.trim().isNotBlank() && manualZoneNames.isNotEmpty() && mapLoadState != OneMapLoadState.SUBMITTING
     val selectedCalibrationCamera = calibrationCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
@@ -1304,6 +1479,29 @@ private fun MapScreen(
                     )
                 }
             }
+        }
+        SectionHeading("SETUP", "Map and object memory")
+        if (isBackend) {
+            OutlinedButton(
+                onClick = { mapImportLauncher.launch(arrayOf("application/json", "text/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Map, contentDescription = "Import map JSON")
+                Spacer(Modifier.width(8.dp))
+                Text("Import map JSON")
+            }
+            Text("Compatible format: { room_name, zones: [{ label }] } or zones: [\"kitchen\", …]. ARCore scans can be converted to this format.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            importError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { objectLabel = ""; objectDisplayName = ""; showObjectDialog = true }, modifier = Modifier.weight(1f)) { Text("Add object") }
+                OutlinedButton(onClick = { showObservationDialog = true }, enabled = !objects.isNullOrEmpty() || !cameras.isNullOrEmpty(), modifier = Modifier.weight(1f)) { Text("Record observation") }
+            }
+            objectActionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            observationActionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            if (objectActionState == OneObjectActionState.LOADED) Text("Object saved to the household memory.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+            if (observationActionState == OneObservationActionState.LOADED) Text("Approximate observation saved for caregiver review.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+        } else {
+            InfoCard("Connect a backend", "Map imports and object observations require a consented backend session.")
         }
         SectionHeading("CALIBRATION", "Camera-to-map alignment")
         if (!isBackend) {
@@ -1472,6 +1670,86 @@ private fun MapScreen(
                     enabled = calibrationActionState != OneCalibrationActionState.SUBMITTING
                 ) { Text("Cancel") }
             }
+        )
+    }
+    if (showObjectDialog) {
+        AlertDialog(
+            onDismissRequest = { if (objectActionState != OneObjectActionState.SUBMITTING) showObjectDialog = false },
+            title = { Text("Add household object") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Use a neutral label such as keys, glasses or wallet. ONE stores approximate observations only.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(objectLabel, { objectLabel = it.take(80) }, label = { Text("Object label") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(objectDisplayName, { objectDisplayName = it.take(120) }, label = { Text("Display name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showObjectDialog = false; onCreateObject(objectLabel, objectDisplayName.takeIf { it.isNotBlank() }) },
+                    enabled = objectLabel.trim().isNotBlank() && objectActionState != OneObjectActionState.SUBMITTING
+                ) { Text(if (objectActionState == OneObjectActionState.SUBMITTING) "Saving…" else "Save object") }
+            },
+            dismissButton = { TextButton(onClick = { showObjectDialog = false }, enabled = objectActionState != OneObjectActionState.SUBMITTING) { Text("Cancel") } }
+        )
+    }
+    if (showObservationDialog) {
+        val selectedObject = observationObjectId?.let { id -> objects.orEmpty().firstOrNull { it.id.toString() == id } }
+        val selectedCamera = observationCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
+        val parsedX = observationX.trim().toDoubleOrNull()
+        val parsedY = observationY.trim().toDoubleOrNull()
+        val parsedUncertainty = observationUncertainty.trim().toDoubleOrNull()
+        val parsedConfidence = observationConfidence.trim().toDoubleOrNull()
+        AlertDialog(
+            onDismissRequest = { if (observationActionState != OneObservationActionState.SUBMITTING) showObservationDialog = false },
+            title = { Text("Record approximate observation") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("This is derived household metadata, not a diagnosis. Coordinates are optional and uncertain.", style = MaterialTheme.typography.bodySmall)
+                    Box {
+                        OutlinedButton(onClick = { observationObjectMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text("Object: ${selectedObject?.label ?: "Select object"}") }
+                        DropdownMenu(observationObjectMenuExpanded, { observationObjectMenuExpanded = false }) {
+                            objects.orEmpty().forEach { item -> DropdownMenuItem(text = { Text(item.label) }, onClick = { observationObjectId = item.id.toString(); observationObjectMenuExpanded = false }) }
+                        }
+                    }
+                    Box {
+                        OutlinedButton(onClick = { observationCameraMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text("Camera: ${selectedCamera?.name ?: "Optional"}") }
+                        DropdownMenu(observationCameraMenuExpanded, { observationCameraMenuExpanded = false }) {
+                            DropdownMenuItem(text = { Text("No camera") }, onClick = { observationCameraId = null; observationCameraMenuExpanded = false })
+                            cameras.orEmpty().forEach { item -> DropdownMenuItem(text = { Text(item.name) }, onClick = { observationCameraId = item.id.toString(); observationCameraMenuExpanded = false }) }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(observationX, { observationX = it.take(12) }, label = { Text("X (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(observationY, { observationY = it.take(12) }, label = { Text("Y (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                    OutlinedTextField(observationUncertainty, { observationUncertainty = it.take(8) }, label = { Text("Uncertainty (m)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(observationConfidence, { observationConfidence = it.take(5) }, label = { Text("Confidence 0–1") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    if ((observationX.isNotBlank() && parsedX == null) || (observationY.isNotBlank() && parsedY == null) || parsedUncertainty == null || parsedConfidence == null || parsedConfidence !in 0.0..1.0) {
+                        Text("Check the numeric values before saving.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showObservationDialog = false
+                        onSubmitObservation(
+                            selectedObject?.id,
+                            selectedCamera?.id,
+                            currentRoomMap?.id,
+                            parsedX,
+                            parsedY,
+                            parsedUncertainty,
+                            parsedConfidence ?: 0.0
+                        )
+                    },
+                    enabled = (selectedObject != null || selectedCamera != null) &&
+                        (observationX.isBlank() || parsedX != null) && (observationY.isBlank() || parsedY != null) &&
+                        parsedUncertainty != null && parsedUncertainty >= 0 && parsedUncertainty <= 100 && parsedConfidence != null && parsedConfidence in 0.0..1.0 &&
+                        observationActionState != OneObservationActionState.SUBMITTING
+                ) { Text(if (observationActionState == OneObservationActionState.SUBMITTING) "Saving…" else "Save observation") }
+            },
+            dismissButton = { TextButton(onClick = { showObservationDialog = false }, enabled = observationActionState != OneObservationActionState.SUBMITTING) { Text("Cancel") } }
         )
     }
 }
@@ -2551,6 +2829,13 @@ private fun AccountScreen(
     onRoleChange: (OneRole) -> Unit,
     onSignOut: () -> Unit
 ) {
+    val accountContext = LocalContext.current
+    var notificationPermissionResult by rememberSaveable { mutableStateOf<String?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationPermissionResult = if (granted) "Medication notifications enabled." else "Enable notifications in Android settings to receive medication reminders."
+    }
+    val notificationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(accountContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     var demoRoomConsent by rememberSaveable { mutableStateOf(true) }
     var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
     var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
@@ -2621,6 +2906,18 @@ private fun AccountScreen(
                 }
             }
         }
+        SectionHeading("NOTIFICATIONS", "Medication reminders")
+        InfoCard(
+            if (notificationsEnabled) "Notifications ready" else "Notifications are off",
+            if (notificationsEnabled) "ONE will alert the resident at scheduled medication times and repeat daily rules." else "Allow notifications so a scheduled dose is not easy to miss."
+        )
+        if (!notificationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            OutlinedButton(
+                onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Allow medication notifications") }
+        }
+        notificationPermissionResult?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (notificationsEnabled) OneMint else OneAmber) }
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 ConsentRow(

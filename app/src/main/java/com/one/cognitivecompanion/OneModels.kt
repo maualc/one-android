@@ -79,6 +79,20 @@ enum class OneCalibrationActionState {
     ERROR
 }
 
+enum class OneObjectActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
+enum class OneObservationActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),

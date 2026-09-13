@@ -1,5 +1,6 @@
 package com.one.cognitivecompanion
 
+import android.content.Context
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -20,13 +21,15 @@ import java.util.UUID
  */
 @Stable
 class OneAppState(
+    private val appContext: Context,
     val apiClient: OneApiClient,
     private val secureStore: OneSecureStore,
     private val homeRepository: OneHomeRepository,
     private val cameraRepository: OneCameraRepository,
     private val familyRepository: OneFamilyRepository,
     private val medicationRepository: OneMedicationRepository,
-    private val clipRepository: OneClipRepository
+    private val clipRepository: OneClipRepository,
+    private val offlineCache: OneOfflineCache
 ) {
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
@@ -44,18 +47,27 @@ class OneAppState(
     var homeSnapshot by mutableStateOf<OneHomeSnapshot?>(null)
     var homeLoadState by mutableStateOf(OneHomeLoadState.IDLE)
     var homeLoadError by mutableStateOf<String?>(null)
+    var homeIsStale by mutableStateOf(false)
     var rooms by mutableStateOf<List<OneRoom>?>(null)
     var currentRoomMap by mutableStateOf<OneRoomMap?>(null)
     var mapLoadState by mutableStateOf(OneMapLoadState.IDLE)
     var mapLoadError by mutableStateOf<String?>(null)
+    var mapIsStale by mutableStateOf(false)
     var calibrationActionState by mutableStateOf(OneCalibrationActionState.IDLE)
     var lastCalibration by mutableStateOf<OneCameraCalibration?>(null)
     var calibrationActionError by mutableStateOf<String?>(null)
+    var objectActionState by mutableStateOf(OneObjectActionState.IDLE)
+    var objectActionError by mutableStateOf<String?>(null)
+    var lastCreatedObject by mutableStateOf<OneRemoteObject?>(null)
+    var observationActionState by mutableStateOf(OneObservationActionState.IDLE)
+    var observationActionError by mutableStateOf<String?>(null)
+    var lastObservation by mutableStateOf<OneObservationResult?>(null)
     var eventStreamState by mutableStateOf(OneEventStreamState.IDLE)
     var eventStreamError by mutableStateOf<String?>(null)
     var cameras by mutableStateOf<List<OneCamera>?>(null)
     var cameraLoadState by mutableStateOf(OneCameraLoadState.IDLE)
     var cameraLoadError by mutableStateOf<String?>(null)
+    var camerasAreStale by mutableStateOf(false)
     var cameraActionState by mutableStateOf(OneCameraActionState.IDLE)
     var lastRegisteredCamera by mutableStateOf<OneCamera?>(null)
     var cameraActionError by mutableStateOf<String?>(null)
@@ -139,18 +151,27 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        homeIsStale = false
         rooms = null
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
+        mapIsStale = false
         calibrationActionState = OneCalibrationActionState.IDLE
         lastCalibration = null
         calibrationActionError = null
+        objectActionState = OneObjectActionState.IDLE
+        objectActionError = null
+        lastCreatedObject = null
+        observationActionState = OneObservationActionState.IDLE
+        observationActionError = null
+        lastObservation = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null
+        camerasAreStale = false
         cameraActionState = OneCameraActionState.IDLE
         lastRegisteredCamera = null
         cameraActionError = null
@@ -266,9 +287,13 @@ class OneAppState(
         homeLoadError = null
         try {
             homeSnapshot = homeRepository.load(authenticatedSession)
+            homeSnapshot?.let { offlineCache.saveHome(authenticatedSession.homeId, it) }
+            homeIsStale = false
             homeLoadState = OneHomeLoadState.LOADED
         } catch (error: Exception) {
-            homeLoadState = OneHomeLoadState.ERROR
+            homeSnapshot = offlineCache.readHome(authenticatedSession.homeId)
+            homeIsStale = homeSnapshot != null
+            homeLoadState = if (homeSnapshot == null) OneHomeLoadState.ERROR else OneHomeLoadState.LOADED
             homeLoadError = error.message ?: "Could not load the household."
         }
     }
@@ -285,11 +310,15 @@ class OneAppState(
         cameraLoadError = null
         try {
             cameras = cameraRepository.load(authenticatedSession)
+            cameras?.let { offlineCache.saveCameras(authenticatedSession.homeId, it) }
+            camerasAreStale = false
             runCatching { apiClient.homeRooms(authenticatedSession) }
                 .onSuccess { rooms = it }
             cameraLoadState = OneCameraLoadState.LOADED
         } catch (error: Exception) {
-            cameraLoadState = OneCameraLoadState.ERROR
+            cameras = offlineCache.readCameras(authenticatedSession.homeId).takeIf { it.isNotEmpty() }
+            camerasAreStale = cameras != null
+            cameraLoadState = if (cameras == null) OneCameraLoadState.ERROR else OneCameraLoadState.LOADED
             cameraLoadError = error.message ?: "Could not load the household cameras."
         }
     }
@@ -405,9 +434,16 @@ class OneAppState(
         try {
             rooms = apiClient.homeRooms(authenticatedSession)
             currentRoomMap = apiClient.currentRoomMap(authenticatedSession)
+            offlineCache.saveMap(authenticatedSession.homeId, rooms.orEmpty(), currentRoomMap)
+            mapIsStale = false
             mapLoadState = OneMapLoadState.LOADED
         } catch (error: Exception) {
-            mapLoadState = OneMapLoadState.ERROR
+            offlineCache.readMap(authenticatedSession.homeId)?.let { (cachedRooms, cachedMap) ->
+                rooms = cachedRooms
+                currentRoomMap = cachedMap
+                mapIsStale = true
+            }
+            mapLoadState = if (mapIsStale) OneMapLoadState.LOADED else OneMapLoadState.ERROR
             mapLoadError = error.message ?: "Could not load the room map."
         }
     }
@@ -481,6 +517,84 @@ class OneAppState(
         } catch (error: Exception) {
             calibrationActionState = OneCalibrationActionState.ERROR
             calibrationActionError = error.message ?: "Could not save the camera calibration."
+        }
+    }
+
+    suspend fun createObject(label: String, displayName: String?) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            objectActionState = OneObjectActionState.ERROR
+            objectActionError = "Connect a backend session before adding an object."
+            return
+        }
+        if (!canManageFamily) {
+            objectActionState = OneObjectActionState.ERROR
+            objectActionError = "Only caregivers can add household objects."
+            return
+        }
+        val cleanLabel = label.trim()
+        if (cleanLabel.isBlank()) {
+            objectActionState = OneObjectActionState.ERROR
+            objectActionError = "Enter an object label."
+            return
+        }
+        objectActionState = OneObjectActionState.SUBMITTING
+        objectActionError = null
+        try {
+            lastCreatedObject = apiClient.createObject(authenticatedSession, OneObjectRequest(cleanLabel, displayName?.trim()?.takeIf { it.isNotBlank() }))
+            objectActionState = OneObjectActionState.LOADED
+            loadHome()
+        } catch (error: Exception) {
+            objectActionState = OneObjectActionState.ERROR
+            objectActionError = error.message ?: "Could not add the object."
+        }
+    }
+
+    suspend fun submitObservation(
+        objectId: UUID?,
+        cameraId: UUID?,
+        mapId: UUID?,
+        x: Double?,
+        y: Double?,
+        uncertaintyM: Double?,
+        confidence: Double
+    ) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            observationActionState = OneObservationActionState.ERROR
+            observationActionError = "Connect a backend session before recording an observation."
+            return
+        }
+        if (!canManageFamily) {
+            observationActionState = OneObservationActionState.ERROR
+            observationActionError = "Only caregivers can record household observations."
+            return
+        }
+        if (objectId == null && cameraId == null) {
+            observationActionState = OneObservationActionState.ERROR
+            observationActionError = "Select an object or camera for this observation."
+            return
+        }
+        observationActionState = OneObservationActionState.SUBMITTING
+        observationActionError = null
+        try {
+            lastObservation = apiClient.submitObservation(
+                authenticatedSession,
+                OneObservationRequest(
+                    objectId = objectId,
+                    cameraId = cameraId,
+                    mapId = mapId,
+                    x = x,
+                    y = y,
+                    uncertaintyM = uncertaintyM,
+                    confidence = confidence.coerceIn(0.0, 1.0)
+                )
+            )
+            observationActionState = OneObservationActionState.LOADED
+            loadHome()
+        } catch (error: Exception) {
+            observationActionState = OneObservationActionState.ERROR
+            observationActionError = error.message ?: "Could not save the observation."
         }
     }
 
@@ -611,6 +725,10 @@ class OneAppState(
         medicationLoadError = null
         try {
             medicationDoses = medicationRepository.load(authenticatedSession, subjectUserId)
+            runCatching {
+                apiClient.medicationReminders(authenticatedSession, subjectUserId = subjectUserId)
+                    .forEach { OneMedicationScheduler.schedule(appContext, it) }
+            }
             medicationLoadState = OneMedicationLoadState.LOADED
         } catch (error: Exception) {
             medicationLoadState = OneMedicationLoadState.ERROR
@@ -970,6 +1088,8 @@ class OneAppState(
     }
 
     suspend fun signOut() {
+        OneCaptureService.stop(appContext)
+        OneLiveKitPublisherService.stop(appContext)
         val activeSession = session
         if (backendMode && activeSession != null) {
             runCatching { apiClient.logout(activeSession) }
@@ -983,18 +1103,27 @@ class OneAppState(
         homeSnapshot = null
         homeLoadState = OneHomeLoadState.IDLE
         homeLoadError = null
+        homeIsStale = false
         rooms = null
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
+        mapIsStale = false
         calibrationActionState = OneCalibrationActionState.IDLE
         lastCalibration = null
         calibrationActionError = null
+        objectActionState = OneObjectActionState.IDLE
+        objectActionError = null
+        lastCreatedObject = null
+        observationActionState = OneObservationActionState.IDLE
+        observationActionError = null
+        lastObservation = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null
         cameraLoadState = OneCameraLoadState.IDLE
         cameraLoadError = null
+        camerasAreStale = false
         cameraActionState = OneCameraActionState.IDLE
         lastRegisteredCamera = null
         cameraActionError = null

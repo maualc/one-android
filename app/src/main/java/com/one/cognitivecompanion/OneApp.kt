@@ -295,7 +295,15 @@ fun OneApp() {
                         )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
-                        "assistant" -> AssistantScreen()
+                        "assistant" -> AssistantScreen(
+                            isBackend = appState.backendMode,
+                            loadState = appState.assistantLoadState,
+                            result = appState.assistantResult,
+                            loadError = appState.assistantLoadError,
+                            onSubmit = { transcript ->
+                                coroutineScope.launch { appState.submitAssistantCheckIn(transcript) }
+                            }
+                        )
                         "account" -> AccountScreen(
                             role = role,
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
@@ -1471,21 +1479,65 @@ private fun ResidentTodayScreen(onOpenAssistant: () -> Unit) {
 }
 
 @Composable
-private fun AssistantScreen() {
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
-        ScreenHeader("ASSISTANT", "I'm here with you.", "Press and hold when you would like to talk.")
-        Spacer(Modifier.height(20.dp))
+private fun AssistantScreen(
+    isBackend: Boolean,
+    loadState: OneAssistantLoadState,
+    result: OneCheckInResult?,
+    loadError: String?,
+    onSubmit: (String) -> Unit
+) {
+    var transcript by rememberSaveable { mutableStateOf("") }
+
+    ScreenScroll {
+        ScreenHeader("ASSISTANT", "I'm here with you.", "A calm daily check-in, one step at a time.")
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Text("Hi, I'm here for a calm daily check-in. We can take it one step at a time.", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
+            Text("Share a short note about how today is going. ONE will keep the check-in within the household context.", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
         }
-        Spacer(Modifier.weight(1f))
-        Button(onClick = { }, modifier = Modifier.fillMaxWidth().height(60.dp), colors = ButtonDefaults.buttonColors(containerColor = OneBlue)) {
-            Icon(Icons.Default.Mic, contentDescription = null)
+        result?.let { checkIn ->
+            SectionHeading("LATEST CHECK-IN", "A human-readable summary")
+            InfoCard("${checkIn.status.humanLabel()} · ${checkIn.trend.humanLabel()}", checkIn.explanation)
+            if (checkIn.evidenceIds.isNotEmpty()) {
+                Text("Based on ${checkIn.evidenceIds.size} recent household observation(s).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text("Limitations: ${checkIn.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (checkIn.degraded) {
+                Text("This response used a limited fallback summary.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+            }
+        }
+        loadError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        OutlinedTextField(
+            value = transcript,
+            onValueChange = { transcript = it.take(4_000) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Today's check-in") },
+            placeholder = { Text("For example: I feel ready for breakfast…") },
+            minLines = 3,
+            maxLines = 5,
+            supportingText = { Text("${transcript.length}/4000") }
+        )
+        Button(
+            onClick = { onSubmit(transcript) },
+            enabled = transcript.isNotBlank() && loadState != OneAssistantLoadState.SUBMITTING,
+            modifier = Modifier.fillMaxWidth().height(58.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
+        ) {
+            Icon(Icons.Default.GraphicEq, contentDescription = null)
             Spacer(Modifier.width(9.dp))
-            Text("Press and hold to talk", style = MaterialTheme.typography.titleMedium)
+            Text(if (loadState == OneAssistantLoadState.SUBMITTING) "Sending…" else "Send check-in", style = MaterialTheme.typography.titleMedium)
         }
+        Text(
+            if (isBackend) "The backend uses recent bounded observations and returns limitations with every summary."
+            else "Demo mode keeps this check-in on the device; connect a backend for a household summary.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text("ONE supports attention and conversation. It does not diagnose or make medical decisions.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
     }
 }
+
+private fun String.humanLabel(): String = replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
 
 @Composable
 private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit, onSignOut: () -> Unit) {

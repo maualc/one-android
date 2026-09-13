@@ -52,6 +52,9 @@ class OneAppState(
     var medicationLoadError by mutableStateOf<String?>(null)
     var medicationActionKey by mutableStateOf<String?>(null)
     var medicationActionError by mutableStateOf<String?>(null)
+    var assistantLoadState by mutableStateOf(OneAssistantLoadState.IDLE)
+    var assistantResult by mutableStateOf<OneCheckInResult?>(null)
+    var assistantLoadError by mutableStateOf<String?>(null)
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
@@ -94,6 +97,9 @@ class OneAppState(
         medicationLoadError = null
         medicationActionKey = null
         medicationActionError = null
+        assistantLoadState = OneAssistantLoadState.IDLE
+        assistantResult = null
+        assistantLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
@@ -299,6 +305,38 @@ class OneAppState(
         }
     }
 
+    suspend fun submitAssistantCheckIn(transcript: String) {
+        val cleanTranscript = transcript.trim()
+        if (cleanTranscript.isBlank()) {
+            assistantLoadState = OneAssistantLoadState.ERROR
+            assistantLoadError = "Write a short check-in before sending it."
+            return
+        }
+
+        assistantLoadState = OneAssistantLoadState.SUBMITTING
+        assistantLoadError = null
+        try {
+            val authenticatedSession = session
+            assistantResult = if (backendMode && authenticatedSession != null) {
+                apiClient.submitCheckIn(authenticatedSession, cleanTranscript)
+            } else {
+                OneCheckInResult(
+                    id = null,
+                    status = "unknown",
+                    trend = "unknown",
+                    explanation = "This demo check-in was kept on the device; connect a backend to receive a household summary.",
+                    evidenceIds = emptyList(),
+                    limitations = "Demo mode only. This is not medical advice.",
+                    degraded = true
+                )
+            }
+            assistantLoadState = OneAssistantLoadState.LOADED
+        } catch (error: Exception) {
+            assistantLoadState = OneAssistantLoadState.ERROR
+            assistantLoadError = error.message ?: "ONE could not complete the check-in."
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -323,6 +361,9 @@ class OneAppState(
         medicationLoadError = null
         medicationActionKey = null
         medicationActionError = null
+        assistantLoadState = OneAssistantLoadState.IDLE
+        assistantResult = null
+        assistantLoadError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null

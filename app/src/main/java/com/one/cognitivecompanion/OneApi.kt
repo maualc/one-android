@@ -62,6 +62,16 @@ data class BackendHealth(
     val localInferenceModel: String?
 )
 
+data class OneCheckInResult(
+    val id: UUID?,
+    val status: String,
+    val trend: String,
+    val explanation: String,
+    val evidenceIds: List<String>,
+    val limitations: String,
+    val degraded: Boolean
+)
+
 data class OneLiveKitToken(
     val serverUrl: String,
     val participantToken: String,
@@ -167,6 +177,7 @@ interface OneApiClient {
         status: String,
         note: String = ""
     )
+    suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID? = null): OneCheckInResult
 }
 
 /**
@@ -482,6 +493,36 @@ class OneHttpApiClient(
             "POST",
             payload,
             token = session.accessToken
+        )
+    }
+
+    override suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID?): OneCheckInResult {
+        val payload = JSONObject().put("transcript", transcript.take(4_000))
+        subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
+        val body = request(
+            "/homes/${session.homeId}/check-ins",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        val evidenceRows = body.optJSONArray("evidence_ids")
+        val evidenceIds = if (evidenceRows == null) {
+            emptyList()
+        } else {
+            buildList {
+                for (index in 0 until evidenceRows.length()) {
+                    evidenceRows.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }
+        return OneCheckInResult(
+            id = body.optNullableUuid("id"),
+            status = body.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
+            trend = body.optString("trend").takeIf { it.isNotBlank() } ?: "unknown",
+            explanation = body.optString("explanation").takeIf { it.isNotBlank() } ?: "No check-in summary was returned.",
+            evidenceIds = evidenceIds,
+            limitations = body.optString("limitations").takeIf { it.isNotBlank() } ?: "This is an administrative summary, not medical advice.",
+            degraded = body.optBoolean("degraded", false)
         )
     }
 

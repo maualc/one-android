@@ -1045,10 +1045,22 @@ private fun MapScreen(
         } else {
             visibleEvents.take(2).forEach { event -> EventRow(event) }
         }
-        OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Map, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Refresh room map")
+        if (isBackend) {
+            OutlinedButton(
+                onClick = onRetry,
+                enabled = loadState != OneHomeLoadState.LOADING,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Map, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (loadState == OneHomeLoadState.LOADING) "Refreshing…" else "Refresh room map")
+            }
+        } else {
+            Text(
+                "Demo map uses local fixtures. Connect a backend to refresh room observations.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

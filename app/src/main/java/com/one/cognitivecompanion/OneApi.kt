@@ -59,6 +59,13 @@ data class BackendHealth(
     val localInferenceModel: String?
 )
 
+data class OneLiveKitToken(
+    val serverUrl: String,
+    val participantToken: String,
+    val expiresInSeconds: Long,
+    val mode: String
+)
+
 data class OneHomeProfile(
     val homeId: UUID,
     val homeName: String,
@@ -126,6 +133,7 @@ interface OneApiClient {
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun logout(session: OneSession)
+    suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun homeProfile(session: OneSession): OneHomeProfile
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
@@ -201,6 +209,23 @@ class OneHttpApiClient(
 
     override suspend fun logout(session: OneSession) {
         request("/sessions/current", "DELETE", token = session.accessToken)
+    }
+
+    override suspend fun liveKitToken(session: OneSession, mode: String): OneLiveKitToken {
+        val requestedMode = mode.lowercase().takeIf { it in setOf("auto", "publish", "subscribe") }
+            ?: throw OneApiException("Invalid LiveKit mode.")
+        val body = request(
+            "/homes/${session.homeId}/livekit/token",
+            "POST",
+            JSONObject().put("mode", requestedMode),
+            token = session.accessToken
+        )
+        return OneLiveKitToken(
+            serverUrl = body.requiredString("url"),
+            participantToken = body.requiredString("token"),
+            expiresInSeconds = body.requiredLong("expires_in"),
+            mode = body.optString("mode").takeIf { it.isNotBlank() } ?: requestedMode
+        )
     }
 
     override suspend fun homeProfile(session: OneSession): OneHomeProfile {

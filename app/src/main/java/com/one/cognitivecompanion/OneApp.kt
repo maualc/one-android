@@ -2,6 +2,7 @@ package com.one.cognitivecompanion
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -70,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,6 +86,10 @@ import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneInverseSurface
 import com.one.cognitivecompanion.ui.theme.OneMint
 import com.one.cognitivecompanion.ui.theme.ONETheme
+import io.livekit.android.compose.local.RoomScope
+import io.livekit.android.compose.state.rememberTracks
+import io.livekit.android.compose.ui.VideoTrackView
+import io.livekit.android.room.track.Track
 import kotlinx.coroutines.launch
 
 private data class OneNavItem(
@@ -128,10 +134,12 @@ fun OneApp() {
     var onboardingConsentMic by appState::onboardingConsentMic
     var onboardingConsentMedication by appState::onboardingConsentMedication
     var onboardingConsentFamily by appState::onboardingConsentFamily
+    var selectedCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = if (role == OneRole.CAREGIVER) caregiverTabs else residentTabs
+    val selectedCamera = appState.cameras?.firstOrNull { it.id.toString() == selectedCameraId }
 
     LaunchedEffect(appState) { appState.restoreSession() }
     LaunchedEffect(appState, appState.authStageName, appState.session) {
@@ -150,7 +158,7 @@ fun OneApp() {
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
     Scaffold(
-        bottomBar = if (authStage == AuthStage.AUTHENTICATED) {
+        bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null) {
             {
             NavigationBar(modifier = Modifier.navigationBarsPadding()) {
                 tabs.forEach { tab ->
@@ -191,7 +199,14 @@ fun OneApp() {
                         else appState.completeOnboarding()
                     }
                 )
-                AuthStage.AUTHENTICATED -> when (role) {
+                AuthStage.AUTHENTICATED -> if (selectedCamera != null && role == OneRole.CAREGIVER) {
+                    LiveCameraScreen(
+                        camera = selectedCamera,
+                        apiClient = apiClient,
+                        session = appState.session,
+                        onClose = { selectedCameraId = null }
+                    )
+                } else when (role) {
                     OneRole.CAREGIVER -> when (selectedTab) {
                         "map" -> MapScreen(
                             objects = appState.homeSnapshot?.objects,
@@ -232,7 +247,8 @@ fun OneApp() {
                             cameras = appState.cameras,
                             cameraLoadState = appState.cameraLoadState,
                             cameraLoadError = appState.cameraLoadError,
-                            onCameraRetry = { coroutineScope.launch { appState.loadCameras() } }
+                            onCameraRetry = { coroutineScope.launch { appState.loadCameras() } },
+                            onOpenCamera = { selectedCameraId = it.id.toString() }
                         )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
@@ -531,7 +547,8 @@ private fun CaregiverHomeScreen(
     cameras: List<OneCamera>?,
     cameraLoadState: OneCameraLoadState,
     cameraLoadError: String?,
-    onCameraRetry: () -> Unit
+    onCameraRetry: () -> Unit,
+    onOpenCamera: (OneCamera) -> Unit
 ) {
     val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
     ScreenScroll {
@@ -552,7 +569,8 @@ private fun CaregiverHomeScreen(
                 cameras = cameras,
                 loadState = cameraLoadState,
                 loadError = cameraLoadError,
-                onRetry = onCameraRetry
+                onRetry = onCameraRetry,
+                onOpenCamera = onOpenCamera
             )
             else -> CameraHeroCard()
         }
@@ -598,7 +616,8 @@ private fun HomeCameraStatusCard(
     cameras: List<OneCamera>?,
     loadState: OneCameraLoadState,
     loadError: String?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onOpenCamera: (OneCamera) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -624,17 +643,24 @@ private fun HomeCameraStatusCard(
                 cameras.orEmpty().isEmpty() -> {
                     Text("No cameras are paired with this household yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                else -> cameras.orEmpty().take(3).forEach { camera -> CameraStatusRow(camera, paused) }
+                else -> cameras.orEmpty().take(3).forEach { camera -> CameraStatusRow(camera, paused, onOpenCamera) }
             }
         }
     }
 }
 
 @Composable
-private fun CameraStatusRow(camera: OneCamera, paused: Boolean) {
+private fun CameraStatusRow(camera: OneCamera, paused: Boolean, onOpenCamera: (OneCamera) -> Unit) {
     val status = if (paused) "Paused" else camera.status.cameraStatusLabel(camera.enabled)
     val tint = if (paused) OneAmber else camera.status.cameraStatusTint(camera.enabled)
-    Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clickable(enabled = camera.enabled && !paused) { onOpenCamera(camera) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Icon(Icons.Default.Visibility, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -650,6 +676,10 @@ private fun CameraStatusRow(camera: OneCamera, paused: Boolean) {
         Box(Modifier.size(9.dp).background(tint, CircleShape))
         Spacer(Modifier.width(6.dp))
         Text(status, style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Bold)
+        if (camera.enabled && !paused) {
+            Spacer(Modifier.width(7.dp))
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open camera", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
     }
 }
 
@@ -666,6 +696,89 @@ private fun String.cameraStatusTint(enabled: Boolean): Color = when {
     equals("online", ignoreCase = true) -> OneMint
     equals("paused", ignoreCase = true) -> OneAmber
     else -> OneCyan
+}
+
+@Composable
+private fun LiveCameraScreen(
+    camera: OneCamera,
+    apiClient: OneApiClient,
+    session: OneSession?,
+    onClose: () -> Unit
+) {
+    var liveToken by remember(camera.id, session?.accessToken) { mutableStateOf<OneLiveKitToken?>(null) }
+    var tokenError by remember(camera.id, session?.accessToken) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(camera.id, session?.accessToken) {
+        val authenticatedSession = session
+        if (authenticatedSession == null) {
+            tokenError = "A signed-in caregiver session is required to view this camera."
+        } else {
+            runCatching { apiClient.liveKitToken(authenticatedSession, mode = "subscribe") }
+                .onSuccess { liveToken = it }
+                .onFailure { tokenError = it.message ?: "ONE could not start the live camera view." }
+        }
+    }
+
+    ScreenScroll {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) {
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp).offset(x = (-3).dp).rotate(180f))
+                Spacer(Modifier.width(4.dp))
+                Text("Back")
+            }
+        }
+        ScreenHeader("CAMERA", camera.name, "Consent-based local view · receive only")
+        when {
+            tokenError != null -> {
+                InfoCard("Live view unavailable", tokenError ?: "ONE could not start the live camera view.")
+                OutlinedButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+            }
+            liveToken == null -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Requesting a short-lived viewer token…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            else -> LiveKitCameraSurface(liveToken!!)
+        }
+        InfoCard("Privacy reminder", "This view is receive-only. ONE does not publish this device's camera or microphone, and the room disconnects when you leave.")
+    }
+}
+
+@Composable
+private fun LiveKitCameraSurface(token: OneLiveKitToken) {
+    var roomError by remember(token.participantToken) { mutableStateOf<String?>(null) }
+    RoomScope(
+        url = token.serverUrl,
+        token = token.participantToken,
+        audio = false,
+        video = false,
+        connect = true,
+        onError = { _, error -> roomError = error?.message ?: "The live camera connection failed." }
+    ) { room ->
+        val trackRefs by rememberTracks()
+        val cameraTrack = trackRefs.firstOrNull { track -> track.source == Track.Source.CAMERA && track.isSubscribed() }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(300.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(OneInverseSurface),
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    roomError != null -> Text(roomError ?: "Live camera connection failed.", modifier = Modifier.padding(24.dp), color = Color.White)
+                    cameraTrack != null -> VideoTrackView(trackReference = cameraTrack, modifier = Modifier.fillMaxSize(), room = room)
+                    else -> Text("Waiting for the camera stream…", color = Color.White.copy(alpha = 0.85f))
+                }
+                Row(modifier = Modifier.align(Alignment.TopStart).padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(9.dp).background(OneCyan, CircleShape))
+                    Spacer(Modifier.width(6.dp))
+                    Text("LIVE · RECEIVE ONLY", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+            Text("The camera stream is supplied by the paired household device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable

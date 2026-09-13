@@ -11,7 +11,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-
 /**
  * Compose-observable state and session actions for the top-level ONE flow.
  * Screens remain focused on rendering while this object owns persistence and
@@ -51,6 +50,8 @@ class OneAppState(
     var medicationDoses by mutableStateOf<List<MedicationDose>?>(null)
     var medicationLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationLoadError by mutableStateOf<String?>(null)
+    var medicationActionKey by mutableStateOf<String?>(null)
+    var medicationActionError by mutableStateOf<String?>(null)
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
@@ -91,6 +92,8 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationActionKey = null
+        medicationActionError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
@@ -249,6 +252,34 @@ class OneAppState(
         }
     }
 
+    suspend fun updateMedicationDose(dose: MedicationDose, status: DoseStatus) {
+        val authenticatedSession = session
+        val planId = dose.planId
+        val scheduledFor = dose.scheduledFor
+        val wireStatus = status.medicationCheckInValue()
+        if (!backendMode || authenticatedSession == null || planId == null || scheduledFor == null || wireStatus == null) {
+            medicationActionError = "This reminder is not linked to a backend check-in."
+            return
+        }
+
+        val actionKey = dose.medicationActionKey()
+        medicationActionKey = actionKey
+        medicationActionError = null
+        try {
+            apiClient.markMedicationCheckIn(
+                session = authenticatedSession,
+                planId = planId,
+                scheduledFor = scheduledFor,
+                status = wireStatus
+            )
+            loadMedicationReminders()
+        } catch (error: Exception) {
+            medicationActionError = error.message ?: "Could not update this medication check-in."
+        } finally {
+            if (medicationActionKey == actionKey) medicationActionKey = null
+        }
+    }
+
     suspend fun loadClips() {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
@@ -290,9 +321,20 @@ class OneAppState(
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
+        medicationActionKey = null
+        medicationActionError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
         authStageName = AuthStage.SIGNED_OUT.name
     }
 }
+
+private fun DoseStatus.medicationCheckInValue(): String? = when (this) {
+    DoseStatus.PENDING, DoseStatus.ACKNOWLEDGED, DoseStatus.NEEDS_CONFIRMATION, DoseStatus.SCHEDULED -> "pending"
+    DoseStatus.TAKEN -> "taken"
+    DoseStatus.SKIPPED -> "skipped"
+    DoseStatus.MISSED -> "missed"
+}
+
+private fun MedicationDose.medicationActionKey(): String = "${planId}:${scheduledFor}"

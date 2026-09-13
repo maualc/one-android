@@ -160,6 +160,13 @@ interface OneApiClient {
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
+    suspend fun markMedicationCheckIn(
+        session: OneSession,
+        planId: UUID,
+        scheduledFor: Instant,
+        status: String,
+        note: String = ""
+    )
 }
 
 /**
@@ -453,6 +460,29 @@ class OneHttpApiClient(
                 )
             }
         }
+    }
+
+    override suspend fun markMedicationCheckIn(
+        session: OneSession,
+        planId: UUID,
+        scheduledFor: Instant,
+        status: String,
+        note: String
+    ) {
+        val normalizedStatus = status.lowercase()
+        require(normalizedStatus in setOf("pending", "taken", "skipped", "missed")) {
+            "Medication check-in status is not supported."
+        }
+        val payload = JSONObject()
+            .put("scheduled_for", scheduledFor.toString())
+            .put("status", normalizedStatus)
+            .put("note", note.take(500))
+        request(
+            "/homes/${session.homeId}/medication-plans/$planId/check-ins",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
     }
 
     private suspend fun request(

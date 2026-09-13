@@ -28,7 +28,9 @@ class OneApiMedicationRepository(
                 .ifBlank { "No instructions provided" },
             time = reminder.scheduledFor?.toLocalTimeLabel() ?: "Unscheduled",
             status = reminder.status.toDoseStatus(),
-            assignedTo = reminder.assignedCaregiverName
+            assignedTo = reminder.assignedCaregiverName,
+            planId = reminder.planId,
+            scheduledFor = reminder.scheduledFor
         )
     }
 }

@@ -256,7 +256,12 @@ fun OneApp() {
                             medicationDoses = appState.medicationDoses,
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
-                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } }
+                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
+                            medicationActionKey = appState.medicationActionKey,
+                            medicationActionError = appState.medicationActionError,
+                            onMedicationStatusChange = { dose, status ->
+                                coroutineScope.launch { appState.updateMedicationDose(dose, status) }
+                            }
                         )
                         "events" -> EventsScreen(
                             events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
@@ -1034,7 +1039,10 @@ private fun FamilyScreen(
     medicationDoses: List<MedicationDose>?,
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
-    onMedicationRetry: () -> Unit
+    onMedicationRetry: () -> Unit,
+    medicationActionKey: String?,
+    medicationActionError: String?,
+    onMedicationStatusChange: (MedicationDose, DoseStatus) -> Unit
 ) {
     ScreenScroll {
         ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
@@ -1081,7 +1089,18 @@ private fun FamilyScreen(
                 OutlinedButton(onClick = onMedicationRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
             medicationDoses.isNullOrEmpty() -> InfoCard("No reminders for today", "No active medication reminder has been scheduled for this household today.")
-            else -> medicationDoses.forEach { dose -> MedicationRow(dose) }
+            else -> {
+                medicationActionError?.let { error ->
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                medicationDoses.forEach { dose ->
+                    MedicationRow(
+                        dose = dose,
+                        actionKey = medicationActionKey,
+                        onStatusChange = { status -> onMedicationStatusChange(dose, status) }
+                    )
+                }
+            }
         }
         Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -1127,20 +1146,49 @@ private fun CaregiverRow(name: String, relationship: String, role: String, tint:
 }
 
 @Composable
-private fun MedicationRow(dose: MedicationDose) {
+private fun MedicationRow(
+    dose: MedicationDose,
+    actionKey: String? = null,
+    onStatusChange: ((DoseStatus) -> Unit)? = null
+) {
+    val canConfirm = onStatusChange != null && dose.planId != null && dose.scheduledFor != null && dose.status !in setOf(DoseStatus.TAKEN, DoseStatus.SKIPPED)
+    val isUpdating = canConfirm && actionKey == dose.medicationActionKey()
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Row(modifier = Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Schedule, contentDescription = null, tint = doseTint(dose.status), modifier = Modifier.size(29.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(dose.name, style = MaterialTheme.typography.titleMedium)
-                Text("${dose.time} · ${dose.instructions}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(dose.assignedTo?.let { "Assigned to $it" } ?: "No caregiver assigned", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Schedule, contentDescription = null, tint = doseTint(dose.status), modifier = Modifier.size(29.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(dose.name, style = MaterialTheme.typography.titleMedium)
+                    Text("${dose.time} · ${dose.instructions}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(dose.assignedTo?.let { "Assigned to $it" } ?: "No caregiver assigned", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(dose.status.label, style = MaterialTheme.typography.labelSmall, color = doseTint(dose.status), fontWeight = FontWeight.SemiBold)
             }
-            Text(dose.status.label, style = MaterialTheme.typography.labelSmall, color = doseTint(dose.status), fontWeight = FontWeight.SemiBold)
+            if (canConfirm) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onStatusChange?.invoke(DoseStatus.TAKEN) },
+                        enabled = !isUpdating,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = OneMint)
+                    ) {
+                        Text(if (isUpdating) "Saving…" else "Taken")
+                    }
+                    OutlinedButton(
+                        onClick = { onStatusChange?.invoke(DoseStatus.SKIPPED) },
+                        enabled = !isUpdating,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Skip")
+                    }
+                }
+            }
         }
     }
 }
+
+private fun MedicationDose.medicationActionKey(): String = "${planId}:${scheduledFor}"
 
 private fun doseTint(status: DoseStatus): Color = when (status) {
     DoseStatus.ACKNOWLEDGED, DoseStatus.TAKEN -> OneMint

@@ -1,5 +1,6 @@
 package com.one.cognitivecompanion
 
+import java.time.Instant
 import java.util.UUID
 
 /** The two product experiences exposed by the current iOS MVP. */
@@ -29,7 +30,9 @@ data class MedicationDose(
     val instructions: String,
     val time: String,
     val status: DoseStatus,
-    val assignedTo: String? = null
+    val assignedTo: String? = null,
+    val planId: UUID? = null,
+    val scheduledFor: Instant? = null
 )
 
 enum class EventKind(val label: String) {

@@ -22,6 +22,13 @@ enum class OneAssistantLoadState {
     ERROR
 }
 
+enum class OneConsentLoadState {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR
+}
+
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),

@@ -55,6 +55,15 @@ data class ConsentRequest(
     val subjectUserId: UUID? = null
 )
 
+data class OneRemoteConsent(
+    val id: UUID,
+    val subjectUserId: UUID,
+    val purpose: String,
+    val policyVersion: String,
+    val grantedAt: Instant?,
+    val revokedAt: Instant?
+)
+
 data class BackendHealth(
     val status: String,
     val database: String?,
@@ -159,6 +168,7 @@ interface OneApiClient {
     suspend fun completePairing(code: String): OneSession
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
+    suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
     suspend fun logout(session: OneSession)
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
@@ -246,6 +256,28 @@ class OneHttpApiClient(
             .put("granted", consentRequest.granted)
         consentRequest.subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
         request("/homes/${session.homeId}/consents", "POST", payload, token = session.accessToken)
+    }
+
+    override suspend fun homeConsents(session: OneSession): List<OneRemoteConsent> {
+        val rows = request("/homes/${session.homeId}/consents", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = runCatching { UUID.fromString(row.optString("id")) }.getOrNull() ?: continue
+                val subjectUserId = runCatching { UUID.fromString(row.optString("subject_user_id")) }.getOrNull() ?: continue
+                val purpose = row.optString("purpose").takeIf { it.isNotBlank() } ?: continue
+                add(
+                    OneRemoteConsent(
+                        id = id,
+                        subjectUserId = subjectUserId,
+                        purpose = purpose,
+                        policyVersion = row.optString("policy_version"),
+                        grantedAt = row.optNullableString("granted_at")?.toInstantOrNull(),
+                        revokedAt = row.optNullableString("revoked_at")?.toInstantOrNull()
+                    )
+                )
+            }
+        }
     }
 
     override suspend fun logout(session: OneSession) {

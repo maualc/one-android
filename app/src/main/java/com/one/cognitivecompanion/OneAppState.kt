@@ -55,6 +55,11 @@ class OneAppState(
     var assistantLoadState by mutableStateOf(OneAssistantLoadState.IDLE)
     var assistantResult by mutableStateOf<OneCheckInResult?>(null)
     var assistantLoadError by mutableStateOf<String?>(null)
+    var consentStates by mutableStateOf<Map<String, Boolean>?>(null)
+    var consentLoadState by mutableStateOf(OneConsentLoadState.IDLE)
+    var consentLoadError by mutableStateOf<String?>(null)
+    var consentUpdatePurpose by mutableStateOf<String?>(null)
+    var consentUpdateError by mutableStateOf<String?>(null)
     var clips by mutableStateOf<List<OneClip>?>(null)
     var clipLoadState by mutableStateOf(OneClipLoadState.IDLE)
     var clipLoadError by mutableStateOf<String?>(null)
@@ -100,6 +105,11 @@ class OneAppState(
         assistantLoadState = OneAssistantLoadState.IDLE
         assistantResult = null
         assistantLoadError = null
+        consentStates = null
+        consentLoadState = OneConsentLoadState.IDLE
+        consentLoadError = null
+        consentUpdatePurpose = null
+        consentUpdateError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null
@@ -337,6 +347,54 @@ class OneAppState(
         }
     }
 
+    suspend fun loadConsents() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            consentStates = null
+            consentLoadState = OneConsentLoadState.IDLE
+            consentLoadError = null
+            return
+        }
+        consentLoadState = OneConsentLoadState.LOADING
+        consentLoadError = null
+        try {
+            val latestByPurpose = linkedMapOf<String, Boolean>()
+            apiClient.homeConsents(authenticatedSession).forEach { consent ->
+                if (!latestByPurpose.containsKey(consent.purpose)) {
+                    latestByPurpose[consent.purpose] = consent.revokedAt == null
+                }
+            }
+            consentStates = latestByPurpose
+            consentLoadState = OneConsentLoadState.LOADED
+        } catch (error: Exception) {
+            consentLoadState = OneConsentLoadState.ERROR
+            consentLoadError = error.message ?: "Could not load privacy settings."
+        }
+    }
+
+    suspend fun updateConsent(purpose: String, granted: Boolean) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) return
+        consentUpdatePurpose = purpose
+        consentUpdateError = null
+        try {
+            apiClient.recordConsent(
+                session = authenticatedSession,
+                consentRequest = ConsentRequest(
+                    purpose = purpose,
+                    policyVersion = "2026-09",
+                    granted = granted
+                )
+            )
+            consentStates = (consentStates ?: emptyMap()) + (purpose to granted)
+            consentLoadState = OneConsentLoadState.LOADED
+        } catch (error: Exception) {
+            consentUpdateError = error.message ?: "Could not update this privacy setting."
+        } finally {
+            if (consentUpdatePurpose == purpose) consentUpdatePurpose = null
+        }
+    }
+
     suspend fun signOut() {
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -364,6 +422,11 @@ class OneAppState(
         assistantLoadState = OneAssistantLoadState.IDLE
         assistantResult = null
         assistantLoadError = null
+        consentStates = null
+        consentLoadState = OneConsentLoadState.IDLE
+        consentLoadError = null
+        consentUpdatePurpose = null
+        consentUpdateError = null
         clips = null
         clipLoadState = OneClipLoadState.IDLE
         clipLoadError = null

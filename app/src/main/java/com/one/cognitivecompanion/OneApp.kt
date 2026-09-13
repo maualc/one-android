@@ -175,6 +175,11 @@ fun OneApp() {
             appState.loadMedicationReminders()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
+        if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "account") {
+            appState.loadConsents()
+        }
+    }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
@@ -279,6 +284,14 @@ fun OneApp() {
                         )
                         "account" -> AccountScreen(
                             role = role,
+                            isBackend = appState.backendMode,
+                            consentStates = appState.consentStates,
+                            consentLoadState = appState.consentLoadState,
+                            consentLoadError = appState.consentLoadError,
+                            consentUpdatePurpose = appState.consentUpdatePurpose,
+                            consentUpdateError = appState.consentUpdateError,
+                            onConsentRetry = { coroutineScope.launch { appState.loadConsents() } },
+                            onConsentChange = { purpose, granted -> coroutineScope.launch { appState.updateConsent(purpose, granted) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -306,6 +319,14 @@ fun OneApp() {
                         )
                         "account" -> AccountScreen(
                             role = role,
+                            isBackend = appState.backendMode,
+                            consentStates = appState.consentStates,
+                            consentLoadState = appState.consentLoadState,
+                            consentLoadError = appState.consentLoadError,
+                            consentUpdatePurpose = appState.consentUpdatePurpose,
+                            consentUpdateError = appState.consentUpdateError,
+                            onConsentRetry = { coroutineScope.launch { appState.loadConsents() } },
+                            onConsentChange = { purpose, granted -> coroutineScope.launch { appState.updateConsent(purpose, granted) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -1540,23 +1561,80 @@ private fun AssistantScreen(
 private fun String.humanLabel(): String = replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
 
 @Composable
-private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit, onSignOut: () -> Unit) {
-    var roomConsent by rememberSaveable { mutableStateOf(true) }
-    var microphoneConsent by rememberSaveable { mutableStateOf(true) }
-    var clipsConsent by rememberSaveable { mutableStateOf(false) }
+private fun AccountScreen(
+    role: OneRole,
+    isBackend: Boolean,
+    consentStates: Map<String, Boolean>?,
+    consentLoadState: OneConsentLoadState,
+    consentLoadError: String?,
+    consentUpdatePurpose: String?,
+    consentUpdateError: String?,
+    onConsentRetry: () -> Unit,
+    onConsentChange: (String, Boolean) -> Unit,
+    onRoleChange: (OneRole) -> Unit,
+    onSignOut: () -> Unit
+) {
+    var demoRoomConsent by rememberSaveable { mutableStateOf(true) }
+    var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
+    var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
+    var demoFamilyConsent by rememberSaveable { mutableStateOf(false) }
+    val canEditConsents = !isBackend || consentLoadState == OneConsentLoadState.LOADED
+    val consentValue: (String, Boolean) -> Boolean = { purpose, demoValue ->
+        if (isBackend) consentStates?.get(purpose) ?: false else demoValue
+    }
+    val updateEnabled: (String) -> Boolean = { purpose ->
+        canEditConsents && consentUpdatePurpose == null && (isBackend || purpose.isNotBlank())
+    }
 
     ScreenScroll {
         ScreenHeader("ACCOUNT", "Privacy and control.", "Your home, your choices.")
-        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                ConsentRow("Room scan and map", roomConsent) { roomConsent = it }
-                HorizontalDivider()
-                ConsentRow("Microphone for push-to-talk", microphoneConsent) { microphoneConsent = it }
-                HorizontalDivider()
-                ConsentRow("Caregiver event clips", clipsConsent) { clipsConsent = it }
+        if (isBackend) {
+            when {
+                consentLoadState == OneConsentLoadState.LOADING && consentStates == null -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading privacy settings…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                consentLoadState == OneConsentLoadState.ERROR && consentStates == null -> {
+                    InfoCard("Privacy settings unavailable", consentLoadError ?: "ONE could not load the household consents.")
+                    OutlinedButton(onClick = onConsentRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
             }
         }
-        Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                ConsentRow(
+                    label = "Room and camera data",
+                    enabled = consentValue("video_capture", demoRoomConsent),
+                    interactive = updateEnabled("video_capture"),
+                    onChanged = { granted -> if (isBackend) onConsentChange("video_capture", granted) else demoRoomConsent = granted }
+                )
+                HorizontalDivider()
+                ConsentRow(
+                    label = "Microphone for push-to-talk",
+                    enabled = consentValue("audio_capture", demoMicrophoneConsent),
+                    interactive = updateEnabled("audio_capture"),
+                    onChanged = { granted -> if (isBackend) onConsentChange("audio_capture", granted) else demoMicrophoneConsent = granted }
+                )
+                HorizontalDivider()
+                ConsentRow(
+                    label = "Medication reminders",
+                    enabled = consentValue("medication_management", demoMedicationConsent),
+                    interactive = updateEnabled("medication_management"),
+                    onChanged = { granted -> if (isBackend) onConsentChange("medication_management", granted) else demoMedicationConsent = granted }
+                )
+                HorizontalDivider()
+                ConsentRow(
+                    label = "Family sharing",
+                    enabled = consentValue("family_mode", demoFamilyConsent),
+                    interactive = updateEnabled("family_mode"),
+                    onChanged = { granted -> if (isBackend) onConsentChange("family_mode", granted) else demoFamilyConsent = granted }
+                )
+            }
+        }
+        consentUpdateError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Text("Room and camera consent also governs short event clips. Sensitive data stays local unless you explicitly enable sharing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionHeading("DEMO", "Preview another experience")
         OutlinedButton(onClick = { onRoleChange(if (role == OneRole.CAREGIVER) OneRole.RESIDENT else OneRole.CAREGIVER) }, modifier = Modifier.fillMaxWidth()) {
             Icon(if (role == OneRole.CAREGIVER) Icons.Default.Person else Icons.Default.People, contentDescription = null)
@@ -1574,10 +1652,10 @@ private fun AccountScreen(role: OneRole, onRoleChange: (OneRole) -> Unit, onSign
 }
 
 @Composable
-private fun ConsentRow(label: String, enabled: Boolean, onChanged: (Boolean) -> Unit) {
+private fun ConsentRow(label: String, enabled: Boolean, interactive: Boolean = true, onChanged: (Boolean) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-        Switch(checked = enabled, onCheckedChange = onChanged)
+        Switch(checked = enabled, enabled = interactive, onCheckedChange = onChanged)
     }
 }
 

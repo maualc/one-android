@@ -165,6 +165,13 @@ data class CameraUpdateRequest(
     val enabled: Boolean? = null
 )
 
+data class OneCameraCalibration(
+    val id: UUID,
+    val cameraId: UUID,
+    val mapId: UUID,
+    val accuracyM: Double?
+)
+
 data class OneRemoteObject(
     val id: UUID,
     val label: String,
@@ -298,6 +305,7 @@ interface OneApiClient {
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
     suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
+    suspend fun createCalibration(session: OneSession, cameraId: UUID, mapId: UUID, accuracyM: Double? = null): OneCameraCalibration
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
@@ -692,6 +700,39 @@ class OneHttpApiClient(
             status = body.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
             enabled = body.optNullableBoolean("enabled") ?: request.enabled ?: true,
             lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
+        )
+    }
+
+    override suspend fun createCalibration(
+        session: OneSession,
+        cameraId: UUID,
+        mapId: UUID,
+        accuracyM: Double?
+    ): OneCameraCalibration {
+        val intrinsics = JSONObject()
+            .put("source", "android-manual")
+            .put("calibration_mode", "manual-anchors")
+        val extrinsics = JSONObject()
+            .put("source", "android-manual")
+            .put("calibration_mode", "manual-anchors")
+            .put("coordinate_frame", "map")
+        val payload = JSONObject()
+            .put("camera_id", cameraId.toString())
+            .put("map_id", mapId.toString())
+            .put("intrinsics", intrinsics)
+            .put("extrinsics", extrinsics)
+        accuracyM?.let { payload.put("accuracy_m", it) }
+        val body = request(
+            "/homes/${session.homeId}/calibrations",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return OneCameraCalibration(
+            id = body.requiredUuid("id"),
+            cameraId = body.optNullableUuid("camera_id") ?: cameraId,
+            mapId = body.optNullableUuid("map_id") ?: mapId,
+            accuracyM = body.optNullableDouble("accuracy_m") ?: accuracyM
         )
     }
 

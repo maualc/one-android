@@ -48,6 +48,9 @@ class OneAppState(
     var currentRoomMap by mutableStateOf<OneRoomMap?>(null)
     var mapLoadState by mutableStateOf(OneMapLoadState.IDLE)
     var mapLoadError by mutableStateOf<String?>(null)
+    var calibrationActionState by mutableStateOf(OneCalibrationActionState.IDLE)
+    var lastCalibration by mutableStateOf<OneCameraCalibration?>(null)
+    var calibrationActionError by mutableStateOf<String?>(null)
     var eventStreamState by mutableStateOf(OneEventStreamState.IDLE)
     var eventStreamError by mutableStateOf<String?>(null)
     var cameras by mutableStateOf<List<OneCamera>?>(null)
@@ -140,6 +143,9 @@ class OneAppState(
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
+        calibrationActionState = OneCalibrationActionState.IDLE
+        lastCalibration = null
+        calibrationActionError = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null
@@ -437,6 +443,44 @@ class OneAppState(
         } catch (error: Exception) {
             mapLoadState = OneMapLoadState.ERROR
             mapLoadError = error.message ?: "Could not save the room map."
+        }
+    }
+
+    suspend fun calibrateCamera(cameraId: UUID, mapId: UUID, accuracyM: Double?) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Connect a backend session before calibrating a camera."
+            return
+        }
+        if (!canManageFamily) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Only caregivers can calibrate household cameras."
+            return
+        }
+        if (cameras?.none { it.id == cameraId } == true) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Select a camera from this household."
+            return
+        }
+        if (currentRoomMap?.id != mapId) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Refresh the current room map before calibrating."
+            return
+        }
+        if (accuracyM != null && (accuracyM.isNaN() || accuracyM < 0.0 || accuracyM > 100.0)) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = "Accuracy must be between 0 and 100 metres."
+            return
+        }
+        calibrationActionState = OneCalibrationActionState.SUBMITTING
+        calibrationActionError = null
+        try {
+            lastCalibration = apiClient.createCalibration(authenticatedSession, cameraId, mapId, accuracyM)
+            calibrationActionState = OneCalibrationActionState.LOADED
+        } catch (error: Exception) {
+            calibrationActionState = OneCalibrationActionState.ERROR
+            calibrationActionError = error.message ?: "Could not save the camera calibration."
         }
     }
 
@@ -943,6 +987,9 @@ class OneAppState(
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
+        calibrationActionState = OneCalibrationActionState.IDLE
+        lastCalibration = null
+        calibrationActionError = null
         eventStreamState = OneEventStreamState.IDLE
         eventStreamError = null
         cameras = null

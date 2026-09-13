@@ -72,6 +72,13 @@ enum class OneMapLoadState {
     ERROR
 }
 
+enum class OneCalibrationActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),

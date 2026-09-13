@@ -264,6 +264,13 @@ fun OneApp() {
                             loadState = appState.homeLoadState,
                             loadError = appState.homeLoadError,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            cameras = appState.cameras,
+                            calibrationActionState = appState.calibrationActionState,
+                            lastCalibration = appState.lastCalibration,
+                            calibrationActionError = appState.calibrationActionError,
+                            onCalibrateCamera = { cameraId, mapId, accuracyM ->
+                                coroutineScope.launch { appState.calibrateCamera(cameraId, mapId, accuracyM) }
+                            },
                             currentRoomMap = appState.currentRoomMap,
                             mapLoadState = appState.mapLoadState,
                             mapLoadError = appState.mapLoadError,
@@ -1237,6 +1244,11 @@ private fun MapScreen(
     loadState: OneHomeLoadState,
     loadError: String?,
     onRetry: () -> Unit,
+    cameras: List<OneCamera>?,
+    calibrationActionState: OneCalibrationActionState,
+    lastCalibration: OneCameraCalibration?,
+    calibrationActionError: String?,
+    onCalibrateCamera: (UUID, UUID, Double?) -> Unit,
     currentRoomMap: OneRoomMap?,
     mapLoadState: OneMapLoadState,
     mapLoadError: String?,
@@ -1246,8 +1258,17 @@ private fun MapScreen(
     var showManualMapDialog by rememberSaveable { mutableStateOf(false) }
     var manualRoomName by rememberSaveable { mutableStateOf("") }
     var manualZones by rememberSaveable { mutableStateOf("") }
+    var showCalibrationDialog by rememberSaveable { mutableStateOf(false) }
+    var calibrationCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var calibrationAccuracy by rememberSaveable { mutableStateOf("") }
+    var calibrationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
     val manualZoneNames = manualZones.split(",", ";", "\n").map { it.trim() }.filter { it.isNotBlank() }.distinct()
     val canSubmitManualMap = manualRoomName.trim().isNotBlank() && manualZoneNames.isNotEmpty() && mapLoadState != OneMapLoadState.SUBMITTING
+    val selectedCalibrationCamera = calibrationCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
+        ?: cameras.orEmpty().firstOrNull()
+    val parsedCalibrationAccuracy = calibrationAccuracy.trim().takeIf { it.isNotBlank() }?.toDoubleOrNull()
+    val canSubmitCalibration = selectedCalibrationCamera != null && currentRoomMap != null && parsedCalibrationAccuracy != null ||
+        selectedCalibrationCamera != null && currentRoomMap != null && calibrationAccuracy.trim().isBlank()
 
     ScreenScroll {
         ScreenHeader("MAP", "Home map", "Approximate locations · local view")
@@ -1281,6 +1302,36 @@ private fun MapScreen(
                         "${currentRoomMap.coordinateFrame} · $zones"
                     )
                 }
+            }
+        }
+        SectionHeading("CALIBRATION", "Camera-to-map alignment")
+        if (!isBackend) {
+            InfoCard("Backend-only calibration", "Connect a backend to store camera alignment metadata.")
+        } else if (currentRoomMap == null) {
+            InfoCard("Map required", "Create or load a room map before calibrating a camera.")
+        } else if (cameras.isNullOrEmpty()) {
+            InfoCard("Camera required", "Register a household camera before calibrating it against this map.")
+        } else {
+            OutlinedButton(
+                onClick = {
+                    calibrationCameraId = selectedCalibrationCamera?.id?.toString()
+                    calibrationAccuracy = ""
+                    showCalibrationDialog = true
+                },
+                enabled = calibrationActionState != OneCalibrationActionState.SUBMITTING,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (calibrationActionState == OneCalibrationActionState.SUBMITTING) "Saving calibration…" else "Calibrate camera to map")
+            }
+            lastCalibration?.let { calibration ->
+                val cameraName = cameras.firstOrNull { it.id == calibration.cameraId }?.name ?: "Selected camera"
+                InfoCard(
+                    "Calibration saved",
+                    "$cameraName · ${calibration.accuracyM?.let { "approx. ${it} m" } ?: "accuracy not measured"}. Recheck alignment after moving the camera."
+                )
+            }
+            calibrationActionError?.let { error ->
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
         SectionHeading("EVIDENCE", "Recent observations")
@@ -1355,6 +1406,69 @@ private fun MapScreen(
                 TextButton(
                     onClick = { showManualMapDialog = false },
                     enabled = mapLoadState != OneMapLoadState.SUBMITTING
+                ) { Text("Cancel") }
+            }
+        )
+    }
+    if (showCalibrationDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (calibrationActionState != OneCalibrationActionState.SUBMITTING) showCalibrationDialog = false
+            },
+            title = { Text("Calibrate camera to map") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Choose the camera that observes this map. ONE stores manual calibration metadata and treats all positions as approximate.", style = MaterialTheme.typography.bodySmall)
+                    Box {
+                        OutlinedButton(
+                            onClick = { calibrationCameraMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Camera: ${selectedCalibrationCamera?.name ?: "Select camera"}") }
+                        DropdownMenu(
+                            expanded = calibrationCameraMenuExpanded,
+                            onDismissRequest = { calibrationCameraMenuExpanded = false }
+                        ) {
+                            cameras.orEmpty().forEach { camera ->
+                                DropdownMenuItem(
+                                    text = { Text(camera.name) },
+                                    onClick = {
+                                        calibrationCameraId = camera.id.toString()
+                                        calibrationCameraMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = calibrationAccuracy,
+                        onValueChange = { calibrationAccuracy = it.take(8) },
+                        label = { Text("Measured accuracy in metres (optional)") },
+                        placeholder = { Text("For example 0.5") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (calibrationAccuracy.isNotBlank() && parsedCalibrationAccuracy == null) {
+                        Text("Enter a number between 0 and 100, or leave this field blank.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val camera = selectedCalibrationCamera
+                        val map = currentRoomMap
+                        if (camera != null && map != null) {
+                            showCalibrationDialog = false
+                            onCalibrateCamera(camera.id, map.id, parsedCalibrationAccuracy)
+                        }
+                    },
+                    enabled = canSubmitCalibration && calibrationActionState != OneCalibrationActionState.SUBMITTING
+                ) { Text(if (calibrationActionState == OneCalibrationActionState.SUBMITTING) "Saving…" else "Save calibration") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCalibrationDialog = false },
+                    enabled = calibrationActionState != OneCalibrationActionState.SUBMITTING
                 ) { Text("Cancel") }
             }
         )

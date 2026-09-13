@@ -1038,6 +1038,7 @@ class OneAppState(
                 )
             )
             consentStates = (consentStates ?: emptyMap()) + (purpose to granted)
+            if (purpose == "medication_management" && !granted) OneMedicationScheduler.cancelAll(appContext)
             consentLoadState = OneConsentLoadState.LOADED
         } catch (error: Exception) {
             consentUpdateError = error.message ?: "Could not update this privacy setting."

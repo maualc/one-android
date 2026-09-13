@@ -70,6 +70,14 @@ object OneMedicationScheduler {
         saveRecords(prefs, loadRecords(prefs).filterNot { it.planId == planId })
     }
 
+    fun cancelAll(context: Context) {
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val alarm = appContext.getSystemService(AlarmManager::class.java)
+        loadRecords(prefs).forEach { alarm.cancel(pendingIntent(appContext, it)) }
+        saveRecords(prefs, emptyList())
+    }
+
     internal fun rescheduleAll(context: Context) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

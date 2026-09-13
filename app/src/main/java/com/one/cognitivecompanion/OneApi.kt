@@ -152,6 +152,7 @@ interface OneApiClient {
     suspend fun logout(session: OneSession)
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
+    fun clipContentUrl(session: OneSession, clipId: UUID): String
     suspend fun homeProfile(session: OneSession): OneHomeProfile
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun homeObjects(session: OneSession): List<OneRemoteObject>
@@ -169,6 +170,9 @@ interface OneApiClient {
 class OneHttpApiClient(
     private val configuration: RuntimeConfiguration = RuntimeConfiguration()
 ) : OneApiClient {
+    override fun clipContentUrl(session: OneSession, clipId: UUID): String =
+        configuration.apiBaseUrl.trimEnd('/') + "/clips/$clipId/content"
+
     override suspend fun health(): BackendHealth {
         val body = request(path = "/health", method = "GET")
         return BackendHealth(

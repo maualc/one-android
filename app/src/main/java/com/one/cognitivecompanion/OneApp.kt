@@ -61,6 +61,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -80,12 +81,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.one.cognitivecompanion.ui.theme.OneAmber
 import com.one.cognitivecompanion.ui.theme.OneBlue
 import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneInverseSurface
 import com.one.cognitivecompanion.ui.theme.OneMint
 import com.one.cognitivecompanion.ui.theme.ONETheme
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
 import io.livekit.android.compose.local.RoomScope
 import io.livekit.android.compose.state.rememberTracks
 import io.livekit.android.compose.ui.VideoTrackView
@@ -221,6 +230,8 @@ fun OneApp() {
                 } else if (selectedEvent != null && role == OneRole.CAREGIVER) {
                     EventDetailScreen(
                         event = selectedEvent!!,
+                        apiClient = apiClient,
+                        session = appState.session,
                         clips = appState.clips,
                         clipLoadState = appState.clipLoadState,
                         clipLoadError = appState.clipLoadError,
@@ -1258,12 +1269,14 @@ private fun EventRow(event: OneEvent, hasClip: Boolean = false, onClick: (() -> 
 @Composable
 private fun EventDetailScreen(
     event: OneEvent,
+    apiClient: OneApiClient,
+    session: OneSession?,
     clips: List<OneClip>?,
     clipLoadState: OneClipLoadState,
     clipLoadError: String?,
     onClose: () -> Unit
 ) {
-    val linkedClips = event.id?.let { eventId -> clips?.filter { it.eventId == eventId } }
+    val linkedClips = event.id?.let { eventId -> clips?.filter { it.eventId == eventId } }.orEmpty()
     ScreenScroll {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) {
@@ -1287,11 +1300,103 @@ private fun EventDetailScreen(
             when {
                 clipLoadState == OneClipLoadState.LOADING && clips == null -> InfoCard("Linked evidence", "Checking whether this observation has a consented event clip.")
                 clipLoadState == OneClipLoadState.ERROR -> InfoCard("Linked evidence unavailable", clipLoadError ?: "ONE could not check event clips right now.")
-                !linkedClips.isNullOrEmpty() -> InfoCard("Linked evidence", "A consented event clip is linked to this observation. Media playback will be added in the next review slice.")
+                linkedClips.isNotEmpty() -> InfoCard("Linked evidence", "A consented event clip is linked to this observation.")
                 else -> InfoCard("Linked evidence", "No retained event clip is linked to this observation.")
             }
         }
+        if (linkedClips.isNotEmpty() && session != null) {
+            SectionHeading("EVIDENCE", "Consent-based event clip")
+            ClipPlayer(apiClient = apiClient, session = session, clip = linkedClips.first())
+            if (linkedClips.size > 1) {
+                Text("${linkedClips.size} clips are linked to this observation; showing the most recent one.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         InfoCard("Human review", "This observation can support attention and discussion. It is not a diagnosis or medical advice.")
+    }
+}
+
+@Composable
+private fun ClipPlayer(apiClient: OneApiClient, session: OneSession, clip: OneClip) {
+    val context = LocalContext.current
+    var playbackState by remember(clip.id, session.accessToken) { mutableStateOf(Player.STATE_IDLE) }
+    var isPlaying by remember(clip.id, session.accessToken) { mutableStateOf(false) }
+    var playbackError by remember(clip.id, session.accessToken) { mutableStateOf<String?>(null) }
+    val player = remember(clip.id, session.accessToken, apiClient) {
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Authorization" to "Bearer ${session.accessToken}",
+                    "Accept" to "video/mp4"
+                )
+            )
+        val mediaSourceFactory = DefaultMediaSourceFactory(context).setDataSourceFactory(httpDataSourceFactory)
+        ExoPlayer.Builder(context).setMediaSourceFactory(mediaSourceFactory).build()
+    }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                playbackState = state
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                playbackError = error.message ?: "The event clip could not be played."
+            }
+        }
+        player.addListener(listener)
+        player.setMediaItem(MediaItem.fromUri(apiClient.clipContentUrl(session, clip.id)))
+        player.prepare()
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(250.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(OneInverseSurface),
+            contentAlignment = Alignment.Center
+        ) {
+            AndroidView(
+                factory = { viewContext ->
+                    PlayerView(viewContext).apply {
+                        useController = true
+                        this.player = player
+                    }
+                },
+                update = { view -> view.player = player },
+                modifier = Modifier.fillMaxSize()
+            )
+            playbackError?.let { error ->
+                Surface(
+                    modifier = Modifier.padding(18.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.Black.copy(alpha = 0.72f)
+                ) {
+                    Text(error, modifier = Modifier.padding(14.dp), color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        Text(
+            text = when {
+                playbackError != null -> "Playback unavailable"
+                isPlaying -> "Playing consented event clip"
+                playbackState == Player.STATE_BUFFERING -> "Preparing clip…"
+                playbackState == Player.STATE_ENDED -> "Clip finished"
+                playbackState == Player.STATE_READY -> "Press play to review the clip"
+                else -> "Loading clip…"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (playbackError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

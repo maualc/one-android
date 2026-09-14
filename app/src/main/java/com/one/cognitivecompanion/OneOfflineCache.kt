@@ -85,6 +85,10 @@ class OneOfflineCache(context: Context) {
                 rescanRequired = row.optBoolean("rescan_required", false),
                 confidence = row.optNullableDouble("confidence"),
                 modelVersion = row.optNullableString("model_version"),
+                polygons = row.optJSONArray("polygons").toMapPolygons(),
+                walls = row.optJSONArray("walls").toMapWalls(),
+                furniture = row.optJSONArray("furniture").toMapFurniture(),
+                openings = row.optJSONArray("openings").toMapOpenings(),
                 usdzAvailable = row.optBoolean("usdz_available", false)
             )
         }
@@ -116,7 +120,77 @@ class OneOfflineCache(context: Context) {
         .put("scale_meters_per_unit", value.scaleMetersPerUnit ?: JSONObject.NULL)
         .put("localization_status", value.localizationStatus).put("geometry_status", value.geometryStatus)
         .put("rescan_required", value.rescanRequired).put("confidence", value.confidence ?: JSONObject.NULL)
-        .put("model_version", value.modelVersion ?: JSONObject.NULL).put("usdz_available", value.usdzAvailable)
+        .put("model_version", value.modelVersion ?: JSONObject.NULL)
+        .put("polygons", JSONArray(value.polygons.map(::polygonJson)))
+        .put("walls", JSONArray(value.walls.map(::wallJson)))
+        .put("furniture", JSONArray(value.furniture.map(::furnitureJson)))
+        .put("openings", JSONArray(value.openings.map(::openingJson)))
+        .put("usdz_available", value.usdzAvailable)
+
+    private fun pointJson(value: OneMapPoint) = JSONObject().put("x", value.x).put("y", value.y)
+
+    private fun polygonJson(value: OneMapPolygon) = JSONObject()
+        .put("id", value.id).put("label", value.label)
+        .put("points", JSONArray(value.points.map(::pointJson)))
+        .put("confidence", value.confidence ?: JSONObject.NULL)
+
+    private fun wallJson(value: OneMapWall) = JSONObject()
+        .put("id", value.id).put("start", pointJson(value.start)).put("end", pointJson(value.end))
+        .put("confidence", value.confidence ?: JSONObject.NULL)
+
+    private fun furnitureJson(value: OneMapFurniture) = JSONObject()
+        .put("id", value.id).put("label", value.label).put("center", pointJson(value.center)).put("size", pointJson(value.size))
+        .put("rotation_degrees", value.rotationDegrees).put("confidence", value.confidence ?: JSONObject.NULL)
+
+    private fun openingJson(value: OneMapOpening) = JSONObject()
+        .put("id", value.id).put("kind", value.kind).put("start", pointJson(value.start)).put("end", pointJson(value.end))
+        .put("confidence", value.confidence ?: JSONObject.NULL)
+
+    private fun JSONArray?.toMapPolygons(): List<OneMapPolygon> = this?.let { rows -> buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val points = row.optJSONArray("points").toMapPoints()
+            if (points.size >= 3) add(OneMapPolygon(row.optString("id").ifBlank { "polygon-$index" }, row.optString("label").ifBlank { "Room area" }, points, row.optNullableDouble("confidence")?.toFloat()))
+        }
+    } } ?: emptyList()
+
+    private fun JSONArray?.toMapWalls(): List<OneMapWall> = this?.let { rows -> buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val start = row.optJSONObject("start").toMapPoint() ?: continue
+            val end = row.optJSONObject("end").toMapPoint() ?: continue
+            add(OneMapWall(row.optString("id").ifBlank { "wall-$index" }, start, end, row.optNullableDouble("confidence")?.toFloat()))
+        }
+    } } ?: emptyList()
+
+    private fun JSONArray?.toMapFurniture(): List<OneMapFurniture> = this?.let { rows -> buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val center = row.optJSONObject("center").toMapPoint() ?: continue
+            val size = row.optJSONObject("size").toMapPoint() ?: continue
+            add(OneMapFurniture(row.optString("id").ifBlank { "furniture-$index" }, row.optString("label").ifBlank { "Furniture" }, center, size, row.optDouble("rotation_degrees", 0.0).toFloat(), row.optNullableDouble("confidence")?.toFloat()))
+        }
+    } } ?: emptyList()
+
+    private fun JSONArray?.toMapOpenings(): List<OneMapOpening> = this?.let { rows -> buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val start = row.optJSONObject("start").toMapPoint() ?: continue
+            val end = row.optJSONObject("end").toMapPoint() ?: continue
+            add(OneMapOpening(row.optString("id").ifBlank { "opening-$index" }, row.optString("kind").ifBlank { "opening" }, start, end, row.optNullableDouble("confidence")?.toFloat()))
+        }
+    } } ?: emptyList()
+
+    private fun JSONArray?.toMapPoints(): List<OneMapPoint> = this?.let { rows -> buildList {
+        for (index in 0 until rows.length()) rows.optJSONObject(index).toMapPoint()?.let(::add)
+    } } ?: emptyList()
+
+    private fun JSONObject?.toMapPoint(): OneMapPoint? {
+        val row = this ?: return null
+        val x = row.optDouble("x", Double.NaN)
+        val y = row.optDouble("y", Double.NaN)
+        return if (x.isFinite() && y.isFinite()) OneMapPoint(x.toFloat(), y.toFloat()) else null
+    }
 
     private fun JSONArray?.toObjects(): List<OneRemoteObject> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneRemoteObject(UUID.fromString(row.getString("id")), row.optString("label"), row.optString("status"), row.optNullableString("zone"), row.optNullableDouble("x"), row.optNullableDouble("y"), row.optNullableString("last_seen_at").toInstantOrNull(), row.optDouble("confidence"), row.optDouble("radius"))) } } } } ?: emptyList()
     private fun JSONArray?.toEvents(): List<OneEvent> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneEvent(runCatching { EventKind.valueOf(row.optString("kind")) }.getOrDefault(EventKind.OTHER), row.optString("location"), row.optString("time"), row.optString("explanation"), row.optString("confidence"), row.optNullableString("id")?.let(UUID::fromString), row.optNullableString("observed_at").toInstantOrNull(), row.optJSONArray("evidence_ids").toStringList())) } } } } ?: emptyList()

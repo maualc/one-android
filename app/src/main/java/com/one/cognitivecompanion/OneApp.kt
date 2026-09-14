@@ -4000,12 +4000,13 @@ private fun AccountScreen(
     onSignOut: () -> Unit
 ) {
     val accountContext = LocalContext.current
-    var notificationPermissionResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var notificationPermissionRequestGranted by remember { mutableStateOf<Boolean?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        notificationPermissionResult = if (granted) "Medication notifications enabled." else "Enable notifications in Android settings to receive medication reminders."
+        notificationPermissionRequestGranted = granted
     }
-    val notificationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+    val systemNotificationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(accountContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    val notificationsEnabled = systemNotificationsEnabled || notificationPermissionRequestGranted == true
     var demoRoomConsent by rememberSaveable { mutableStateOf(true) }
     var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
     var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
@@ -4091,7 +4092,7 @@ private fun AccountScreen(
         }
         SectionHeading("NOTIFICATIONS", "Medication reminders")
         InfoCard(
-            if (notificationsEnabled) "Notifications ready" else "Notifications are off",
+            if (notificationsEnabled) "Notifications enabled" else "Notifications are off",
             if (notificationsEnabled) "ONE will alert the resident at scheduled medication times and repeat daily rules." else "Allow notifications so a scheduled dose is not easy to miss."
         )
         if (!notificationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -4100,7 +4101,6 @@ private fun AccountScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Allow medication notifications") }
         }
-        notificationPermissionResult?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (notificationsEnabled) OneMint else OneAmber) }
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 ConsentRow(

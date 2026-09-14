@@ -1449,7 +1449,9 @@ class OneHttpApiClient(
         request.schedule?.let { payload.put("schedule", it) }
         request.instructions?.let { payload.put("instructions", it) }
         request.active?.let { payload.put("active", it) }
-        request.assignedCaregiverId?.let { payload.put("assigned_caregiver_id", it.toString()) }
+        // The backend treats an explicit JSON null as “unassign”; always send
+        // this field so the UI can remove a previous caregiver assignment.
+        payload.put("assigned_caregiver_id", request.assignedCaregiverId?.toString() ?: JSONObject.NULL)
         request.version?.let { payload.put("version", it) }
         return parseMedicationPlan(
             request(

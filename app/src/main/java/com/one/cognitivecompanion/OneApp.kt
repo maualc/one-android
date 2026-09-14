@@ -157,6 +157,43 @@ private val publisherTabs = listOf(
     OneNavItem("publisher", "Publisher", Icons.Default.Visibility)
 )
 
+/**
+ * Shared ONE styling for every modal panel in the app.
+ *
+ * Keeping this in one place prevents individual flows from falling back to
+ * Material's default lavender dialog surface while leaving their actions and
+ * data handling untouched.
+ */
+@Composable
+private fun OneAlertDialog(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    dismissButton: (@Composable (() -> Unit))? = null,
+    icon: (@Composable (() -> Unit))? = null,
+    title: (@Composable (() -> Unit))? = null,
+    text: (@Composable (() -> Unit))? = null
+) {
+    val dialogShapes = MaterialTheme.shapes.copy(small = RoundedCornerShape(14.dp))
+    MaterialTheme(shapes = dialogShapes) {
+        AlertDialog(
+            onDismissRequest = onDismissRequest,
+            confirmButton = confirmButton,
+            modifier = modifier.padding(horizontal = 8.dp),
+            dismissButton = dismissButton,
+            icon = icon,
+            title = title,
+            text = text,
+            shape = RoundedCornerShape(28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            iconContentColor = OneBlue,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp
+        )
+    }
+}
+
 @Composable
 fun OneApp() {
     // Demo mode starts inside the app so the shell is immediately usable. The
@@ -1417,7 +1454,7 @@ private fun HomeCameraStatusCard(
         }
     }
     if (showCameraDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = {
                 if (actionState != OneCameraActionState.SUBMITTING) showCameraDialog = false
             },
@@ -2131,7 +2168,7 @@ private fun MapScreen(
         }
     }
     if (showManualMapDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = {
                 if (mapLoadState != OneMapLoadState.SUBMITTING) showManualMapDialog = false
             },
@@ -2177,7 +2214,7 @@ private fun MapScreen(
         )
     }
     if (showCalibrationDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = {
                 if (calibrationActionState != OneCalibrationActionState.SUBMITTING) showCalibrationDialog = false
             },
@@ -2251,7 +2288,7 @@ private fun MapScreen(
         )
     }
     if (showObjectDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { if (objectActionState != OneObjectActionState.SUBMITTING) showObjectDialog = false },
             title = { Text("Add household object") },
             text = {
@@ -2277,7 +2314,7 @@ private fun MapScreen(
         val parsedY = observationY.trim().toDoubleOrNull()
         val parsedUncertainty = observationUncertainty.trim().toDoubleOrNull()
         val parsedConfidence = observationConfidence.trim().toDoubleOrNull()
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { if (observationActionState != OneObservationActionState.SUBMITTING) showObservationDialog = false },
             title = { Text("Record approximate observation") },
             text = {
@@ -3010,7 +3047,7 @@ private fun FamilyScreen(
         }
     }
     if (showInviteDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = {
                 if (familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING) showInviteDialog = false
             },
@@ -3073,19 +3110,13 @@ private fun FamilyScreen(
         )
     }
     if (showMedicationPlanDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = {
                 if (medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING) {
                     showMedicationPlanDialog = false
                     editingMedicationPlanId = null
                 }
             },
-            modifier = Modifier.padding(horizontal = 8.dp),
-            shape = RoundedCornerShape(28.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-            titleContentColor = MaterialTheme.colorScheme.onSurface,
-            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            tonalElevation = 0.dp,
             title = {
                 Text(
                     if (editingMedicationPlan == null) "Add a medication plan" else "Edit medication plan",
@@ -3364,7 +3395,7 @@ private fun CareRecipientsCard(
         }
     }
     if (showDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { if (!busy) showDialog = false },
             title = { Text(if (editing == null) "Add care recipient" else "Edit care recipient") },
             text = {
@@ -3391,7 +3422,7 @@ private fun CareRecipientsCard(
     }
     val deleteTarget = deleteTargetId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
     if (deleteTarget != null) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { if (!busy) deleteTargetId = null },
             title = { Text("Remove ${deleteTarget.displayName}?") },
             text = { Text("This removes the care profile from this space. It does not delete any household member account.") },
@@ -3480,7 +3511,7 @@ private fun CareSpacesCard(
         }
     }
     if (showCreateDialog) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { if (!busy) showCreateDialog = false },
             title = { Text("Create a care space") },
             text = {
@@ -4400,7 +4431,7 @@ private fun AccountScreen(
         Text("Observations support human attention. They are not medical advice or a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
     }
     if (showDeletionConfirmation) {
-        AlertDialog(
+        OneAlertDialog(
             onDismissRequest = { showDeletionConfirmation = false },
             title = { Text("Delete household data?") },
             text = {

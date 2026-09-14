@@ -416,6 +416,7 @@ fun OneApp() {
                         )
                         "family" -> FamilyScreen(
                             members = appState.familyMembers,
+                            currentUserId = appState.session?.userId,
                             isBackend = appState.backendMode,
                             loadState = appState.familyLoadState,
                             loadError = appState.familyLoadError,
@@ -2625,6 +2626,7 @@ private fun formatConfidence(value: Double): String = "%.0f%%".format(java.util.
 @Composable
 private fun FamilyScreen(
     members: List<OneFamilyMember>?,
+    currentUserId: UUID?,
     isBackend: Boolean,
     loadState: OneFamilyLoadState,
     loadError: String?,
@@ -2770,12 +2772,14 @@ private fun FamilyScreen(
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                         members.forEachIndexed { index, member ->
                             if (index > 0) HorizontalDivider()
+                            val isCurrentUser = member.id == currentUserId
                             CaregiverRow(
                                 name = member.displayName,
                                 relationship = member.email ?: "ONE member",
                                 role = member.familyRoleLabel(),
                                 tint = member.familyTint(),
-                                actions = if (isBackend && canInvite && !member.role.equals("admin", ignoreCase = true)) {
+                                isCurrentUser = isCurrentUser,
+                                actions = if (isBackend && canInvite && !isCurrentUser && !member.role.equals("admin", ignoreCase = true)) {
                                     {
                                         FamilyMemberAccessActions(
                                             member = member,
@@ -3273,15 +3277,21 @@ private fun CaregiverRow(
     relationship: String,
     role: String,
     tint: Color,
+    isCurrentUser: Boolean = false,
     actions: (@Composable () -> Unit)? = null
 ) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp).semantics(mergeDescendants = true) { contentDescription = "$name. $relationship. Role: $role" }, verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp).semantics(mergeDescendants = true) { contentDescription = "$name.${if (isCurrentUser) " You." else ""} $relationship. Role: $role" }, verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(42.dp).background(tint.copy(alpha = 0.12f), CircleShape), contentAlignment = Alignment.Center) {
             Text(name.first().toString(), style = MaterialTheme.typography.titleMedium, color = tint, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(name, style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                if (isCurrentUser) {
+                    Text("YOU", style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Bold)
+                }
+            }
             Text(relationship, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Surface(shape = RoundedCornerShape(50), color = tint.copy(alpha = 0.12f)) {

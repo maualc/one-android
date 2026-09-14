@@ -120,6 +120,25 @@ class OneAppState(
     var publisherPairing by mutableStateOf<PublisherPairingStartResponse?>(null)
     var publisherPairingLoadState by mutableStateOf(OneFamilyInviteLoadState.IDLE)
     var publisherPairingError by mutableStateOf<String?>(null)
+    var cameraPairingStatus by mutableStateOf<OneCameraPairingStatus?>(null)
+    var cameraPairingStatusLoadState by mutableStateOf(OneCameraPairingStatusLoadState.IDLE)
+    var cameraPairingStatusError by mutableStateOf<String?>(null)
+    var cameraReconnectLink by mutableStateOf<OneCameraReconnectLink?>(null)
+    var cameraReconnectLoadState by mutableStateOf(OneCameraReconnectLoadState.IDLE)
+    var cameraReconnectError by mutableStateOf<String?>(null)
+    var careSpaces by mutableStateOf<List<OneCareSpace>?>(null)
+    var careSpacesLoadState by mutableStateOf(OneCareSpaceLoadState.IDLE)
+    var careSpacesLoadError by mutableStateOf<String?>(null)
+    var careSpaceActionState by mutableStateOf(OneCareSpaceActionState.IDLE)
+    var careSpaceActionError by mutableStateOf<String?>(null)
+    var careRecipients by mutableStateOf<List<OneCareRecipient>?>(null)
+    var careRecipientsLoadState by mutableStateOf(OneCareRecipientLoadState.IDLE)
+    var careRecipientsLoadError by mutableStateOf<String?>(null)
+    var careRecipientActionState by mutableStateOf(OneCareRecipientActionState.IDLE)
+    var careRecipientActionError by mutableStateOf<String?>(null)
+    var familyMemberActionState by mutableStateOf(OneFamilyMemberActionState.IDLE)
+    var familyMemberActionError by mutableStateOf<String?>(null)
+    var familyMemberActionId by mutableStateOf<UUID?>(null)
 
     val isAdmin: Boolean
         get() = session?.backendRole?.equals("admin", ignoreCase = true) == true
@@ -237,17 +256,41 @@ class OneAppState(
         publisherPairing = null
         publisherPairingLoadState = OneFamilyInviteLoadState.IDLE
         publisherPairingError = null
+        cameraPairingStatus = null
+        cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.IDLE
+        cameraPairingStatusError = null
+        cameraReconnectLink = null
+        cameraReconnectLoadState = OneCameraReconnectLoadState.IDLE
+        cameraReconnectError = null
+        careSpaces = null
+        careSpacesLoadState = OneCareSpaceLoadState.IDLE
+        careSpacesLoadError = null
+        careSpaceActionState = OneCareSpaceActionState.IDLE
+        careSpaceActionError = null
+        careRecipients = null
+        careRecipientsLoadState = OneCareRecipientLoadState.IDLE
+        careRecipientsLoadError = null
+        careRecipientActionState = OneCareRecipientActionState.IDLE
+        careRecipientActionError = null
+        familyMemberActionState = OneFamilyMemberActionState.IDLE
+        familyMemberActionError = null
+        familyMemberActionId = null
         onboardingConsentRoom = false
         onboardingConsentMic = false
         onboardingConsentMedication = false
         onboardingConsentFamily = false
         onboardingConsentFamilyAssistant = false
-        if (usedBackend && authenticatedSession != null) {
-            runCatching { secureStore.saveSession(authenticatedSession, onboardingComplete = false) }
+        val onboardingComplete = if (usedBackend && authenticatedSession != null) {
+            runCatching {
+                secureStore.saveSession(authenticatedSession, onboardingComplete = false)
+                secureStore.isOnboardingComplete(authenticatedSession)
+            }.getOrDefault(false)
+        } else {
+            false
         }
         roleName = authenticatedSession?.role?.name ?: OneRole.CAREGIVER.name
-        onboardingStep = if (authenticatedSession?.role == OneRole.PUBLISHER) 3 else 0
-        authStageName = if (authenticatedSession?.role == OneRole.PUBLISHER) {
+        onboardingStep = if (authenticatedSession?.role == OneRole.PUBLISHER || onboardingComplete) 3 else 0
+        authStageName = if (authenticatedSession?.role == OneRole.PUBLISHER || onboardingComplete) {
             AuthStage.AUTHENTICATED.name
         } else {
             AuthStage.ONBOARDING.name
@@ -324,6 +367,239 @@ class OneAppState(
         } catch (error: Exception) {
             publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
             publisherPairingError = error.message ?: "Could not create the publisher pairing code."
+        }
+    }
+
+    suspend fun refreshCameraPairingStatus(pairingId: UUID? = publisherPairing?.pairingId) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || pairingId == null) {
+            cameraPairingStatus = null
+            cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.IDLE
+            cameraPairingStatusError = null
+            return
+        }
+        if (!canManageFamily) {
+            cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.ERROR
+            cameraPairingStatusError = "Only a caregiver or administrator can view pairing status."
+            return
+        }
+        cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.LOADING
+        cameraPairingStatusError = null
+        try {
+            cameraPairingStatus = apiClient.cameraPairingStatus(authenticatedSession, pairingId)
+            cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.LOADED
+            if (cameraPairingStatus?.status == "connected") loadCameras()
+        } catch (error: Exception) {
+            cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.ERROR
+            cameraPairingStatusError = error.message ?: "Could not load the camera pairing status."
+        }
+    }
+
+    suspend fun createCameraReconnectLink() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || authenticatedSession.role != OneRole.PUBLISHER) {
+            cameraReconnectLoadState = OneCameraReconnectLoadState.ERROR
+            cameraReconnectError = "Only a paired publisher device can create a reconnect link."
+            return
+        }
+        cameraReconnectLoadState = OneCameraReconnectLoadState.SUBMITTING
+        cameraReconnectError = null
+        try {
+            cameraReconnectLink = apiClient.createCameraReconnectLink(authenticatedSession)
+            session = authenticatedSession.copy(reconnectToken = cameraReconnectLink?.reconnectToken)
+            withContext(Dispatchers.IO) { secureStore.saveSession(session!!, onboardingComplete = true) }
+            cameraReconnectLoadState = OneCameraReconnectLoadState.LOADED
+        } catch (error: Exception) {
+            cameraReconnectLoadState = OneCameraReconnectLoadState.ERROR
+            cameraReconnectError = error.message ?: "Could not create the camera reconnect link."
+        }
+    }
+
+    suspend fun reconnectPublisherCamera() {
+        val authenticatedSession = session
+        val reconnectToken = authenticatedSession?.reconnectToken
+        if (!backendMode || authenticatedSession == null || authenticatedSession.role != OneRole.PUBLISHER || reconnectToken.isNullOrBlank()) {
+            cameraReconnectLoadState = OneCameraReconnectLoadState.ERROR
+            cameraReconnectError = "This publisher has no stored reconnect link yet."
+            return
+        }
+        cameraReconnectLoadState = OneCameraReconnectLoadState.SUBMITTING
+        cameraReconnectError = null
+        try {
+            val reconnected = apiClient.reconnectCamera(authenticatedSession.userId, reconnectToken)
+            session = reconnected.copy(reconnectToken = reconnectToken)
+            withContext(Dispatchers.IO) { secureStore.saveSession(session!!, onboardingComplete = true) }
+            cameraReconnectLoadState = OneCameraReconnectLoadState.LOADED
+        } catch (error: Exception) {
+            cameraReconnectLoadState = OneCameraReconnectLoadState.ERROR
+            cameraReconnectError = error.message ?: "Could not reconnect the publisher camera."
+        }
+    }
+
+    suspend fun loadCareSpaces() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || authenticatedSession.role == OneRole.PUBLISHER) {
+            careSpaces = null
+            careSpacesLoadState = OneCareSpaceLoadState.IDLE
+            careSpacesLoadError = null
+            return
+        }
+        careSpacesLoadState = OneCareSpaceLoadState.LOADING
+        careSpacesLoadError = null
+        try {
+            careSpaces = apiClient.careSpaces(authenticatedSession)
+            careSpacesLoadState = OneCareSpaceLoadState.LOADED
+        } catch (error: Exception) {
+            careSpacesLoadState = OneCareSpaceLoadState.ERROR
+            careSpacesLoadError = error.message ?: "Could not load your care spaces."
+        }
+    }
+
+    suspend fun createCareSpace(name: String, careSetting: String, supportFocus: String) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            careSpaceActionState = OneCareSpaceActionState.ERROR
+            careSpaceActionError = "Connect a backend session before creating a care space."
+            return
+        }
+        if (!canManageFamily) {
+            careSpaceActionState = OneCareSpaceActionState.ERROR
+            careSpaceActionError = "Only caregivers or administrators can create a care space."
+            return
+        }
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) {
+            careSpaceActionState = OneCareSpaceActionState.ERROR
+            careSpaceActionError = "Enter a name for the care space."
+            return
+        }
+        careSpaceActionState = OneCareSpaceActionState.SUBMITTING
+        careSpaceActionError = null
+        try {
+            val newSession = apiClient.createCareSpace(
+                authenticatedSession,
+                CareSpaceCreateRequest(cleanName, careSetting, supportFocus)
+            )
+            applyAuthenticatedSession(newSession, usedBackend = true)
+            careSpaceActionState = OneCareSpaceActionState.LOADED
+            loadCareSpaces()
+        } catch (error: Exception) {
+            careSpaceActionState = OneCareSpaceActionState.ERROR
+            careSpaceActionError = error.message ?: "Could not create the care space."
+        }
+    }
+
+    suspend fun activateCareSpace(space: OneCareSpace) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || authenticatedSession.homeId == space.id) return
+        careSpaceActionState = OneCareSpaceActionState.SUBMITTING
+        careSpaceActionError = null
+        try {
+            val newSession = apiClient.activateCareSpace(authenticatedSession, space.id)
+            applyAuthenticatedSession(newSession, usedBackend = true)
+            careSpaceActionState = OneCareSpaceActionState.LOADED
+            loadCareSpaces()
+        } catch (error: Exception) {
+            careSpaceActionState = OneCareSpaceActionState.ERROR
+            careSpaceActionError = error.message ?: "Could not switch care space."
+        }
+    }
+
+    suspend fun loadCareRecipients() {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || authenticatedSession.role == OneRole.PUBLISHER) {
+            careRecipients = null
+            careRecipientsLoadState = OneCareRecipientLoadState.IDLE
+            careRecipientsLoadError = null
+            return
+        }
+        careRecipientsLoadState = OneCareRecipientLoadState.LOADING
+        careRecipientsLoadError = null
+        try {
+            careRecipients = apiClient.careRecipients(authenticatedSession)
+            careRecipientsLoadState = OneCareRecipientLoadState.LOADED
+        } catch (error: Exception) {
+            careRecipientsLoadState = OneCareRecipientLoadState.ERROR
+            careRecipientsLoadError = error.message ?: "Could not load care recipients."
+        }
+    }
+
+    suspend fun createCareRecipient(displayName: String, relationship: String?, roomLabel: String?) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Connect a backend session before adding a care recipient."
+            return
+        }
+        if (!canManageFamily) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Only caregivers can manage care recipients."
+            return
+        }
+        if (displayName.trim().isBlank()) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Enter the person's name."
+            return
+        }
+        careRecipientActionState = OneCareRecipientActionState.SUBMITTING
+        careRecipientActionError = null
+        try {
+            val created = apiClient.createCareRecipient(
+                authenticatedSession,
+                CareRecipientCreateRequest(displayName, relationship, roomLabel)
+            )
+            careRecipients = (careRecipients.orEmpty().filterNot { it.id == created.id } + created).sortedBy { it.displayName.lowercase() }
+            careRecipientActionState = OneCareRecipientActionState.LOADED
+        } catch (error: Exception) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = error.message ?: "Could not add the care recipient."
+        }
+    }
+
+    suspend fun updateCareRecipient(recipient: OneCareRecipient, displayName: String, relationship: String?, roomLabel: String?) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || !canManageFamily) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Only caregivers can update care recipients."
+            return
+        }
+        if (displayName.trim().isBlank()) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Enter the person's name."
+            return
+        }
+        careRecipientActionState = OneCareRecipientActionState.SUBMITTING
+        careRecipientActionError = null
+        try {
+            val updated = apiClient.updateCareRecipient(
+                authenticatedSession,
+                recipient.id,
+                CareRecipientUpdateRequest(displayName, relationship, roomLabel)
+            )
+            careRecipients = careRecipients.orEmpty().map { if (it.id == updated.id) updated else it }
+            careRecipientActionState = OneCareRecipientActionState.LOADED
+        } catch (error: Exception) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = error.message ?: "Could not update the care recipient."
+        }
+    }
+
+    suspend fun deleteCareRecipient(recipient: OneCareRecipient) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || !canManageFamily) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Only caregivers can remove care recipients."
+            return
+        }
+        careRecipientActionState = OneCareRecipientActionState.SUBMITTING
+        careRecipientActionError = null
+        try {
+            apiClient.deleteCareRecipient(authenticatedSession, recipient.id)
+            careRecipients = careRecipients.orEmpty().filterNot { it.id == recipient.id }
+            careRecipientActionState = OneCareRecipientActionState.LOADED
+        } catch (error: Exception) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = error.message ?: "Could not remove the care recipient."
         }
     }
 
@@ -790,6 +1066,75 @@ class OneAppState(
         } catch (error: Exception) {
             familyInviteLoadState = OneFamilyInviteLoadState.ERROR
             familyInviteLoadError = error.message ?: "Could not create the family invitation."
+        }
+    }
+
+    suspend fun updateFamilyMember(member: OneFamilyMember, role: OneRole) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "Connect a backend session before changing family access."
+            return
+        }
+        if (!canManageFamily || authenticatedSession.userId == member.id) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "You cannot change your own household access."
+            return
+        }
+        if (member.role.equals("admin", ignoreCase = true)) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "Administrator access is managed separately."
+            return
+        }
+        if (consentIsKnownAndDenied("family_mode", authenticatedSession.userId)) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "Active family_mode consent is required to manage access."
+            return
+        }
+        familyMemberActionState = OneFamilyMemberActionState.SUBMITTING
+        familyMemberActionId = member.id
+        familyMemberActionError = null
+        try {
+            apiClient.updateFamilyMember(authenticatedSession, member.id, FamilyMemberUpdateRequest(role))
+            familyMemberActionState = OneFamilyMemberActionState.LOADED
+            loadFamily()
+        } catch (error: Exception) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = error.message ?: "Could not update family access."
+        } finally {
+            if (familyMemberActionId == member.id) familyMemberActionId = null
+        }
+    }
+
+    suspend fun removeFamilyMember(member: OneFamilyMember) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "Connect a backend session before removing family access."
+            return
+        }
+        if (!canManageFamily || authenticatedSession.userId == member.id) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "You cannot remove your own household access."
+            return
+        }
+        if (member.role.equals("admin", ignoreCase = true)) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = "Administrator access cannot be removed here."
+            return
+        }
+        familyMemberActionState = OneFamilyMemberActionState.SUBMITTING
+        familyMemberActionId = member.id
+        familyMemberActionError = null
+        try {
+            apiClient.removeFamilyMember(authenticatedSession, member.id)
+            familyMemberActionState = OneFamilyMemberActionState.LOADED
+            loadFamily()
+        } catch (error: Exception) {
+            familyMemberActionState = OneFamilyMemberActionState.ERROR
+            familyMemberActionError = error.message ?: "Could not remove family access."
+        } finally {
+            if (familyMemberActionId == member.id) familyMemberActionId = null
         }
     }
 
@@ -1297,6 +1642,25 @@ class OneAppState(
         publisherPairing = null
         publisherPairingLoadState = OneFamilyInviteLoadState.IDLE
         publisherPairingError = null
+        cameraPairingStatus = null
+        cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.IDLE
+        cameraPairingStatusError = null
+        cameraReconnectLink = null
+        cameraReconnectLoadState = OneCameraReconnectLoadState.IDLE
+        cameraReconnectError = null
+        careSpaces = null
+        careSpacesLoadState = OneCareSpaceLoadState.IDLE
+        careSpacesLoadError = null
+        careSpaceActionState = OneCareSpaceActionState.IDLE
+        careSpaceActionError = null
+        careRecipients = null
+        careRecipientsLoadState = OneCareRecipientLoadState.IDLE
+        careRecipientsLoadError = null
+        careRecipientActionState = OneCareRecipientActionState.IDLE
+        careRecipientActionError = null
+        familyMemberActionState = OneFamilyMemberActionState.IDLE
+        familyMemberActionError = null
+        familyMemberActionId = null
         medicationCheckIns = null
         medicationCheckInsLoadState = OneMedicationLoadState.IDLE
         medicationCheckInsLoadError = null

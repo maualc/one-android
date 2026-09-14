@@ -191,6 +191,7 @@ fun OneApp() {
     LaunchedEffect(appState, appState.authStageName, appState.session) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.roleName != OneRole.PUBLISHER.name) {
             appState.loadConsents()
+            appState.loadCareSpaces()
             if (appState.roleName == OneRole.CAREGIVER.name) {
                 appState.loadHome()
                 appState.loadCameras()
@@ -210,6 +211,7 @@ fun OneApp() {
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "family") {
             appState.loadFamily()
+            appState.loadCareRecipients()
             appState.loadMedicationReminders()
             appState.loadMedicationPlans()
             appState.loadMedicationCheckIns()
@@ -345,6 +347,32 @@ fun OneApp() {
                             familyInvite = appState.familyInvite,
                             familyInviteLoadError = appState.familyInviteLoadError,
                             onCreateInvite = { invite -> coroutineScope.launch { appState.createFamilyInvite(invite) } },
+                            careRecipients = appState.careRecipients,
+                            careRecipientsLoadState = appState.careRecipientsLoadState,
+                            careRecipientsLoadError = appState.careRecipientsLoadError,
+                            careRecipientActionState = appState.careRecipientActionState,
+                            careRecipientActionError = appState.careRecipientActionError,
+                            canManageRecipients = appState.canManageFamily,
+                            onCareRecipientsRetry = { coroutineScope.launch { appState.loadCareRecipients() } },
+                            onCreateCareRecipient = { name, relationship, roomLabel ->
+                                coroutineScope.launch { appState.createCareRecipient(name, relationship, roomLabel) }
+                            },
+                            onUpdateCareRecipient = { recipient, name, relationship, roomLabel ->
+                                coroutineScope.launch { appState.updateCareRecipient(recipient, name, relationship, roomLabel) }
+                            },
+                            onDeleteCareRecipient = { recipient ->
+                                coroutineScope.launch { appState.deleteCareRecipient(recipient) }
+                            },
+                            familyMemberActionState = appState.familyMemberActionState,
+                            familyMemberActionError = appState.familyMemberActionError,
+                            familyMemberActionId = appState.familyMemberActionId,
+                            isAdmin = appState.isAdmin,
+                            onUpdateFamilyMember = { member, memberRole ->
+                                coroutineScope.launch { appState.updateFamilyMember(member, memberRole) }
+                            },
+                            onRemoveFamilyMember = { member ->
+                                coroutineScope.launch { appState.removeFamilyMember(member) }
+                            },
                             selectedFamilySubjectId = appState.selectedFamilySubjectId,
                             selectedSubjectMedicationConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("medication_management") } == true,
                             selectedSubjectFamilyConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("family_mode") } == true,
@@ -424,6 +452,17 @@ fun OneApp() {
                             dataDeletion = appState.dataDeletion,
                             deletionLoadError = appState.deletionLoadError,
                             onDelete = { coroutineScope.launch { appState.requestDataDeletion() } },
+                            careSpaces = appState.careSpaces,
+                            careSpacesLoadState = appState.careSpacesLoadState,
+                            careSpacesLoadError = appState.careSpacesLoadError,
+                            careSpaceActionState = appState.careSpaceActionState,
+                            careSpaceActionError = appState.careSpaceActionError,
+                            canCreateCareSpace = appState.canManageFamily,
+                            onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
+                            onCreateCareSpace = { name, setting, focus ->
+                                coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
+                            },
+                            onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -508,6 +547,17 @@ fun OneApp() {
                             dataDeletion = appState.dataDeletion,
                             deletionLoadError = appState.deletionLoadError,
                             onDelete = { coroutineScope.launch { appState.requestDataDeletion() } },
+                            careSpaces = appState.careSpaces,
+                            careSpacesLoadState = appState.careSpacesLoadState,
+                            careSpacesLoadError = appState.careSpacesLoadError,
+                            careSpaceActionState = appState.careSpaceActionState,
+                            careSpaceActionError = appState.careSpaceActionError,
+                            canCreateCareSpace = appState.canManageFamily,
+                            onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
+                            onCreateCareSpace = { name, setting, focus ->
+                                coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
+                            },
+                            onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
@@ -2155,6 +2205,22 @@ private fun FamilyScreen(
     familyInvite: OneFamilyInvite?,
     familyInviteLoadError: String?,
     onCreateInvite: (FamilyInviteRequest) -> Unit,
+    careRecipients: List<OneCareRecipient>?,
+    careRecipientsLoadState: OneCareRecipientLoadState,
+    careRecipientsLoadError: String?,
+    careRecipientActionState: OneCareRecipientActionState,
+    careRecipientActionError: String?,
+    canManageRecipients: Boolean,
+    onCareRecipientsRetry: () -> Unit,
+    onCreateCareRecipient: (String, String?, String?) -> Unit,
+    onUpdateCareRecipient: (OneCareRecipient, String, String?, String?) -> Unit,
+    onDeleteCareRecipient: (OneCareRecipient) -> Unit,
+    familyMemberActionState: OneFamilyMemberActionState,
+    familyMemberActionError: String?,
+    familyMemberActionId: UUID?,
+    isAdmin: Boolean,
+    onUpdateFamilyMember: (OneFamilyMember, OneRole) -> Unit,
+    onRemoveFamilyMember: (OneFamilyMember) -> Unit,
     selectedFamilySubjectId: UUID?,
     selectedSubjectMedicationConsent: Boolean,
     selectedSubjectFamilyConsent: Boolean,
@@ -2275,13 +2341,41 @@ private fun FamilyScreen(
                                 name = member.displayName,
                                 relationship = member.email ?: "ONE member",
                                 role = member.familyRoleLabel(),
-                                tint = member.familyTint()
+                                tint = member.familyTint(),
+                                actions = if (isBackend && canInvite && !member.role.equals("admin", ignoreCase = true)) {
+                                    {
+                                        FamilyMemberAccessActions(
+                                            member = member,
+                                            isBusy = familyMemberActionState == OneFamilyMemberActionState.SUBMITTING && familyMemberActionId == member.id,
+                                            canPromote = isAdmin,
+                                            onUpdate = onUpdateFamilyMember,
+                                            onRemove = onRemoveFamilyMember
+                                        )
+                                    }
+                                } else null
                             )
                         }
                     }
                 }
             }
         }
+        familyMemberActionError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        SectionHeading("CARE RECIPIENTS", "People receiving support")
+        CareRecipientsCard(
+            isBackend = isBackend,
+            recipients = careRecipients,
+            loadState = careRecipientsLoadState,
+            loadError = careRecipientsLoadError,
+            actionState = careRecipientActionState,
+            actionError = careRecipientActionError,
+            canManage = canManageRecipients,
+            onRetry = onCareRecipientsRetry,
+            onCreate = onCreateCareRecipient,
+            onUpdate = onUpdateCareRecipient,
+            onDelete = onDeleteCareRecipient
+        )
         familyInviteLoadError?.let { error ->
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
@@ -2670,7 +2764,13 @@ private fun OneFamilyMember.familyRoleLabel(): String = when (role.lowercase()) 
 private fun OneFamilyMember.familyTint(): Color = if (role.equals("resident", ignoreCase = true)) OneCyan else OneBlue
 
 @Composable
-private fun CaregiverRow(name: String, relationship: String, role: String, tint: Color) {
+private fun CaregiverRow(
+    name: String,
+    relationship: String,
+    role: String,
+    tint: Color,
+    actions: (@Composable () -> Unit)? = null
+) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp).semantics(mergeDescendants = true) { contentDescription = "$name. $relationship. Role: $role" }, verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(42.dp).background(tint.copy(alpha = 0.12f), CircleShape), contentAlignment = Alignment.Center) {
             Text(name.first().toString(), style = MaterialTheme.typography.titleMedium, color = tint, fontWeight = FontWeight.Bold)
@@ -2683,6 +2783,255 @@ private fun CaregiverRow(name: String, relationship: String, role: String, tint:
         Surface(shape = RoundedCornerShape(50), color = tint.copy(alpha = 0.12f)) {
             Text(role, modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.SemiBold)
         }
+        actions?.invoke()
+    }
+}
+
+@Composable
+private fun FamilyMemberAccessActions(
+    member: OneFamilyMember,
+    isBusy: Boolean,
+    canPromote: Boolean,
+    onUpdate: (OneFamilyMember, OneRole) -> Unit,
+    onRemove: (OneFamilyMember) -> Unit
+) {
+    Column(horizontalAlignment = Alignment.End) {
+        if (canPromote && !member.role.equals("caregiver", ignoreCase = true)) {
+            TextButton(onClick = { onUpdate(member, OneRole.CAREGIVER) }, enabled = !isBusy) { Text("Caregiver") }
+        } else if (!member.role.equals("resident", ignoreCase = true)) {
+            TextButton(onClick = { onUpdate(member, OneRole.RESIDENT) }, enabled = !isBusy) { Text("Resident") }
+        }
+        TextButton(onClick = { onRemove(member) }, enabled = !isBusy) { Text("Remove") }
+    }
+}
+
+@Composable
+private fun CareRecipientsCard(
+    isBackend: Boolean,
+    recipients: List<OneCareRecipient>?,
+    loadState: OneCareRecipientLoadState,
+    loadError: String?,
+    actionState: OneCareRecipientActionState,
+    actionError: String?,
+    canManage: Boolean,
+    onRetry: () -> Unit,
+    onCreate: (String, String?, String?) -> Unit,
+    onUpdate: (OneCareRecipient, String, String?, String?) -> Unit,
+    onDelete: (OneCareRecipient) -> Unit
+) {
+    var showDialog by rememberSaveable { mutableStateOf(false) }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var displayName by rememberSaveable { mutableStateOf("") }
+    var relationship by rememberSaveable { mutableStateOf("") }
+    var roomLabel by rememberSaveable { mutableStateOf("") }
+    var deleteTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    val editing = editingId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
+    val busy = actionState == OneCareRecipientActionState.SUBMITTING
+
+    if (!isBackend) {
+        InfoCard("Care recipients are available with a backend", "Connect your ONE account to name the people receiving support in this care space.")
+        return
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Care recipients", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (canManage) {
+                    OutlinedButton(
+                        onClick = {
+                            editingId = null
+                            displayName = ""
+                            relationship = ""
+                            roomLabel = ""
+                            showDialog = true
+                        },
+                        enabled = !busy
+                    ) { Text("Add") }
+                }
+            }
+            when {
+                recipients == null && (loadState == OneCareRecipientLoadState.IDLE || loadState == OneCareRecipientLoadState.LOADING) -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading care recipients…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                recipients == null && loadState == OneCareRecipientLoadState.ERROR -> {
+                    Text(loadError ?: "ONE could not load care recipients.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
+                recipients.isNullOrEmpty() -> Text("No care recipients have been added yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> recipients.orEmpty().forEachIndexed { index, recipient ->
+                    if (index > 0) HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(recipient.displayName, style = MaterialTheme.typography.titleSmall)
+                            val details = listOfNotNull(recipient.relationship, recipient.roomLabel).joinToString(" · ")
+                            Text(details.ifBlank { "Care recipient" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (canManage) {
+                            TextButton(
+                                onClick = {
+                                    editingId = recipient.id.toString()
+                                    displayName = recipient.displayName
+                                    relationship = recipient.relationship.orEmpty()
+                                    roomLabel = recipient.roomLabel.orEmpty()
+                                    showDialog = true
+                                },
+                                enabled = !busy
+                            ) { Text("Edit") }
+                            TextButton(onClick = { deleteTargetId = recipient.id.toString() }, enabled = !busy) { Text("Remove") }
+                        }
+                    }
+                }
+            }
+            actionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showDialog = false },
+            title = { Text(if (editing == null) "Add care recipient" else "Edit care recipient") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("This profile represents a person receiving support; it does not create a login.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(value = displayName, onValueChange = { displayName = it.take(120) }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = relationship, onValueChange = { relationship = it.take(120) }, label = { Text("Relationship (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = roomLabel, onValueChange = { roomLabel = it.take(120) }, label = { Text("Room (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDialog = false
+                        editing?.let { onUpdate(it, displayName, relationship.takeIf(String::isNotBlank), roomLabel.takeIf(String::isNotBlank)) }
+                            ?: onCreate(displayName, relationship.takeIf(String::isNotBlank), roomLabel.takeIf(String::isNotBlank))
+                        editingId = null
+                    },
+                    enabled = displayName.trim().isNotBlank() && !busy
+                ) { Text(if (busy) "Saving…" else "Save") }
+            },
+            dismissButton = { TextButton(onClick = { showDialog = false }, enabled = !busy) { Text("Cancel") } }
+        )
+    }
+    val deleteTarget = deleteTargetId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
+    if (deleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) deleteTargetId = null },
+            title = { Text("Remove ${deleteTarget.displayName}?") },
+            text = { Text("This removes the care profile from this space. It does not delete any household member account.") },
+            confirmButton = {
+                Button(onClick = { deleteTargetId = null; onDelete(deleteTarget) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { deleteTargetId = null }, enabled = !busy) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun CareSpacesCard(
+    role: OneRole,
+    isBackend: Boolean,
+    spaces: List<OneCareSpace>?,
+    loadState: OneCareSpaceLoadState,
+    loadError: String?,
+    actionState: OneCareSpaceActionState,
+    actionError: String?,
+    canCreate: Boolean,
+    onRetry: () -> Unit,
+    onCreate: (String, String, String) -> Unit,
+    onActivate: (OneCareSpace) -> Unit
+) {
+    var showCreateDialog by rememberSaveable { mutableStateOf(false) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var careSetting by rememberSaveable { mutableStateOf("home") }
+    var supportFocus by rememberSaveable { mutableStateOf("general") }
+    val busy = actionState == OneCareSpaceActionState.SUBMITTING
+
+    if (!isBackend) {
+        InfoCard("Care spaces are available with a backend", "Sign in to switch between households or create a separate space for another person.")
+        return
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Care spaces", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (canCreate) {
+                    OutlinedButton(onClick = { name = ""; careSetting = "home"; supportFocus = "general"; showCreateDialog = true }, enabled = !busy) {
+                        Text("New")
+                    }
+                }
+            }
+            Text("A care space keeps people, consent and camera data scoped to one household.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when {
+                spaces == null && (loadState == OneCareSpaceLoadState.IDLE || loadState == OneCareSpaceLoadState.LOADING) -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading your care spaces…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                spaces == null && loadState == OneCareSpaceLoadState.ERROR -> {
+                    Text(loadError ?: "ONE could not load care spaces.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
+                spaces.isNullOrEmpty() -> Text("No care spaces are linked to this account.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> spaces.orEmpty().forEach { space ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(space.name, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${space.careSetting.humanLabel()} · ${space.supportFocus.humanLabel()} · ${space.recipientCount} recipient(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text("Resident: ${space.residentName}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (space.active) {
+                            Surface(shape = RoundedCornerShape(50), color = OneMint.copy(alpha = 0.14f)) {
+                                Text("ACTIVE", modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = OneMint, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            TextButton(onClick = { onActivate(space) }, enabled = !busy) { Text("Use") }
+                        }
+                    }
+                }
+            }
+            actionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            if (role == OneRole.RESIDENT) {
+                Text("Ask a caregiver to create or configure a new space for you.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showCreateDialog = false },
+            title = { Text("Create a care space") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(value = name, onValueChange = { name = it.take(120) }, label = { Text("Space name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Text("Setting", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = careSetting == "home", onClick = { careSetting = "home" }, label = { Text("Home") })
+                        FilterChip(selected = careSetting == "residence", onClick = { careSetting = "residence" }, label = { Text("Residence") })
+                    }
+                    Text("Support focus", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = supportFocus == "general", onClick = { supportFocus = "general" }, label = { Text("General") })
+                        FilterChip(selected = supportFocus == "mci", onClick = { supportFocus = "mci" }, label = { Text("MCI") })
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showCreateDialog = false; onCreate(name, careSetting, supportFocus) }, enabled = name.trim().isNotBlank() && !busy) {
+                    Text(if (busy) "Creating…" else "Create")
+                }
+            },
+            dismissButton = { TextButton(onClick = { showCreateDialog = false }, enabled = !busy) { Text("Cancel") } }
+        )
     }
 }
 
@@ -3239,6 +3588,15 @@ private fun AccountScreen(
     dataDeletion: OneDataDeletion?,
     deletionLoadError: String?,
     onDelete: () -> Unit,
+    careSpaces: List<OneCareSpace>?,
+    careSpacesLoadState: OneCareSpaceLoadState,
+    careSpacesLoadError: String?,
+    careSpaceActionState: OneCareSpaceActionState,
+    careSpaceActionError: String?,
+    canCreateCareSpace: Boolean,
+    onCareSpacesRetry: () -> Unit,
+    onCreateCareSpace: (String, String, String) -> Unit,
+    onActivateCareSpace: (OneCareSpace) -> Unit,
     onRoleChange: (OneRole) -> Unit,
     onSignOut: () -> Unit
 ) {
@@ -3266,6 +3624,20 @@ private fun AccountScreen(
 
     ScreenScroll {
         ScreenHeader("ACCOUNT", "Privacy and control.", "Your home, your choices.")
+        SectionHeading("CARE SPACES", "Your households")
+        CareSpacesCard(
+            role = role,
+            isBackend = isBackend,
+            spaces = careSpaces,
+            loadState = careSpacesLoadState,
+            loadError = careSpacesLoadError,
+            actionState = careSpaceActionState,
+            actionError = careSpaceActionError,
+            canCreate = canCreateCareSpace,
+            onRetry = onCareSpacesRetry,
+            onCreate = onCreateCareSpace,
+            onActivate = onActivateCareSpace
+        )
         SectionHeading("BACKEND", "Connection status")
         Card(
             modifier = Modifier.fillMaxWidth(),

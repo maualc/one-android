@@ -71,12 +71,23 @@ class OneSecureStore(context: Context) {
 
     fun saveSession(session: OneSession, onboardingComplete: Boolean = false) {
         val encrypted = encrypt(OneSessionEnvelopeCodec.encode(StoredOneSession(session, onboardingComplete)))
-        check(preferences.edit().putString(SESSION_KEY, encrypted).commit()) { "Could not persist the ONE session." }
+        val editor = preferences.edit().putString(SESSION_KEY, encrypted)
+        if (onboardingComplete) {
+            editor.putStringSet(
+                ONBOARDING_KEYS,
+                onboardingKeys() + onboardingKey(session)
+            )
+        }
+        check(editor.commit()) { "Could not persist the ONE session." }
     }
 
     fun markOnboardingComplete(session: OneSession) {
         saveSession(session, onboardingComplete = true)
     }
+
+    /** Onboarding is scoped to the signed-in identity and care space. */
+    fun isOnboardingComplete(session: OneSession): Boolean =
+        onboardingKeys().contains(onboardingKey(session)) || restoreEnvelope()?.onboardingComplete == true
 
     fun restore(): StoredOneSession? {
         val encrypted = preferences.getString(SESSION_KEY, null) ?: return null
@@ -85,12 +96,21 @@ class OneSecureStore(context: Context) {
             clear()
             return null
         }
-        return restored
+        return restored.copy(onboardingComplete = restored.onboardingComplete || onboardingKeys().contains(onboardingKey(restored.session)))
     }
 
     fun clear() {
-        check(preferences.edit().remove(SESSION_KEY).commit()) { "Could not clear the ONE session." }
+        check(preferences.edit().remove(SESSION_KEY).remove(ONBOARDING_KEYS).commit()) { "Could not clear the ONE session." }
     }
+
+    private fun restoreEnvelope(): StoredOneSession? {
+        val encrypted = preferences.getString(SESSION_KEY, null) ?: return null
+        return runCatching { OneSessionEnvelopeCodec.decode(decrypt(encrypted)) }.getOrNull()
+    }
+
+    private fun onboardingKeys(): Set<String> = preferences.getStringSet(ONBOARDING_KEYS, emptySet()).orEmpty()
+
+    private fun onboardingKey(session: OneSession): String = "${session.homeId}:${session.userId}"
 
     private fun encrypt(plainText: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -139,5 +159,6 @@ class OneSecureStore(context: Context) {
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val PREFERENCES_NAME = "one.secure.session"
         const val SESSION_KEY = "encrypted_session"
+        const val ONBOARDING_KEYS = "onboarding_complete_keys"
     }
 }

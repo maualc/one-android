@@ -65,6 +65,55 @@ enum class OneFamilyInviteLoadState {
     ERROR
 }
 
+enum class OneCareSpaceLoadState {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR
+}
+
+enum class OneCareSpaceActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
+enum class OneCareRecipientLoadState {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR
+}
+
+enum class OneCareRecipientActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
+enum class OneFamilyMemberActionState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
+enum class OneCameraPairingStatusLoadState {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR
+}
+
+enum class OneCameraReconnectLoadState {
+    IDLE,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 enum class OneMapLoadState {
     IDLE,
     LOADING,

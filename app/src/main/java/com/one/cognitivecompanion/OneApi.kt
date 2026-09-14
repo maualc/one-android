@@ -26,7 +26,9 @@ data class OneSession(
     val userId: UUID,
     val role: OneRole,
     val expiresAt: Instant?,
-    val backendRole: String = role.wireValue
+    val backendRole: String = role.wireValue,
+    /** Short-lived publisher credential used to recover after a process restart. */
+    val reconnectToken: String? = null
 )
 
 data class PairingStartRequest(
@@ -70,6 +72,69 @@ data class EmailAuthChallenge(
     val homeId: UUID,
     val userId: UUID,
     val role: String
+)
+
+data class OneCareSpace(
+    val id: UUID,
+    val name: String,
+    val careSetting: String,
+    val supportFocus: String,
+    val residentName: String,
+    val recipientNames: List<String>,
+    val recipientCount: Int,
+    val role: String,
+    val active: Boolean
+)
+
+data class CareSpaceCreateRequest(
+    val name: String,
+    val careSetting: String = "home",
+    val supportFocus: String = "general"
+)
+
+data class OneCareRecipient(
+    val id: UUID,
+    val displayName: String,
+    val relationship: String?,
+    val roomLabel: String?,
+    val createdAt: Instant?
+)
+
+data class CareRecipientCreateRequest(
+    val displayName: String,
+    val relationship: String? = null,
+    val roomLabel: String? = null
+)
+
+data class CareRecipientUpdateRequest(
+    val displayName: String? = null,
+    val relationship: String? = null,
+    val roomLabel: String? = null
+)
+
+data class OneFamilyMemberMutation(
+    val member: OneRemoteFamilyMember,
+    val invalidatedSessions: Int
+)
+
+data class FamilyMemberUpdateRequest(
+    val role: OneRole
+)
+
+data class OneCameraPairingStatus(
+    val pairingId: UUID,
+    val homeId: UUID,
+    val status: String,
+    val expiresAt: Instant?,
+    val connectedAt: Instant?,
+    val deviceId: UUID?,
+    val deviceLabel: String?,
+    val deviceRole: String?
+)
+
+data class OneCameraReconnectLink(
+    val cameraId: UUID,
+    val reconnectToken: String
 )
 
 /** Pairing response for a camera/microphone publisher device. */
@@ -370,6 +435,13 @@ interface OneApiClient {
     suspend fun completePairing(code: String): OneSession
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun createFamilyInvite(session: OneSession, inviteRequest: FamilyInviteRequest): OneFamilyInvite
+    suspend fun careSpaces(session: OneSession): List<OneCareSpace>
+    suspend fun createCareSpace(session: OneSession, request: CareSpaceCreateRequest): OneSession
+    suspend fun activateCareSpace(session: OneSession, homeId: UUID): OneSession
+    suspend fun careRecipients(session: OneSession): List<OneCareRecipient>
+    suspend fun createCareRecipient(session: OneSession, request: CareRecipientCreateRequest): OneCareRecipient
+    suspend fun updateCareRecipient(session: OneSession, recipientId: UUID, request: CareRecipientUpdateRequest): OneCareRecipient
+    suspend fun deleteCareRecipient(session: OneSession, recipientId: UUID): OneCareRecipient
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
     suspend fun requestDataExport(session: OneSession): OneDataExport
@@ -414,6 +486,11 @@ interface OneApiClient {
     suspend fun homeEvents(session: OneSession, limit: Int = 50): List<OneRemoteEvent>
     suspend fun homeClips(session: OneSession): List<OneRemoteClip>
     suspend fun familyMembers(session: OneSession): List<OneRemoteFamilyMember>
+    suspend fun updateFamilyMember(session: OneSession, userId: UUID, request: FamilyMemberUpdateRequest): OneFamilyMemberMutation
+    suspend fun removeFamilyMember(session: OneSession, userId: UUID): OneFamilyMemberMutation
+    suspend fun cameraPairingStatus(session: OneSession, pairingId: UUID): OneCameraPairingStatus
+    suspend fun reconnectCamera(cameraId: UUID, reconnectToken: String): OneSession
+    suspend fun createCameraReconnectLink(session: OneSession): OneCameraReconnectLink
     suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
     suspend fun medicationCheckIns(
         session: OneSession,
@@ -566,6 +643,98 @@ class OneHttpApiClient(
         )
     }
 
+    override suspend fun careSpaces(session: OneSession): List<OneCareSpace> {
+        val rows = request("/account/homes", "GET", token = session.accessToken)
+            .optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                rows.optJSONObject(index)?.let { row ->
+                    runCatching { parseCareSpace(row) }.getOrNull()?.let(::add)
+                }
+            }
+        }
+    }
+
+    override suspend fun createCareSpace(session: OneSession, request: CareSpaceCreateRequest): OneSession {
+        val name = request.name.trim().take(120)
+        require(name.isNotBlank()) { "Care space name is required." }
+        require(request.careSetting in setOf("home", "residence")) { "Care setting is not supported." }
+        require(request.supportFocus in setOf("general", "mci")) { "Support focus is not supported." }
+        val body = request(
+            "/account/homes",
+            "POST",
+            JSONObject()
+                .put("name", name)
+                .put("care_setting", request.careSetting)
+                .put("support_focus", request.supportFocus),
+            token = session.accessToken
+        )
+        return sessionFrom(body)
+    }
+
+    override suspend fun activateCareSpace(session: OneSession, homeId: UUID): OneSession = sessionFrom(
+        request(
+            "/account/homes/$homeId/activate",
+            "POST",
+            token = session.accessToken
+        )
+    )
+
+    override suspend fun careRecipients(session: OneSession): List<OneCareRecipient> {
+        val rows = request("/homes/${session.homeId}/care-recipients", "GET", token = session.accessToken)
+            .optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                rows.optJSONObject(index)?.let { row ->
+                    runCatching { parseCareRecipient(row) }.getOrNull()?.let(::add)
+                }
+            }
+        }
+    }
+
+    override suspend fun createCareRecipient(session: OneSession, request: CareRecipientCreateRequest): OneCareRecipient {
+        val displayName = request.displayName.trim().take(120)
+        require(displayName.isNotBlank()) { "Care recipient name is required." }
+        val payload = JSONObject().put("display_name", displayName)
+        request.relationship?.trim()?.takeIf { it.isNotBlank() }?.let { payload.put("relationship", it.take(120)) }
+        request.roomLabel?.trim()?.takeIf { it.isNotBlank() }?.let { payload.put("room_label", it.take(120)) }
+        val body = request(
+            "/homes/${session.homeId}/care-recipients",
+            "POST",
+            payload,
+            token = session.accessToken
+        )
+        return parseCareRecipient(body.optJSONObject("data") ?: body)
+    }
+
+    override suspend fun updateCareRecipient(
+        session: OneSession,
+        recipientId: UUID,
+        request: CareRecipientUpdateRequest
+    ): OneCareRecipient {
+        val payload = JSONObject()
+        request.displayName?.let { payload.put("display_name", it.trim().take(120)) }
+        if (request.relationship == null) payload.put("relationship", JSONObject.NULL) else payload.put("relationship", request.relationship.trim().take(120))
+        if (request.roomLabel == null) payload.put("room_label", JSONObject.NULL) else payload.put("room_label", request.roomLabel.trim().take(120))
+        if (payload.length() == 0) throw OneApiException("At least one care-recipient field is required.")
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$recipientId",
+            "PATCH",
+            payload,
+            token = session.accessToken
+        )
+        return parseCareRecipient(body.optJSONObject("data") ?: body)
+    }
+
+    override suspend fun deleteCareRecipient(session: OneSession, recipientId: UUID): OneCareRecipient {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$recipientId",
+            "DELETE",
+            token = session.accessToken
+        )
+        return parseCareRecipient(body.optJSONObject("data") ?: body)
+    }
+
     private suspend fun sessionFrom(body: JSONObject): OneSession {
         val accessToken = body.requiredString("access_token")
         val homeId = body.requiredUuid("home_id")
@@ -575,7 +744,15 @@ class OneHttpApiClient(
             request("/me", "GET", token = accessToken).getJSONObject("actor").optString("role")
         }.getOrDefault("caregiver")
         val role = backendRole.toOneRole()
-        return OneSession(accessToken, homeId, userId, role, expiresAt, backendRole)
+        return OneSession(
+            accessToken = accessToken,
+            homeId = homeId,
+            userId = userId,
+            role = role,
+            expiresAt = expiresAt,
+            backendRole = backendRole,
+            reconnectToken = body.optNullableString("reconnect_token")
+        )
     }
 
     override suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest) {
@@ -1093,6 +1270,71 @@ class OneHttpApiClient(
         }
     }
 
+    override suspend fun updateFamilyMember(
+        session: OneSession,
+        userId: UUID,
+        request: FamilyMemberUpdateRequest
+    ): OneFamilyMemberMutation {
+        require(request.role != OneRole.PUBLISHER) { "Publisher access is managed through camera pairing." }
+        val body = request(
+            "/homes/${session.homeId}/family/members/$userId",
+            "PATCH",
+            JSONObject().put("role", request.role.wireValue),
+            token = session.accessToken
+        )
+        return parseFamilyMemberMutation(body)
+    }
+
+    override suspend fun removeFamilyMember(session: OneSession, userId: UUID): OneFamilyMemberMutation =
+        parseFamilyMemberMutation(
+            request(
+                "/homes/${session.homeId}/family/members/$userId",
+                "DELETE",
+                token = session.accessToken
+            )
+        )
+
+    override suspend fun cameraPairingStatus(session: OneSession, pairingId: UUID): OneCameraPairingStatus {
+        val body = request(
+            "/homes/${session.homeId}/pairing/$pairingId/status",
+            "GET",
+            token = session.accessToken
+        )
+        val device = body.optJSONObject("device")
+        return OneCameraPairingStatus(
+            pairingId = body.optNullableUuid("pairing_id") ?: pairingId,
+            homeId = body.optNullableUuid("home_id") ?: session.homeId,
+            status = body.optString("status").takeIf { it.isNotBlank() } ?: "pending",
+            expiresAt = body.optNullableString("expires_at")?.toInstantOrNull(),
+            connectedAt = body.optNullableString("connected_at")?.toInstantOrNull(),
+            deviceId = device?.optNullableUuid("id"),
+            deviceLabel = device?.optNullableString("label"),
+            deviceRole = device?.optNullableString("role")
+        )
+    }
+
+    override suspend fun reconnectCamera(cameraId: UUID, reconnectToken: String): OneSession {
+        val cleanToken = reconnectToken.trim()
+        require(cleanToken.isNotBlank()) { "A camera reconnect token is required." }
+        return sessionFrom(
+            request(
+                "/camera/reconnect",
+                "POST",
+                JSONObject()
+                    .put("camera_id", cameraId.toString())
+                    .put("reconnect_token", cleanToken),
+            )
+        )
+    }
+
+    override suspend fun createCameraReconnectLink(session: OneSession): OneCameraReconnectLink {
+        val body = request("/camera/reconnect-link", "POST", token = session.accessToken)
+        return OneCameraReconnectLink(
+            cameraId = body.requiredUuid("camera_id"),
+            reconnectToken = body.requiredString("reconnect_token")
+        )
+    }
+
     override suspend fun medicationReminders(session: OneSession, day: String?, subjectUserId: UUID?): List<OneRemoteMedicationReminder> {
         val query = buildList {
             day?.let { add("day=$it") }
@@ -1301,6 +1543,54 @@ class OneHttpApiClient(
             evidenceIds = evidenceIds,
             limitations = body.optString("limitations").takeIf { it.isNotBlank() } ?: "This is an administrative summary, not medical advice.",
             degraded = body.optBoolean("degraded", false)
+        )
+    }
+
+    private fun parseCareSpace(body: JSONObject): OneCareSpace {
+        val id = body.requiredUuid("id")
+        val recipientRows = body.optJSONArray("recipientNames") ?: body.optJSONArray("recipient_names")
+        val recipientNames = if (recipientRows == null) {
+            emptyList()
+        } else {
+            buildList {
+                for (index in 0 until recipientRows.length()) {
+                    recipientRows.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }
+        return OneCareSpace(
+            id = id,
+            name = body.requiredString("name"),
+            careSetting = (body.optString("careSetting").ifBlank { body.optString("care_setting") }).ifBlank { "home" },
+            supportFocus = (body.optString("supportFocus").ifBlank { body.optString("support_focus") }).ifBlank { "general" },
+            residentName = body.optString("residentName").ifBlank { body.optString("resident_name") }.ifBlank { "Resident" },
+            recipientNames = recipientNames,
+            recipientCount = body.optInt("recipientCount", body.optInt("recipient_count", recipientNames.size)),
+            role = body.optString("role").ifBlank { "caregiver" },
+            active = body.optBoolean("active", false)
+        )
+    }
+
+    private fun parseCareRecipient(body: JSONObject): OneCareRecipient = OneCareRecipient(
+        id = body.requiredUuid("id"),
+        displayName = body.requiredString("display_name"),
+        relationship = body.optNullableString("relationship"),
+        roomLabel = body.optNullableString("room_label"),
+        createdAt = body.optNullableString("created_at")?.toInstantOrNull()
+    )
+
+    private fun parseFamilyMemberMutation(body: JSONObject): OneFamilyMemberMutation {
+        val row = body.optJSONObject("data") ?: throw OneApiException("ONE API response is missing the family member.")
+        val id = row.requiredUuid("id")
+        return OneFamilyMemberMutation(
+            member = OneRemoteFamilyMember(
+                id = id,
+                displayName = row.requiredString("display_name"),
+                email = row.optNullableString("email"),
+                role = row.optString("role").ifBlank { "member" },
+                representationStatus = row.optNullableString("representation_status")
+            ),
+            invalidatedSessions = body.optInt("invalidated_sessions", 0)
         )
     }
 

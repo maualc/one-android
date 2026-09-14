@@ -3,6 +3,7 @@ package com.one.cognitivecompanion
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.OptIn
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
@@ -109,6 +110,7 @@ import com.one.cognitivecompanion.ui.theme.ONETheme
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -3488,6 +3490,7 @@ private fun EventDetailScreen(
 }
 
 @Composable
+@OptIn(markerClass = [UnstableApi::class])
 private fun ClipPlayer(apiClient: OneApiClient, session: OneSession, clip: OneClip) {
     val context = LocalContext.current
     var playbackState by remember(clip.id, session.accessToken) { mutableStateOf(Player.STATE_IDLE) }

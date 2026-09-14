@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
+import java.time.Instant
 
 /** Publishes the Android device camera/microphone to a paired ONE LiveKit room. */
 class OneLiveKitPublisherService : LifecycleService() {
@@ -46,7 +47,22 @@ class OneLiveKitPublisherService : LifecycleService() {
     }
 
     private suspend fun connectAndPublish() {
-        val session = OneSecureStore(applicationContext).restore()?.session
+        val secureStore = OneSecureStore(applicationContext)
+        val reconnectable = secureStore.restorePublisherForReconnect()
+        val session = when {
+            reconnectable == null -> secureStore.restore()?.session
+            reconnectable.session.expiresAt?.isBefore(Instant.now()) == true -> {
+                runCatching {
+                    OneHttpApiClient().reconnectCamera(
+                        reconnectable.session.userId,
+                        reconnectable.session.reconnectToken.orEmpty()
+                    ).copy(reconnectToken = reconnectable.session.reconnectToken)
+                }.onSuccess { refreshed ->
+                    secureStore.saveSession(refreshed, onboardingComplete = true)
+                }.getOrNull()
+            }
+            else -> reconnectable.session
+        }
         if (session == null) {
             updateNotification("Sign in to publish this device")
             stopPublishing()
@@ -57,8 +73,18 @@ class OneLiveKitPublisherService : LifecycleService() {
             stopPublishing()
             return
         }
+        val publisherSession = if (session.reconnectToken.isNullOrBlank()) {
+            runCatching {
+                val link = OneHttpApiClient().createCameraReconnectLink(session)
+                session.copy(reconnectToken = link.reconnectToken).also { refreshed ->
+                    secureStore.saveSession(refreshed, onboardingComplete = true)
+                }
+            }.getOrDefault(session)
+        } else {
+            session
+        }
         runCatching {
-            val token = OneHttpApiClient().liveKitToken(session, mode = "publish")
+            val token = OneHttpApiClient().liveKitToken(publisherSession, mode = "publish")
             val liveRoom = LiveKit.create(applicationContext)
             liveRoom.connect(token.serverUrl, token.participantToken)
             val localVideo = liveRoom.localParticipant.createVideoTrack(name = "one-camera")

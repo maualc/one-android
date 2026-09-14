@@ -117,6 +117,7 @@ import io.livekit.android.compose.local.RoomScope
 import io.livekit.android.compose.state.rememberTracks
 import io.livekit.android.compose.ui.VideoTrackView
 import io.livekit.android.room.track.Track
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -228,6 +229,20 @@ fun OneApp() {
             appState.checkBackendHealth()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab, appState.publisherPairing?.pairingId) {
+        if (
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.roleName == OneRole.CAREGIVER.name &&
+            appState.selectedTab == "home" &&
+            appState.publisherPairing != null
+        ) {
+            repeat(36) {
+                appState.refreshCameraPairingStatus()
+                if (appState.cameraPairingStatus?.status in setOf("connected", "expired")) return@LaunchedEffect
+                delay(5_000)
+            }
+        }
+    }
 
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
@@ -295,6 +310,11 @@ fun OneApp() {
                 } else when (role) {
                     OneRole.PUBLISHER -> PublisherScreen(
                         isPublishing = liveKitPublishing,
+                        hasReconnectLink = appState.session?.reconnectToken != null,
+                        reconnectLoadState = appState.cameraReconnectLoadState,
+                        reconnectError = appState.cameraReconnectError,
+                        onCreateReconnectLink = { coroutineScope.launch { appState.createCameraReconnectLink() } },
+                        onReconnect = { coroutineScope.launch { appState.reconnectPublisherCamera() } },
                         onStart = {
                             OneLiveKitPublisherService.start(appContext)
                             liveKitPublishing = true
@@ -492,6 +512,10 @@ fun OneApp() {
                             publisherPairingLoadState = appState.publisherPairingLoadState,
                             publisherPairingError = appState.publisherPairingError,
                             onCreatePublisherPairing = { label -> coroutineScope.launch { appState.createPublisherPairing(label) } },
+                            cameraPairingStatus = appState.cameraPairingStatus,
+                            cameraPairingStatusLoadState = appState.cameraPairingStatusLoadState,
+                            cameraPairingStatusError = appState.cameraPairingStatusError,
+                            onRefreshCameraPairingStatus = { coroutineScope.launch { appState.refreshCameraPairingStatus() } },
                             captureCameraId = captureCameraId,
                             liveKitPublishing = liveKitPublishing,
                             onStartCapture = { camera ->
@@ -693,6 +717,7 @@ private fun LoginScreen(
             Tab(selected = mode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
             Tab(selected = mode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create household") })
             Tab(selected = mode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join household") })
+            Tab(selected = mode == 3, onClick = { mode = 3; emailChallenge = null; emailCode = "" }, text = { Text("Pair device") })
         }
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -755,7 +780,7 @@ private fun LoginScreen(
             OutlinedTextField(
                 value = pairingCode,
                 onValueChange = { pairingCode = it.uppercase() },
-                label = { Text(if (mode == 0) "Pairing code" else "Invitation code") },
+                label = { Text(if (mode == 2) "Invitation code" else "Publisher pairing code") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -765,7 +790,7 @@ private fun LoginScreen(
         }
         errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
         Text(
-            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend) "Invitation codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
+            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend && mode == 2) "Invitation codes are six digits and are used only once." else if (useBackend) "Publisher pairing codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -818,7 +843,8 @@ private fun LoginScreen(
                 else if (isEmailMode && emailChallenge == null) "Send code"
                 else if (mode == 0) "Sign in"
                 else if (mode == 1) "Create account"
-                else "Join household",
+                else if (mode == 2) "Join household"
+                else "Pair device",
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(Modifier.width(9.dp))
@@ -941,6 +967,10 @@ private fun CaregiverHomeScreen(
     publisherPairingLoadState: OneFamilyInviteLoadState,
     publisherPairingError: String?,
     onCreatePublisherPairing: (String) -> Unit,
+    cameraPairingStatus: OneCameraPairingStatus?,
+    cameraPairingStatusLoadState: OneCameraPairingStatusLoadState,
+    cameraPairingStatusError: String?,
+    onRefreshCameraPairingStatus: () -> Unit,
     captureCameraId: String?,
     liveKitPublishing: Boolean,
     onStartCapture: (OneCamera) -> Unit,
@@ -1058,7 +1088,11 @@ private fun CaregiverHomeScreen(
                 pairing = publisherPairing,
                 loadState = publisherPairingLoadState,
                 error = publisherPairingError,
-                onCreatePairing = onCreatePublisherPairing
+                onCreatePairing = onCreatePublisherPairing,
+                pairingStatus = cameraPairingStatus,
+                pairingStatusLoadState = cameraPairingStatusLoadState,
+                pairingStatusError = cameraPairingStatusError,
+                onRefreshStatus = onRefreshCameraPairingStatus
             )
         }
     }
@@ -1340,7 +1374,11 @@ private fun PublisherPairingCard(
     pairing: PublisherPairingStartResponse?,
     loadState: OneFamilyInviteLoadState,
     error: String?,
-    onCreatePairing: (String) -> Unit
+    onCreatePairing: (String) -> Unit,
+    pairingStatus: OneCameraPairingStatus?,
+    pairingStatusLoadState: OneCameraPairingStatusLoadState,
+    pairingStatusError: String?,
+    onRefreshStatus: () -> Unit
 ) {
     var deviceLabel by rememberSaveable { mutableStateOf("ONE room device") }
     Card(
@@ -1386,6 +1424,36 @@ private fun PublisherPairingCard(
                     }
                 }
             }
+            pairingStatus?.let { status ->
+                val statusTint = when (status.status) {
+                    "connected" -> OneMint
+                    "expired" -> OneAmber
+                    else -> OneBlue
+                }
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = statusTint.copy(alpha = 0.10f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Pairing status", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                            Text(status.status.humanLabel(), style = MaterialTheme.typography.labelMedium, color = statusTint, fontWeight = FontWeight.Bold)
+                        }
+                        status.deviceLabel?.let { label -> Text("Device: $label", style = MaterialTheme.typography.bodySmall) }
+                        status.connectedAt?.let { connectedAt -> Text("Connected $connectedAt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        status.expiresAt?.let { expiresAt ->
+                            if (status.status != "connected") Text("Code expires $expiresAt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        OutlinedButton(
+                            onClick = onRefreshStatus,
+                            enabled = pairingStatusLoadState != OneCameraPairingStatusLoadState.LOADING,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (pairingStatusLoadState == OneCameraPairingStatusLoadState.LOADING) "Refreshing…" else "Refresh status") }
+                    }
+                }
+            }
+            pairingStatusError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
     }
@@ -1394,6 +1462,11 @@ private fun PublisherPairingCard(
 @Composable
 private fun PublisherScreen(
     isPublishing: Boolean,
+    hasReconnectLink: Boolean,
+    reconnectLoadState: OneCameraReconnectLoadState,
+    reconnectError: String?,
+    onCreateReconnectLink: () -> Unit,
+    onReconnect: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -1423,6 +1496,37 @@ private fun PublisherScreen(
     ScreenScroll {
         ScreenHeader("PUBLISHER", "This phone is a room device.", "It only publishes the camera and microphone feed allowed by the household.")
         InfoCard("Publisher permissions", "A caregiver must enable video and audio consent for the represented person before the feed can be used. This device has no access to family, medication or household controls.")
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Reconnect protection", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (hasReconnectLink) "A protected reconnect link is stored on this device. Use it after a process restart if the live feed needs to be recovered."
+                    else "Create a protected reconnect link so this paired camera can recover after a process restart.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = onCreateReconnectLink,
+                        enabled = reconnectLoadState != OneCameraReconnectLoadState.SUBMITTING,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (reconnectLoadState == OneCameraReconnectLoadState.SUBMITTING) "Saving…" else "Refresh link") }
+                    OutlinedButton(
+                        onClick = onReconnect,
+                        enabled = hasReconnectLink && reconnectLoadState != OneCameraReconnectLoadState.SUBMITTING,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Reconnect") }
+                }
+                if (reconnectLoadState == OneCameraReconnectLoadState.LOADED) {
+                    Text("Reconnect link updated.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                }
+                reconnectError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        }
         ConsentRow(
             label = "I understand this device will publish camera and microphone while active.",
             enabled = explicitMediaConsent,

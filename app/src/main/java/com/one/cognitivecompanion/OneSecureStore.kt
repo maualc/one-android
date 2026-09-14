@@ -29,6 +29,7 @@ internal object OneSessionEnvelopeCodec {
             .put("user_id", session.userId.toString())
             .put("role", session.role.wireValue)
             .put("backend_role", session.backendRole)
+            .put("reconnect_token", session.reconnectToken ?: JSONObject.NULL)
             .put("expires_at", session.expiresAt?.epochSecond ?: JSONObject.NULL)
             .put("onboarding_complete", stored.onboardingComplete)
             .toString()
@@ -47,6 +48,7 @@ internal object OneSessionEnvelopeCodec {
         }
         val role = body.optString("role").toOneRole()
         val backendRole = body.optString("backend_role").takeIf { it.isNotBlank() } ?: role.wireValue
+        val reconnectToken = body.optString("reconnect_token").takeIf { it.isNotBlank() && it != "null" }
         StoredOneSession(
             session = OneSession(
                 accessToken = accessToken,
@@ -54,7 +56,8 @@ internal object OneSessionEnvelopeCodec {
                 userId = userId,
                 role = role,
                 expiresAt = expiresAt,
-                backendRole = backendRole
+                backendRole = backendRole,
+                reconnectToken = reconnectToken
             ),
             onboardingComplete = body.optBoolean("onboarding_complete", false)
         )
@@ -97,6 +100,14 @@ class OneSecureStore(context: Context) {
             return null
         }
         return restored.copy(onboardingComplete = restored.onboardingComplete || onboardingKeys().contains(onboardingKey(restored.session)))
+    }
+
+    /** Returns an expired publisher session so the API reconnect endpoint can issue a fresh bearer token. */
+    fun restorePublisherForReconnect(): StoredOneSession? {
+        val restored = restoreEnvelope() ?: return null
+        return restored.takeIf {
+            it.session.role == OneRole.PUBLISHER && !it.session.reconnectToken.isNullOrBlank()
+        }?.copy(onboardingComplete = true)
     }
 
     fun clear() {

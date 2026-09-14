@@ -153,7 +153,23 @@ class OneAppState(
             consentStatesBySubject[subjectUserId]?.get(purpose) != true
 
     suspend fun restoreSession() {
-        val restored = withContext(Dispatchers.IO) { secureStore.restore() } ?: return
+        val reconnectCandidate = withContext(Dispatchers.IO) { secureStore.restorePublisherForReconnect() }
+        val stored = withContext(Dispatchers.IO) { secureStore.restore() } ?: reconnectCandidate ?: return
+        val restored = if (
+            reconnectCandidate != null &&
+            reconnectCandidate.session.expiresAt?.isBefore(Instant.now()) == true
+        ) {
+            val refreshed = runCatching {
+                apiClient.reconnectCamera(
+                    reconnectCandidate.session.userId,
+                    reconnectCandidate.session.reconnectToken.orEmpty()
+                ).copy(reconnectToken = reconnectCandidate.session.reconnectToken)
+            }.getOrNull() ?: return
+            withContext(Dispatchers.IO) { secureStore.saveSession(refreshed, onboardingComplete = true) }
+            StoredOneSession(refreshed, true)
+        } else {
+            stored
+        }
         session = restored.session
         backendMode = true
         roleName = restored.session.role.name
@@ -358,12 +374,16 @@ class OneAppState(
         }
         publisherPairingLoadState = OneFamilyInviteLoadState.SUBMITTING
         publisherPairingError = null
+        cameraPairingStatus = null
+        cameraPairingStatusLoadState = OneCameraPairingStatusLoadState.IDLE
+        cameraPairingStatusError = null
         try {
             publisherPairing = apiClient.startPublisherPairing(
                 authenticatedSession,
                 PublisherPairingStartRequest(cleanLabel)
             )
             publisherPairingLoadState = OneFamilyInviteLoadState.LOADED
+            refreshCameraPairingStatus(publisherPairing?.pairingId)
         } catch (error: Exception) {
             publisherPairingLoadState = OneFamilyInviteLoadState.ERROR
             publisherPairingError = error.message ?: "Could not create the publisher pairing code."

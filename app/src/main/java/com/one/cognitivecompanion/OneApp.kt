@@ -592,21 +592,35 @@ private fun LoginScreen(
 ) {
     var mode by rememberSaveable { mutableStateOf(0) }
     var pairingCode by rememberSaveable { mutableStateOf("") }
+    var emailCode by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var homeName by rememberSaveable { mutableStateOf("") }
+    var careSetting by rememberSaveable { mutableStateOf("home") }
+    var supportFocus by rememberSaveable { mutableStateOf("general") }
     var accountConsent by rememberSaveable { mutableStateOf(false) }
-    var useBackend by rememberSaveable { mutableStateOf(false) }
+    var useBackend by rememberSaveable { mutableStateOf(true) }
     var backendStatus by rememberSaveable { mutableStateOf<String?>(null) }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var isSubmitting by rememberSaveable { mutableStateOf(false) }
+    var emailChallenge by remember { mutableStateOf<EmailAuthChallenge?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val isCreateMode = mode == 1
-    val codeIsValid = pairingCode.length == 6 && pairingCode.all(Char::isDigit)
-    val canContinue = if (isCreateMode) name.isNotBlank() && accountConsent else if (useBackend) codeIsValid else pairingCode.isNotBlank()
+    val isEmailMode = mode == 0 || mode == 1
+    val emailIsValid = email.trim().length >= 3 && email.trim().contains("@")
+    val verificationCodeIsValid = emailCode.length == 6 && emailCode.all(Char::isDigit)
+    val pairingCodeIsValid = pairingCode.length == 6 && pairingCode.all(Char::isDigit)
+    val canRequestEmail = emailIsValid && (!isCreateMode || (name.isNotBlank() && accountConsent))
+    val canContinue = when {
+        !useBackend -> if (isCreateMode) name.isNotBlank() && accountConsent else pairingCode.isNotBlank()
+        isEmailMode -> if (emailChallenge == null) canRequestEmail else verificationCodeIsValid
+        else -> pairingCodeIsValid
+    }
 
     LaunchedEffect(useBackend) {
         errorMessage = null
+        emailChallenge = null
+        emailCode = ""
         if (!useBackend) {
             backendStatus = null
         } else {
@@ -626,9 +640,9 @@ private fun LoginScreen(
             subtitle = "Use the one-time code from your ONE backend. Your session will be stored securely on this device."
         )
         PrimaryTabRow(selectedTabIndex = mode) {
-            Tab(selected = mode == 0, onClick = { mode = 0 }, text = { Text("Sign in") })
-            Tab(selected = mode == 1, onClick = { mode = 1 }, text = { Text("Create household") })
-            Tab(selected = mode == 2, onClick = { mode = 2 }, text = { Text("Join household") })
+            Tab(selected = mode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
+            Tab(selected = mode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create household") })
+            Tab(selected = mode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join household") })
         }
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -640,9 +654,53 @@ private fun LoginScreen(
         backendStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it == "Backend connected") OneMint else MaterialTheme.colorScheme.onSurfaceVariant) }
         if (isCreateMode) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it; emailChallenge = null; emailCode = "" },
+                label = { Text("Email") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
             OutlinedTextField(value = homeName, onValueChange = { homeName = it }, label = { Text("Household name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("Care setting", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                FilterChip(selected = careSetting == "home", onClick = { careSetting = "home" }, label = { Text("Home") })
+                FilterChip(selected = careSetting == "residence", onClick = { careSetting = "residence" }, label = { Text("Residence") })
+            }
+            Text("Support focus", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                FilterChip(selected = supportFocus == "general", onClick = { supportFocus = "general" }, label = { Text("Everyday") })
+                FilterChip(selected = supportFocus == "mci", onClick = { supportFocus = "mci" }, label = { Text("Memory-focused") })
+            }
             ConsentRow("I consent to ONE storing the account data needed for this service.", accountConsent) { accountConsent = it }
+        } else if (isEmailMode) {
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it; emailChallenge = null; emailCode = "" },
+                label = { Text("Email") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            emailChallenge?.let { challenge ->
+                Text("A one-time code was sent to ${challenge.email}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = emailCode,
+                    onValueChange = { emailCode = it.filter(Char::isDigit).take(6) },
+                    label = { Text("Email verification code") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (!BuildConfig.ONE_PRODUCTION_BUILD) {
+                    challenge.devCode?.let { code ->
+                        Text("Development code: $code", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                    }
+                }
+                TextButton(
+                    onClick = { emailChallenge = null; emailCode = ""; errorMessage = null },
+                    enabled = !isSubmitting,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Use another email") }
+            }
         } else {
             OutlinedTextField(
                 value = pairingCode,
@@ -657,7 +715,7 @@ private fun LoginScreen(
         }
         errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
         Text(
-            if (useBackend) "Codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
+            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend) "Invitation codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -670,21 +728,29 @@ private fun LoginScreen(
                         isSubmitting = true
                         errorMessage = null
                         try {
-                            val authenticated = when {
-                                mode == 1 -> {
-                                    val pairing = apiClient.startPairing(
-                                        PairingStartRequest(
-                                            displayName = name.trim(),
-                                            email = email.trim().ifBlank { null },
-                                            homeName = homeName.trim().ifBlank { "ONE Home" }
+                            if (isEmailMode) {
+                                if (emailChallenge == null) {
+                                    emailChallenge = apiClient.requestEmailCode(
+                                        EmailAuthRequest(
+                                            email = email.trim(),
+                                            purpose = if (isCreateMode) "create" else "login",
+                                            displayName = name.trim().ifBlank { null },
+                                            homeName = homeName.trim().ifBlank { "ONE Home" },
+                                            careSetting = careSetting,
+                                            supportFocus = supportFocus
                                         )
                                     )
-                                    apiClient.completePairing(pairing.pairingCode)
+                                } else {
+                                    onAuthenticated(apiClient.verifyEmailCode(EmailAuthVerifyRequest(email.trim(), emailCode)), true)
                                 }
-                                mode == 2 -> apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(pairingCode, name.trim().ifBlank { null }))
-                                else -> apiClient.completePairing(pairingCode)
+                            } else {
+                                val authenticated = if (mode == 2) {
+                                    apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(pairingCode, name.trim().ifBlank { null }))
+                                } else {
+                                    apiClient.completePairing(pairingCode)
+                                }
+                                onAuthenticated(authenticated, true)
                             }
-                            onAuthenticated(authenticated, true)
                         } catch (error: Exception) {
                             errorMessage = error.message ?: "Could not connect to the ONE backend."
                         } finally {
@@ -697,7 +763,14 @@ private fun LoginScreen(
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
         ) {
-            Text(if (isSubmitting) "Working…" else if (mode == 0) "Sign in" else if (mode == 1) "Create account" else "Join household", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (isSubmitting) "Working…"
+                else if (isEmailMode && emailChallenge == null) "Send code"
+                else if (mode == 0) "Sign in"
+                else if (mode == 1) "Create account"
+                else "Join household",
+                style = MaterialTheme.typography.titleMedium
+            )
             Spacer(Modifier.width(9.dp))
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
         }

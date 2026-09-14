@@ -44,6 +44,34 @@ data class PairingStartResponse(
     val role: String
 )
 
+/** Passwordless identity challenge used by the live account flow. */
+data class EmailAuthRequest(
+    val email: String,
+    val purpose: String,
+    val displayName: String? = null,
+    val homeName: String = "ONE Home",
+    val careSetting: String = "home",
+    val supportFocus: String = "general",
+    val role: OneRole = OneRole.CAREGIVER
+)
+
+data class EmailAuthVerifyRequest(
+    val email: String,
+    val code: String
+)
+
+data class EmailAuthChallenge(
+    val verificationId: UUID,
+    val expiresInSeconds: Long,
+    val delivery: String,
+    val devCode: String?,
+    val email: String,
+    val purpose: String,
+    val homeId: UUID,
+    val userId: UUID,
+    val role: String
+)
+
 /** Pairing response for a camera/microphone publisher device. */
 data class PublisherPairingStartRequest(
     val label: String,
@@ -337,6 +365,8 @@ interface OneApiClient {
     suspend fun health(): BackendHealth
     suspend fun startPairing(pairingRequest: PairingStartRequest, bootstrapSecret: String? = null): PairingStartResponse
     suspend fun startPublisherPairing(session: OneSession, request: PublisherPairingStartRequest): PublisherPairingStartResponse
+    suspend fun requestEmailCode(request: EmailAuthRequest): EmailAuthChallenge
+    suspend fun verifyEmailCode(request: EmailAuthVerifyRequest): OneSession
     suspend fun completePairing(code: String): OneSession
     suspend fun acceptFamilyInvite(inviteRequest: FamilyInviteAcceptRequest): OneSession
     suspend fun createFamilyInvite(session: OneSession, inviteRequest: FamilyInviteRequest): OneFamilyInvite
@@ -468,6 +498,40 @@ class OneHttpApiClient(
             homeId = body.optNullableUuid("home_id") ?: session.homeId,
             userId = body.requiredUuid("user_id")
         )
+    }
+
+    override suspend fun requestEmailCode(request: EmailAuthRequest): EmailAuthChallenge {
+        val payload = JSONObject()
+            .put("email", request.email.trim())
+            .put("purpose", request.purpose)
+            .put("home_name", request.homeName.trim().ifBlank { "ONE Home" })
+            .put("care_setting", request.careSetting)
+            .put("support_focus", request.supportFocus)
+            .put("role", request.role.wireValue)
+        request.displayName?.trim()?.takeIf { it.isNotBlank() }?.let { payload.put("display_name", it) }
+        val body = request(
+            "/auth/email/request",
+            "POST",
+            payload
+        )
+        return EmailAuthChallenge(
+            verificationId = body.requiredUuid("verification_id"),
+            expiresInSeconds = body.requiredLong("expires_in_seconds"),
+            delivery = body.optString("delivery").takeIf { it.isNotBlank() } ?: "unknown",
+            devCode = body.optNullableString("dev_code"),
+            email = body.requiredString("email"),
+            purpose = body.requiredString("purpose"),
+            homeId = body.requiredUuid("home_id"),
+            userId = body.requiredUuid("user_id"),
+            role = body.optString("role").takeIf { it.isNotBlank() } ?: request.role.wireValue
+        )
+    }
+
+    override suspend fun verifyEmailCode(request: EmailAuthVerifyRequest): OneSession {
+        val payload = JSONObject()
+            .put("email", request.email.trim())
+            .put("code", request.code.trim())
+        return sessionFrom(request("/auth/email/verify", "POST", payload))
     }
 
     override suspend fun completePairing(code: String): OneSession {

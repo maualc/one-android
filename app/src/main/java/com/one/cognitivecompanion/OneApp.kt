@@ -3080,15 +3080,31 @@ private fun FamilyScreen(
                     editingMedicationPlanId = null
                 }
             },
-            title = { Text(if (editingMedicationPlan == null) "Add a medication plan" else "Edit medication plan") },
+            modifier = Modifier.padding(horizontal = 8.dp),
+            shape = RoundedCornerShape(28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp,
+            title = {
+                Text(
+                    if (editingMedicationPlan == null) "Add a medication plan" else "Edit medication plan",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text("Enter the plan exactly as provided by the resident's care team.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = planName,
                         onValueChange = { planName = it },
                         label = { Text("Medication name") },
                         singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -3096,6 +3112,7 @@ private fun FamilyScreen(
                         onValueChange = { planDose = it },
                         label = { Text("Dose") },
                         singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -3104,6 +3121,7 @@ private fun FamilyScreen(
                         label = { Text("Schedule") },
                         placeholder = { Text("08:00 or Mon,Wed,Fri @ 08:00") },
                         singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -3111,13 +3129,15 @@ private fun FamilyScreen(
                         onValueChange = { planInstructions = it },
                         label = { Text("Instructions (optional)") },
                         minLines = 2,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (isBackend) {
                         Box {
                             OutlinedButton(
                                 onClick = { assignedCaregiverMenuExpanded = true },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Text("Assigned caregiver: ${assignedCaregiverName ?: "None"}")
                             }
@@ -3175,7 +3195,10 @@ private fun FamilyScreen(
                         }
                         editingMedicationPlanId = null
                     },
-                    enabled = canSubmitMedicationPlan
+                    enabled = canSubmitMedicationPlan,
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = OneBlue)
                 ) { Text(if (medicationPlanActionState == OneMedicationPlanActionState.SUBMITTING) "Saving…" else if (editingMedicationPlan == null) "Save plan" else "Save changes") }
             },
             dismissButton = {

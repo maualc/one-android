@@ -528,6 +528,8 @@ fun OneApp() {
                                 coroutineScope.launch { appState.updateCamera(camera, name, roomId, enabled) }
                             },
                             onOpenCamera = { selectedCameraId = it.id.toString() },
+                            onOpenMap = { selectedTab = "map" },
+                            onOpenPlan = { selectedTab = "family" },
                             videoConsentGranted = appState.consentStates?.get("video_capture") == true,
                             publisherPairing = appState.publisherPairing,
                             publisherPairingLoadState = appState.publisherPairingLoadState,
@@ -1079,6 +1081,8 @@ private fun CaregiverHomeScreen(
     onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
     onOpenCamera: (OneCamera) -> Unit,
+    onOpenMap: () -> Unit,
+    onOpenPlan: () -> Unit,
     videoConsentGranted: Boolean,
     publisherPairing: PublisherPairingStartResponse?,
     publisherPairingLoadState: OneFamilyInviteLoadState,
@@ -1197,7 +1201,12 @@ private fun CaregiverHomeScreen(
             else -> {
                 SectionHeading("TODAY", "Observed objects")
                 HomeObjectsRow(homeSnapshot = homeSnapshot, isBackend = isBackendHome)
-                HouseholdStatusCard(homeSnapshot, isDemo = !isBackendHome)
+                HouseholdStatusCard(
+                    homeSnapshot = homeSnapshot,
+                    isDemo = !isBackendHome,
+                    onOpenStatus = onOpenMap,
+                    onOpenPlan = onOpenPlan
+                )
             }
         }
         if (isBackendHome) {
@@ -1875,7 +1884,12 @@ private fun ObjectCard(title: String, subtitle: String, icon: ImageVector, accen
 }
 
 @Composable
-private fun HouseholdStatusCard(homeSnapshot: OneHomeSnapshot?, isDemo: Boolean) {
+private fun HouseholdStatusCard(
+    homeSnapshot: OneHomeSnapshot?,
+    isDemo: Boolean,
+    onOpenStatus: () -> Unit,
+    onOpenPlan: () -> Unit
+) {
     val status = when {
         isDemo -> "Demo preview · sample data"
         homeSnapshot == null -> "No household snapshot"
@@ -1888,16 +1902,30 @@ private fun HouseholdStatusCard(homeSnapshot: OneHomeSnapshot?, isDemo: Boolean)
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)) {
-            StatusRow("Household status", status, Icons.Default.CheckCircle, OneMint)
+            StatusRow("Household status", status, Icons.Default.CheckCircle, OneMint, onOpenStatus)
             HorizontalDivider()
-            StatusRow("This week's plan", if (isDemo) "Sample check-ins · illustrative" else "${homeSnapshot?.events?.size ?: 0} recent events", Icons.Default.Schedule, OneBlue)
+            StatusRow(
+                "This week's plan",
+                if (isDemo) "Sample check-ins · illustrative" else "${homeSnapshot?.events?.size ?: 0} recent events",
+                Icons.Default.Schedule,
+                OneBlue,
+                onOpenPlan
+            )
         }
     }
 }
 
 @Composable
-private fun StatusRow(title: String, subtitle: String, icon: ImageVector, tint: Color) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp).semantics(mergeDescendants = true) { contentDescription = "$title. $subtitle" }, verticalAlignment = Alignment.CenterVertically) {
+private fun StatusRow(title: String, subtitle: String, icon: ImageVector, tint: Color, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 13.dp)
+            .semantics(mergeDescendants = true) { contentDescription = "$title. $subtitle" },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(25.dp))
         Spacer(Modifier.width(12.dp))
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

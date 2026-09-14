@@ -226,6 +226,15 @@ fun OneApp() {
             appState.loadMedicationCheckIns()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
+        if (
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.roleName == OneRole.RESIDENT.name &&
+            appState.selectedTab == "today"
+        ) {
+            appState.loadMedicationReminders()
+        }
+    }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "map") {
             appState.loadRoomMap()
@@ -549,6 +558,14 @@ fun OneApp() {
                         )
                     }
                     OneRole.RESIDENT -> when (selectedTab) {
+                        "today" -> ResidentTodayScreen(
+                            isBackend = appState.backendMode,
+                            medicationDoses = appState.medicationDoses,
+                            medicationLoadState = appState.medicationLoadState,
+                            medicationLoadError = appState.medicationLoadError,
+                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
+                            onOpenAssistant = { selectedTab = "assistant" }
+                        )
                         "assistant" -> AssistantScreen(
                             isBackend = appState.backendMode,
                             audioConsentGranted = appState.consentStates?.get("audio_capture") == true,
@@ -597,7 +614,14 @@ fun OneApp() {
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
                             onSignOut = { coroutineScope.launch { appState.signOut() } }
                         )
-                        else -> ResidentTodayScreen(onOpenAssistant = { selectedTab = "assistant" })
+                        else -> ResidentTodayScreen(
+                            isBackend = appState.backendMode,
+                            medicationDoses = appState.medicationDoses,
+                            medicationLoadState = appState.medicationLoadState,
+                            medicationLoadError = appState.medicationLoadError,
+                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
+                            onOpenAssistant = { selectedTab = "assistant" }
+                        )
                     }
                 }
             }
@@ -3810,24 +3834,129 @@ private fun ClipPlayer(apiClient: OneApiClient, session: OneSession, clip: OneCl
 }
 
 @Composable
-private fun ResidentTodayScreen(onOpenAssistant: () -> Unit) {
+private fun ResidentTodayScreen(
+    isBackend: Boolean,
+    medicationDoses: List<MedicationDose>?,
+    medicationLoadState: OneMedicationLoadState,
+    medicationLoadError: String?,
+    onMedicationRetry: () -> Unit,
+    onOpenAssistant: () -> Unit
+) {
+    val todayDoses = (if (isBackend) medicationDoses.orEmpty() else demoMedicationDoses)
+        .sortedWith(compareBy<MedicationDose> { it.scheduledFor ?: Instant.MAX }.thenBy { it.time })
+    val nextDose = todayDoses.firstOrNull { it.status !in setOf(DoseStatus.TAKEN, DoseStatus.SKIPPED) }
+
     ScreenScroll {
         ScreenHeader("TODAY", "A more independent day.", "A little support, right when you need it.")
-        Spacer(Modifier.height(32.dp))
-        Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = OneMint, modifier = Modifier.size(38.dp))
-                Text("Your morning check-in is ready.", style = MaterialTheme.typography.titleLarge)
-                Text("ONE can help you remember what comes next, at your own pace.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (nextDose != null) {
+            Card(
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = OneBlue.copy(alpha = 0.10f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(18.dp)).background(OneBlue),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Schedule, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("NEXT REMINDER", style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                        Text(nextDose.time, style = MaterialTheme.typography.headlineSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                        Text(nextDose.name, style = MaterialTheme.typography.titleMedium)
+                        Text(nextDose.instructions, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(52.dp))
+
+        SectionHeading("MEDICATIONS", "Today's reminders")
+        if (isBackend) {
+            when {
+                medicationDoses == null && medicationLoadState in setOf(OneMedicationLoadState.IDLE, OneMedicationLoadState.LOADING) -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading today's reminders…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                medicationDoses == null && medicationLoadState == OneMedicationLoadState.ERROR -> {
+                    InfoCard("Medication data unavailable", medicationLoadError ?: "ONE could not load today's reminders.")
+                    OutlinedButton(onClick = onMedicationRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
+                todayDoses.isEmpty() -> InfoCard("No reminders for today", "Your care team has not scheduled a medication reminder for today.")
+                else -> todayDoses.forEach { dose -> ResidentMedicationRow(dose) }
+            }
+        } else {
+            todayDoses.forEach { dose -> ResidentMedicationRow(dose) }
+            Text("Demo reminders are examples. Follow the plan agreed with your care team.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        Card(
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = OneMint, modifier = Modifier.size(34.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Your check-in is ready", style = MaterialTheme.typography.titleMedium)
+                    Text("Tell ONE how the day is going when you feel ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         Button(onClick = onOpenAssistant, modifier = Modifier.fillMaxWidth().height(58.dp), colors = ButtonDefaults.buttonColors(containerColor = OneBlue)) {
             Icon(Icons.Default.GraphicEq, contentDescription = null)
             Spacer(Modifier.width(9.dp))
-            Text("Start check-in", style = MaterialTheme.typography.titleMedium)
+            Text("Open assistant", style = MaterialTheme.typography.titleMedium)
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun ResidentMedicationRow(dose: MedicationDose) {
+    val tint = doseTint(dose.status)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                contentDescription = "${dose.name}. ${dose.time}. ${dose.instructions}. Status: ${dose.status.label}."
+            },
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.width(64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(dose.time, style = MaterialTheme.typography.titleMedium, color = OneBlue, fontWeight = FontWeight.Bold)
+                Text("TIME", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(dose.name, style = MaterialTheme.typography.titleMedium)
+                Text(dose.instructions, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                dose.assignedTo?.let { caregiver ->
+                    Text("Support: $caregiver", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Surface(shape = RoundedCornerShape(12.dp), color = tint.copy(alpha = 0.12f)) {
+                Text(
+                    text = dose.status.label,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
@@ -3865,7 +3994,14 @@ private fun AssistantScreen(
     ScreenScroll {
         ScreenHeader("ASSISTANT", "I'm here with you.", "A calm daily check-in, one step at a time.")
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Text("Share a short note about how today is going. ONE will keep the check-in within the household context.", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.GraphicEq, contentDescription = null, tint = OneBlue, modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("A conversation for today", style = MaterialTheme.typography.titleMedium)
+                    Text("Tell ONE how you feel, type a note, or press and hold to talk. Your reminders stay on Today.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
         if (isBackend && !audioConsentGranted) {
             InfoCard("Push-to-talk is paused", "Enable microphone consent in Account before recording audio. You can still type a check-in here.")

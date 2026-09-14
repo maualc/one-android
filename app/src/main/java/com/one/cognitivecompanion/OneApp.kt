@@ -681,8 +681,8 @@ private fun OneBottomBar(
             .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
         shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f),
-        tonalElevation = 3.dp,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
         shadowElevation = 4.dp
     ) {
         Row(
@@ -699,7 +699,7 @@ private fun OneBottomBar(
                         .weight(1f)
                         .clip(RoundedCornerShape(20.dp))
                         .background(
-                            if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+                            if (selected) OneBlue else Color.Transparent
                         )
                         .clickable(role = Role.Tab) { onTabSelected(tab.key) }
                         .padding(horizontal = 4.dp, vertical = 7.dp)
@@ -715,7 +715,7 @@ private fun OneBottomBar(
                         contentDescription = null,
                         modifier = Modifier.size(21.dp),
                         tint = if (selected) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
+                            Color.White
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         }
@@ -725,7 +725,7 @@ private fun OneBottomBar(
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                         color = if (selected) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
+                            Color.White
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },

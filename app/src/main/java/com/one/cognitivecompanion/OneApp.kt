@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +88,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -1882,7 +1887,7 @@ private fun MapScreen(
                 InfoCard("Map data unavailable", loadError ?: "ONE could not load the household map.")
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
-            else -> MapCanvas(objects = objects, isBackend = isBackend)
+            else -> MapCanvas(objects = objects, roomMap = currentRoomMap, isBackend = isBackend)
         }
         if (isBackend) {
             when {
@@ -2191,7 +2196,7 @@ private fun MapScreen(
 }
 
 @Composable
-private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
+private fun MapCanvas(objects: List<OneRemoteObject>?, roomMap: OneRoomMap?, isBackend: Boolean) {
     if (!isBackend) {
         Box(
             modifier = Modifier
@@ -2212,8 +2217,10 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
 
     val positionedObjects = objects.orEmpty().filter { it.pointX != null && it.pointY != null }
     val unpositionedObjects = objects.orEmpty().filterNot { it.pointX != null && it.pointY != null }
+    val hasGeometry = roomMap?.let { it.polygons.isNotEmpty() || it.walls.isNotEmpty() || it.furniture.isNotEmpty() || it.openings.isNotEmpty() } == true
+    val bounds = remember(roomMap, positionedObjects) { mapBounds(roomMap, positionedObjects) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (positionedObjects.isEmpty()) {
+        if (!hasGeometry && positionedObjects.isEmpty()) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2227,23 +2234,67 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
                 }
             }
         } else {
-            val minX = positionedObjects.minOf { it.pointX!! }
-            val maxX = positionedObjects.maxOf { it.pointX!! }
-            val minY = positionedObjects.minOf { it.pointY!! }
-            val maxY = positionedObjects.maxOf { it.pointY!! }
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp)
+                    .height(320.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .background(Brush.verticalGradient(listOf(Color(0xFFB3E4EA), Color(0xFFEAF1E8))))
                     .border(2.dp, OneBlue.copy(alpha = 0.45f), RoundedCornerShape(26.dp))
-                    .semantics { contentDescription = "Accessible 2D approximate home map with confidence radii." }
+                    .semantics {
+                        contentDescription = mapContentDescription(roomMap, positionedObjects)
+                    }
             ) {
-                Text("APPROXIMATE HOME MAP", modifier = Modifier.align(Alignment.TopStart).padding(26.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                val currentBounds = bounds ?: MapBounds(0.0, 1.0, 0.0, 1.0)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val inset = 22.dp.toPx()
+                    val width = (size.width - inset * 2).coerceAtLeast(1f)
+                    val height = (size.height - inset * 2).coerceAtLeast(1f)
+                    fun point(value: OneMapPoint): Offset = Offset(
+                        inset + normaliseMapCoordinate(value.x.toDouble(), currentBounds.minX, currentBounds.maxX) * width,
+                        inset + (1f - normaliseMapCoordinate(value.y.toDouble(), currentBounds.minY, currentBounds.maxY)) * height
+                    )
+                    roomMap?.polygons.orEmpty().forEach { polygon ->
+                        val path = Path().apply {
+                            polygon.points.map(::point).forEachIndexed { index, offset ->
+                                if (index == 0) moveTo(offset.x, offset.y) else lineTo(offset.x, offset.y)
+                            }
+                            close()
+                        }
+                        val confidence = (polygon.confidence ?: 0.65f).coerceIn(0.15f, 1f)
+                        drawPath(path, color = OneBlue.copy(alpha = 0.08f + confidence * 0.12f))
+                        drawPath(path, color = OneBlue.copy(alpha = 0.30f + confidence * 0.35f), style = Stroke(width = 2.dp.toPx()))
+                    }
+                    roomMap?.walls.orEmpty().forEach { wall ->
+                        val confidence = (wall.confidence ?: 0.7f).coerceIn(0.2f, 1f)
+                        drawLine(OneBlue.copy(alpha = 0.45f + confidence * 0.45f), point(wall.start), point(wall.end), 4.dp.toPx(), cap = StrokeCap.Round)
+                    }
+                    roomMap?.openings.orEmpty().forEach { opening ->
+                        drawLine(OneAmber.copy(alpha = 0.8f), point(opening.start), point(opening.end), 5.dp.toPx(), cap = StrokeCap.Round)
+                    }
+                    roomMap?.furniture.orEmpty().forEach { furniture ->
+                        val center = point(furniture.center)
+                        val halfWidth = (furniture.size.x / (currentBounds.maxX - currentBounds.minX).toFloat() * width / 2f).coerceIn(5f, 90f)
+                        val halfHeight = (furniture.size.y / (currentBounds.maxY - currentBounds.minY).toFloat() * height / 2f).coerceIn(5f, 70f)
+                        val confidence = (furniture.confidence ?: 0.65f).coerceIn(0.2f, 1f)
+                        drawRoundRect(OneCyan.copy(alpha = 0.16f + confidence * 0.16f), topLeft = Offset(center.x - halfWidth, center.y - halfHeight), size = androidx.compose.ui.geometry.Size(halfWidth * 2f, halfHeight * 2f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()))
+                        drawRoundRect(OneCyan.copy(alpha = 0.45f + confidence * 0.35f), topLeft = Offset(center.x - halfWidth, center.y - halfHeight), size = androidx.compose.ui.geometry.Size(halfWidth * 2f, halfHeight * 2f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()), style = Stroke(width = 1.5.dp.toPx()))
+                    }
+                }
+                Text("${roomMap?.dimension?.wireValue?.uppercase() ?: "2D"} MAP", modifier = Modifier.align(Alignment.TopStart).padding(26.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                roomMap?.polygons.orEmpty().take(6).forEach { polygon ->
+                    val center = polygon.points.reduce { left, right -> OneMapPoint(left.x + right.x, left.y + right.y) }.let { OneMapPoint(it.x / polygon.points.size, it.y / polygon.points.size) }
+                    val horizontal = normaliseMapCoordinate(center.x.toDouble(), currentBounds.minX, currentBounds.maxX)
+                    val vertical = 1f - normaliseMapCoordinate(center.y.toDouble(), currentBounds.minY, currentBounds.maxY)
+                    Surface(
+                        modifier = Modifier.offset(x = maxWidth * horizontal - 34.dp, y = maxHeight * vertical - 12.dp),
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                    ) { Text(polygon.label, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, color = OneBlue) }
+                }
                 positionedObjects.forEach { remoteObject ->
-                    val horizontal = normaliseMapCoordinate(remoteObject.pointX!!, minX, maxX)
-                    val vertical = 1f - normaliseMapCoordinate(remoteObject.pointY!!, minY, maxY)
+                    val horizontal = normaliseMapCoordinate(remoteObject.pointX!!, currentBounds.minX, currentBounds.maxX)
+                    val vertical = 1f - normaliseMapCoordinate(remoteObject.pointY!!, currentBounds.minY, currentBounds.maxY)
                     MapPin(
                         remoteObject.label,
                         OneCyan,
@@ -2253,7 +2304,7 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
                         confidenceRadiusM = remoteObject.confidenceRadiusM
                     )
                 }
-                Text("Accessible 2D fallback · rings show uncertainty in metres", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Approximate geometry · rings show uncertainty", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (unpositionedObjects.isNotEmpty()) {
@@ -2272,6 +2323,39 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, isBackend: Boolean) {
             }
         }
     }
+}
+
+private data class MapBounds(val minX: Double, val maxX: Double, val minY: Double, val maxY: Double)
+
+private fun mapBounds(roomMap: OneRoomMap?, objects: List<OneRemoteObject>): MapBounds? {
+    val points = buildList {
+        roomMap?.polygons.orEmpty().forEach { addAll(it.points) }
+        roomMap?.walls.orEmpty().forEach { add(it.start); add(it.end) }
+        roomMap?.openings.orEmpty().forEach { add(it.start); add(it.end) }
+        roomMap?.furniture.orEmpty().forEach { add(it.center) }
+        objects.forEach { item ->
+            if (item.pointX != null && item.pointY != null) add(OneMapPoint(item.pointX.toFloat(), item.pointY.toFloat()))
+        }
+    }
+    if (points.isEmpty()) return null
+    var minX = points.minOf { it.x.toDouble() }
+    var maxX = points.maxOf { it.x.toDouble() }
+    var minY = points.minOf { it.y.toDouble() }
+    var maxY = points.maxOf { it.y.toDouble() }
+    if (minX == maxX) { minX -= 0.5; maxX += 0.5 }
+    if (minY == maxY) { minY -= 0.5; maxY += 0.5 }
+    val paddingX = (maxX - minX) * 0.12
+    val paddingY = (maxY - minY) * 0.12
+    return MapBounds(minX - paddingX, maxX + paddingX, minY - paddingY, maxY + paddingY)
+}
+
+private fun mapContentDescription(roomMap: OneRoomMap?, objects: List<OneRemoteObject>): String = buildString {
+    append("Accessible approximate ")
+    append(roomMap?.dimension?.wireValue ?: "2d")
+    append(" home map")
+    roomMap?.source?.let { append(" from ${it.wireValue}") }
+    append(" with ${roomMap?.polygons?.size ?: 0} areas, ${roomMap?.walls?.size ?: 0} walls and ${objects.size} observations.")
+    roomMap?.confidence?.let { append(" Overall confidence ${formatConfidence(it)}.") }
 }
 
 private fun normaliseMapCoordinate(value: Double, minimum: Double, maximum: Double): Float =
@@ -2298,6 +2382,8 @@ private fun MapPin(label: String, tint: Color, modifier: Modifier = Modifier, co
 }
 
 private fun formatRadius(value: Double): String = if (value <= 0.0 || value.isNaN()) "unknown" else "%.1f".format(java.util.Locale.US, value)
+
+private fun formatConfidence(value: Double): String = "%.0f%%".format(java.util.Locale.US, (value.coerceIn(0.0, 1.0) * 100.0))
 
 @Composable
 private fun FamilyScreen(

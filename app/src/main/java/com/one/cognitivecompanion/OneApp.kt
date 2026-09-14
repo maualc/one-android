@@ -743,7 +743,7 @@ private fun LoginScreen(
             Switch(checked = useBackend, onCheckedChange = { useBackend = it })
         }
         backendStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it == "Backend connected") OneMint else MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (isCreateMode) {
+        if (isCreateMode && emailChallenge == null) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
                 value = email,
@@ -856,7 +856,8 @@ private fun LoginScreen(
         ) {
             Text(
                 if (isSubmitting) "Working…"
-                else if (isEmailMode && emailChallenge == null) "Send code"
+                else if (emailChallenge != null) "Verify code"
+                else if (isEmailMode) "Send code"
                 else if (mode == 0) "Sign in"
                 else if (mode == 1) "Create account"
                 else if (mode == 2) "Join household"

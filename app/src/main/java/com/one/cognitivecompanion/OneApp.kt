@@ -1902,11 +1902,7 @@ private fun MapScreen(
                     InfoCard("No room map uploaded yet", "Create a manual zone map below, or upload a scan from a supported device.")
                 }
                 else -> {
-                    val zones = currentRoomMap.zones.joinToString(" · ").ifBlank { "No named zones" }
-                    InfoCard(
-                        "Room map revision ${currentRoomMap.revision}",
-                        "${currentRoomMap.coordinateFrame} · $zones"
-                    )
+                    MapQualityCard(currentRoomMap)
                 }
             }
         }
@@ -2192,6 +2188,57 @@ private fun MapScreen(
             },
             dismissButton = { TextButton(onClick = { showObservationDialog = false }, enabled = observationActionState != OneObservationActionState.SUBMITTING) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun MapQualityCard(roomMap: OneRoomMap) {
+    val sourceLabel = when (roomMap.source) {
+        OneMapSource.CAMERA_CV_2D -> "Camera-derived 2D"
+        OneMapSource.ROOMPLAN_LIDAR_3D -> "Native RoomPlan 3D"
+        OneMapSource.ARKIT_VIDEO_3D -> "AR video 3D (approximate)"
+        OneMapSource.LEGACY_2D -> "Legacy 2D"
+        OneMapSource.UNKNOWN -> "Unknown map source"
+    }
+    val needsRescan = roomMap.rescanRequired || roomMap.geometryStatus.equals("rescan-required", ignoreCase = true)
+    val qualityColor = when {
+        needsRescan -> MaterialTheme.colorScheme.error
+        roomMap.confidence != null && roomMap.confidence < 0.65 -> OneAmber
+        else -> OneMint
+    }
+    val status = when {
+        needsRescan -> "Rescan required"
+        roomMap.geometryStatus.equals("ready", ignoreCase = true) -> "Ready for review"
+        roomMap.geometryStatus.equals("legacy", ignoreCase = true) -> "Compatibility data"
+        else -> roomMap.geometryStatus.replace('-', ' ').ifBlank { "Status unavailable" }.replaceFirstChar { it.uppercase() }
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Room map revision ${roomMap.revision}", style = MaterialTheme.typography.titleMedium)
+                    Text(sourceLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Surface(shape = RoundedCornerShape(50), color = qualityColor.copy(alpha = 0.14f)) {
+                    Text(status, modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = qualityColor, fontWeight = FontWeight.Bold)
+                }
+            }
+            val zoneSummary = roomMap.zones.joinToString(" · ").ifBlank { "No named zones" }
+            Text("${roomMap.coordinateFrame} · $zoneSummary", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("${roomMap.dimension.wireValue.uppercase()} · ${if (roomMap.metricScaleKnown) "metric scale" else "relative scale"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                roomMap.confidence?.let { Text("Confidence ${formatConfidence(it)}", style = MaterialTheme.typography.labelSmall, color = qualityColor) }
+            }
+            when {
+                needsRescan -> Text("The backend retained this revision for history, but its geometry is not safe to render. Capture a new map when convenient.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                roomMap.dimension == OneMapDimension.THREE_D -> Text("Android shows a truthful top-down overlay for this 3D source. Full native model viewing remains device-specific.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                roomMap.source == OneMapSource.CAMERA_CV_2D -> Text("RGB mapping is relative and approximate. A reference scale may improve measurements without turning it into a 3D model.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 

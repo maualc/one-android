@@ -228,6 +228,15 @@ fun OneApp() {
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "map") {
             appState.loadRoomMap()
+            // Keep the map and derived object positions close to the live
+            // stream while this surface is visible.  The existing bounded
+            // home/map reads are reused; no new endpoint or frame transport
+            // is introduced here.
+            while (true) {
+                delay(2_000)
+                appState.loadRoomMap()
+                appState.loadHome()
+            }
         }
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
@@ -2233,6 +2242,7 @@ private fun MapQualityCard(roomMap: OneRoomMap) {
                 Text("${roomMap.dimension.wireValue.uppercase()} · ${if (roomMap.metricScaleKnown) "metric scale" else "relative scale"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 roomMap.confidence?.let { Text("Confidence ${formatConfidence(it)}", style = MaterialTheme.typography.labelSmall, color = qualityColor) }
             }
+            Text("Live map refresh is active while this tab is open.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             when {
                 needsRescan -> Text("The backend retained this revision for history, but its geometry is not safe to render. Capture a new map when convenient.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 roomMap.dimension == OneMapDimension.THREE_D -> Text("Android shows a truthful top-down overlay for this 3D source. Full native model viewing remains device-specific.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

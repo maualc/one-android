@@ -1210,7 +1210,13 @@ class OneAppState(
         }
     }
 
-    suspend fun createMedicationPlan(name: String, dose: String, schedule: String, instructions: String) {
+    suspend fun createMedicationPlan(
+        name: String,
+        dose: String,
+        schedule: String,
+        instructions: String,
+        assignedCaregiverId: UUID? = null
+    ) {
         val authenticatedSession = session
         val subjectUserId = selectedFamilySubjectId
         if (!backendMode || authenticatedSession == null) {
@@ -1252,7 +1258,8 @@ class OneAppState(
                     name = cleanName,
                     dose = cleanDose,
                     schedule = cleanSchedule,
-                    instructions = cleanInstructions
+                    instructions = cleanInstructions,
+                    assignedCaregiverId = assignedCaregiverId
                 )
             )
             medicationPlanActionState = OneMedicationPlanActionState.LOADED
@@ -1270,7 +1277,8 @@ class OneAppState(
         dose: String,
         schedule: String,
         instructions: String,
-        active: Boolean
+        active: Boolean,
+        assignedCaregiverId: UUID? = null
     ) {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
@@ -1309,6 +1317,7 @@ class OneAppState(
                     schedule = cleanSchedule,
                     instructions = cleanInstructions,
                     active = active,
+                    assignedCaregiverId = assignedCaregiverId,
                     version = plan.version
                 )
             )

@@ -395,12 +395,12 @@ fun OneApp() {
                             medicationPlanActionState = appState.medicationPlanActionState,
                             lastMedicationPlan = appState.lastMedicationPlan,
                             medicationPlanActionError = appState.medicationPlanActionError,
-                            onCreateMedicationPlan = { name, dose, schedule, instructions ->
-                                coroutineScope.launch { appState.createMedicationPlan(name, dose, schedule, instructions) }
+                            onCreateMedicationPlan = { name, dose, schedule, instructions, assignedCaregiverId ->
+                                coroutineScope.launch { appState.createMedicationPlan(name, dose, schedule, instructions, assignedCaregiverId) }
                             },
-                            onUpdateMedicationPlan = { plan, name, dose, schedule, instructions, active ->
+                            onUpdateMedicationPlan = { plan, name, dose, schedule, instructions, active, assignedCaregiverId ->
                                 coroutineScope.launch {
-                                    appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active)
+                                    appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active, assignedCaregiverId)
                                 }
                             },
                             familyAssistantLoadState = appState.familyAssistantLoadState,
@@ -2243,8 +2243,8 @@ private fun FamilyScreen(
     medicationPlanActionState: OneMedicationPlanActionState,
     lastMedicationPlan: OneMedicationPlan?,
     medicationPlanActionError: String?,
-    onCreateMedicationPlan: (String, String, String, String) -> Unit,
-    onUpdateMedicationPlan: (OneMedicationPlan, String, String, String, String, Boolean) -> Unit,
+    onCreateMedicationPlan: (String, String, String, String, UUID?) -> Unit,
+    onUpdateMedicationPlan: (OneMedicationPlan, String, String, String, String, Boolean, UUID?) -> Unit,
     familyAssistantLoadState: OneFamilyAssistantLoadState,
     familyAssistantResult: OneFamilyAssistantResult?,
     familyAssistantLoadError: String?,
@@ -2266,11 +2266,15 @@ private fun FamilyScreen(
     var planDose by rememberSaveable { mutableStateOf("") }
     var planSchedule by rememberSaveable { mutableStateOf("08:00") }
     var planInstructions by rememberSaveable { mutableStateOf("") }
+    var planAssignedCaregiverId by rememberSaveable { mutableStateOf<String?>(null) }
+    var assignedCaregiverMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
     var familyAssistantMessage by rememberSaveable { mutableStateOf("") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
     val editingMedicationPlan = editingMedicationPlanId?.let { id -> medicationPlans.orEmpty().firstOrNull { it.id.toString() == id } }
+    val caregiverMembers = members.orEmpty().filter { it.role.equals("admin", ignoreCase = true) || it.role.equals("caregiver", ignoreCase = true) }
+    val assignedCaregiverName = planAssignedCaregiverId?.let { id -> caregiverMembers.firstOrNull { it.id.toString() == id }?.displayName }
     val medicationAccessGranted = !isBackend || selectedSubjectMedicationConsent
     val familyAccessGranted = !isBackend || selectedSubjectFamilyConsent
     val assistantAccessGranted = !isBackend || selectedSubjectAssistantConsent
@@ -2406,6 +2410,7 @@ private fun FamilyScreen(
                     planDose = ""
                     planSchedule = "08:00"
                     planInstructions = ""
+                    planAssignedCaregiverId = null
                     showMedicationPlanDialog = true
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -2450,6 +2455,13 @@ private fun FamilyScreen(
                                         if (plan.instructions.isNotBlank()) {
                                             Text(plan.instructions, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
+                                        Text(
+                                            plan.assignedCaregiverId?.let { caregiverId ->
+                                                "Assigned caregiver: ${caregiverMembers.firstOrNull { it.id == caregiverId }?.displayName ?: "Caregiver"}"
+                                            } ?: "No caregiver assigned",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                     Surface(shape = RoundedCornerShape(50), color = OneMint.copy(alpha = 0.12f)) {
                                         Text("ACTIVE", modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = OneMint, fontWeight = FontWeight.Bold)
@@ -2463,6 +2475,7 @@ private fun FamilyScreen(
                                             planDose = plan.dose
                                             planSchedule = plan.schedule
                                             planInstructions = plan.instructions
+                                            planAssignedCaregiverId = plan.assignedCaregiverId?.toString()
                                             showMedicationPlanDialog = true
                                         },
                                         enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
@@ -2470,7 +2483,7 @@ private fun FamilyScreen(
                                     ) { Text("Edit") }
                                     TextButton(
                                         onClick = {
-                                            onUpdateMedicationPlan(plan, plan.name, plan.dose, plan.schedule, plan.instructions, false)
+                                            onUpdateMedicationPlan(plan, plan.name, plan.dose, plan.schedule, plan.instructions, false, plan.assignedCaregiverId)
                                         },
                                         enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
                                         modifier = Modifier.weight(1f)
@@ -2708,6 +2721,37 @@ private fun FamilyScreen(
                         minLines = 2,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (isBackend) {
+                        Box {
+                            OutlinedButton(
+                                onClick = { assignedCaregiverMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Assigned caregiver: ${assignedCaregiverName ?: "None"}")
+                            }
+                            DropdownMenu(
+                                expanded = assignedCaregiverMenuExpanded,
+                                onDismissRequest = { assignedCaregiverMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("No caregiver assigned") },
+                                    onClick = {
+                                        planAssignedCaregiverId = null
+                                        assignedCaregiverMenuExpanded = false
+                                    }
+                                )
+                                caregiverMembers.forEach { caregiver ->
+                                    DropdownMenuItem(
+                                        text = { Text(caregiver.displayName) },
+                                        onClick = {
+                                            planAssignedCaregiverId = caregiver.id.toString()
+                                            assignedCaregiverMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (medicationPlanActionError != null) {
                         Text(medicationPlanActionError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
@@ -2719,9 +2763,23 @@ private fun FamilyScreen(
                         showMedicationPlanDialog = false
                         val plan = editingMedicationPlan
                         if (plan == null) {
-                            onCreateMedicationPlan(planName, planDose, planSchedule, planInstructions)
+                            onCreateMedicationPlan(
+                                planName,
+                                planDose,
+                                planSchedule,
+                                planInstructions,
+                                planAssignedCaregiverId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                            )
                         } else {
-                            onUpdateMedicationPlan(plan, planName, planDose, planSchedule, planInstructions, true)
+                            onUpdateMedicationPlan(
+                                plan,
+                                planName,
+                                planDose,
+                                planSchedule,
+                                planInstructions,
+                                true,
+                                planAssignedCaregiverId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                            )
                         }
                         editingMedicationPlanId = null
                     },

@@ -73,7 +73,19 @@ class OneOfflineCache(context: Context) {
                 revision = row.optInt("revision"),
                 coordinateFrame = row.optString("coordinate_frame"),
                 zones = row.optJSONArray("zones").toStringList(),
-                createdAt = row.optString("created_at").toInstantOrNull()
+                createdAt = row.optString("created_at").toInstantOrNull(),
+                source = OneMapSource.fromWire(row.optString("source")),
+                provenance = row.optString("provenance").ifBlank { "unknown" },
+                dimension = OneMapDimension.fromWire(row.optString("dimension")),
+                approximate = row.optBoolean("approximate", true),
+                metricScaleKnown = row.optBoolean("metric_scale_known", false),
+                scaleMetersPerUnit = row.optNullableDouble("scale_meters_per_unit"),
+                localizationStatus = row.optString("localization_status").ifBlank { "unlocalized" },
+                geometryStatus = row.optString("geometry_status").ifBlank { "unknown" },
+                rescanRequired = row.optBoolean("rescan_required", false),
+                confidence = row.optNullableDouble("confidence"),
+                modelVersion = row.optNullableString("model_version"),
+                usdzAvailable = row.optBoolean("usdz_available", false)
             )
         }
         rooms to map
@@ -99,6 +111,12 @@ class OneOfflineCache(context: Context) {
     private fun mapJson(value: OneRoomMap) = JSONObject()
         .put("id", value.id.toString()).put("home_id", value.homeId?.toString() ?: JSONObject.NULL).put("room_id", value.roomId?.toString() ?: JSONObject.NULL)
         .put("revision", value.revision).put("coordinate_frame", value.coordinateFrame).put("zones", JSONArray(value.zones)).put("created_at", value.createdAt?.toString() ?: JSONObject.NULL)
+        .put("source", value.source.wireValue).put("provenance", value.provenance).put("dimension", value.dimension.wireValue)
+        .put("approximate", value.approximate).put("metric_scale_known", value.metricScaleKnown)
+        .put("scale_meters_per_unit", value.scaleMetersPerUnit ?: JSONObject.NULL)
+        .put("localization_status", value.localizationStatus).put("geometry_status", value.geometryStatus)
+        .put("rescan_required", value.rescanRequired).put("confidence", value.confidence ?: JSONObject.NULL)
+        .put("model_version", value.modelVersion ?: JSONObject.NULL).put("usdz_available", value.usdzAvailable)
 
     private fun JSONArray?.toObjects(): List<OneRemoteObject> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneRemoteObject(UUID.fromString(row.getString("id")), row.optString("label"), row.optString("status"), row.optNullableString("zone"), row.optNullableDouble("x"), row.optNullableDouble("y"), row.optNullableString("last_seen_at").toInstantOrNull(), row.optDouble("confidence"), row.optDouble("radius"))) } } } } ?: emptyList()
     private fun JSONArray?.toEvents(): List<OneEvent> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneEvent(runCatching { EventKind.valueOf(row.optString("kind")) }.getOrDefault(EventKind.OTHER), row.optString("location"), row.optString("time"), row.optString("explanation"), row.optString("confidence"), row.optNullableString("id")?.let(UUID::fromString), row.optNullableString("observed_at").toInstantOrNull(), row.optJSONArray("evidence_ids").toStringList())) } } } } ?: emptyList()

@@ -248,7 +248,24 @@ data class OneRoomMap(
     val revision: Int,
     val coordinateFrame: String,
     val zones: List<String>,
-    val createdAt: Instant?
+    val createdAt: Instant?,
+    val source: OneMapSource = OneMapSource.UNKNOWN,
+    val provenance: String = "unknown",
+    val dimension: OneMapDimension = OneMapDimension.UNKNOWN,
+    val approximate: Boolean = true,
+    val metricScaleKnown: Boolean = false,
+    val scaleMetersPerUnit: Double? = null,
+    val localizationStatus: String = "unlocalized",
+    val geometryStatus: String = "unknown",
+    val rescanRequired: Boolean = false,
+    val confidence: Double? = null,
+    val modelVersion: String? = null,
+    val polygons: List<OneMapPolygon> = emptyList(),
+    val walls: List<OneMapWall> = emptyList(),
+    val furniture: List<OneMapFurniture> = emptyList(),
+    val openings: List<OneMapOpening> = emptyList(),
+    val metadata: Map<String, String> = emptyMap(),
+    val usdzAvailable: Boolean = false
 )
 
 data class OneRemoteCamera(
@@ -1603,7 +1620,11 @@ class OneHttpApiClient(
         fallbackZones: List<String> = emptyList()
     ): OneRoomMap {
         val mapData = body.optJSONObject("map_data")
+        val geometry = mapData?.optJSONObject("geometry")
+            ?: body.optJSONObject("geometry")
         val zoneRows = mapData?.optJSONArray("zones")
+            ?: geometry?.optJSONArray("zones")
+            ?: body.optJSONArray("zones")
         val zones = if (zoneRows == null) {
             fallbackZones.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         } else {
@@ -1617,6 +1638,30 @@ class OneHttpApiClient(
                 }
             }
         }
+        val sourceName = body.optString("source").ifBlank { mapData?.optString("source").orEmpty() }
+        val dimensionName = body.optString("dimension").ifBlank { mapData?.optString("dimension").orEmpty() }
+        val metadataObject = body.optJSONObject("metadata")
+        val metadata = metadataObject?.let { metadataJson ->
+            buildMap {
+                metadataJson.keys().forEach { key ->
+                    val value = metadataJson.opt(key)
+                    when (value) {
+                        is String, is Number, is Boolean -> put(key, value.toString())
+                    }
+                }
+            }
+        }.orEmpty()
+        val scale = body.optJSONObject("scale")
+            ?: mapData?.optJSONObject("scale")
+            ?: geometry?.optJSONObject("scale")
+        val scaleMetersPerUnit = scale?.optNullableDouble("meters_per_normalized_unit")
+            ?: scale?.optNullableDouble("metersPerNormalizedUnit")
+        val polygonRows = geometry?.optJSONArray("polygons")
+            ?: geometry?.optJSONArray("rooms")
+            ?: body.optJSONArray("polygons")
+        val wallRows = geometry?.optJSONArray("walls") ?: body.optJSONArray("walls")
+        val furnitureRows = geometry?.optJSONArray("furniture") ?: body.optJSONArray("furniture")
+        val openingRows = geometry?.optJSONArray("openings") ?: body.optJSONArray("openings")
         return OneRoomMap(
             id = body.requiredUuid("id"),
             homeId = body.optNullableUuid("home_id") ?: homeId,
@@ -1624,8 +1669,130 @@ class OneHttpApiClient(
             revision = body.optInt("revision", 0),
             coordinateFrame = body.optString("coordinate_frame").takeIf { it.isNotBlank() } ?: "unknown",
             zones = zones,
-            createdAt = body.optNullableString("created_at")?.toInstantOrNull()
+            createdAt = body.optNullableString("created_at")?.toInstantOrNull(),
+            source = OneMapSource.fromWire(sourceName),
+            provenance = body.optString("provenance").ifBlank { sourceName.ifBlank { "unknown" } },
+            dimension = OneMapDimension.fromWire(dimensionName),
+            approximate = body.optBoolean("approximate", true),
+            metricScaleKnown = body.optBoolean("metric_scale_known", dimensionName == "3d"),
+            scaleMetersPerUnit = scaleMetersPerUnit,
+            localizationStatus = body.optString("localization_status").ifBlank { "unlocalized" },
+            geometryStatus = body.optString("geometry_status").ifBlank { "unknown" },
+            rescanRequired = body.optBoolean("rescan_required", false),
+            confidence = body.optNullableDouble("confidence")
+                ?: mapData?.optNullableDouble("confidence")
+                ?: geometry?.optNullableDouble("confidence"),
+            modelVersion = body.optNullableString("model_version")
+                ?: metadata["model_version"],
+            polygons = polygonRows.parseMapPolygons(),
+            walls = wallRows.parseMapWalls(),
+            furniture = furnitureRows.parseMapFurniture(),
+            openings = openingRows.parseMapOpenings(),
+            metadata = metadata,
+            usdzAvailable = body.optJSONObject("usdz")?.optBoolean("available", true) == true
         )
+    }
+
+    private fun JSONArray?.parseMapPolygons(): List<OneMapPolygon> = this?.let { rows ->
+        buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val points = (row.optJSONArray("points") ?: row.optJSONArray("polygon"))
+                    .parseMapPoints()
+                if (points.size < 3) continue
+                add(
+                    OneMapPolygon(
+                        id = row.optString("id").ifBlank { "polygon-$index" },
+                        label = row.optString("label").ifBlank { row.optString("name").ifBlank { "Room area" } },
+                        points = points,
+                        confidence = row.optNullableDouble("confidence")?.toFloat()
+                    )
+                )
+            }
+        }
+    } ?: emptyList()
+
+    private fun JSONArray?.parseMapWalls(): List<OneMapWall> = this?.let { rows ->
+        buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val start = row.optJSONObject("start").parseMapPoint()
+                val end = row.optJSONObject("end").parseMapPoint()
+                if (start == null || end == null) continue
+                add(
+                    OneMapWall(
+                        id = row.optString("id").ifBlank { "wall-$index" },
+                        start = start,
+                        end = end,
+                        confidence = row.optNullableDouble("confidence")?.toFloat()
+                    )
+                )
+            }
+        }
+    } ?: emptyList()
+
+    private fun JSONArray?.parseMapFurniture(): List<OneMapFurniture> = this?.let { rows ->
+        buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val center = row.optJSONObject("center").parseMapPoint() ?: continue
+                val size = row.optJSONObject("size").parseMapPoint() ?: continue
+                add(
+                    OneMapFurniture(
+                        id = row.optString("id").ifBlank { "furniture-$index" },
+                        label = row.optString("label").ifBlank { "Furniture" },
+                        center = center,
+                        size = size,
+                        rotationDegrees = row.optDouble("rotation_degrees", row.optDouble("rotationDegrees", 0.0)).toFloat(),
+                        confidence = row.optNullableDouble("confidence")?.toFloat()
+                    )
+                )
+            }
+        }
+    } ?: emptyList()
+
+    private fun JSONArray?.parseMapOpenings(): List<OneMapOpening> = this?.let { rows ->
+        buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val start = row.optJSONObject("start").parseMapPoint()
+                val end = row.optJSONObject("end").parseMapPoint()
+                if (start == null || end == null) continue
+                add(
+                    OneMapOpening(
+                        id = row.optString("id").ifBlank { "opening-$index" },
+                        kind = row.optString("kind").ifBlank { "opening" },
+                        start = start,
+                        end = end,
+                        confidence = row.optNullableDouble("confidence")?.toFloat()
+                    )
+                )
+            }
+        }
+    } ?: emptyList()
+
+    private fun JSONArray?.parseMapPoints(): List<OneMapPoint> = this?.let { rows ->
+        buildList {
+            for (index in 0 until rows.length()) {
+                val point = when (val raw = rows.opt(index)) {
+                    is JSONObject -> raw.parseMapPoint()
+                    is JSONArray -> {
+                        val x = raw.optDouble(0, Double.NaN)
+                        val y = raw.optDouble(1, Double.NaN)
+                        if (x.isFinite() && y.isFinite()) OneMapPoint(x.toFloat(), y.toFloat()) else null
+                    }
+                    else -> null
+                }
+                point?.let(::add)
+            }
+        }
+    } ?: emptyList()
+
+    private fun JSONObject?.parseMapPoint(): OneMapPoint? {
+        val value = this ?: return null
+        val x = value.optDouble("x", Double.NaN)
+        val y = value.optDouble("y", Double.NaN)
+        return if (x.isFinite() && y.isFinite()) OneMapPoint(x.toFloat(), y.toFloat()) else null
     }
 
     private fun parseMedicationPlan(body: JSONObject, homeId: UUID): OneMedicationPlan = OneMedicationPlan(

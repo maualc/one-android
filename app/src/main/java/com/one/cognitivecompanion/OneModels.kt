@@ -143,6 +143,69 @@ enum class OneObservationActionState {
     ERROR
 }
 
+/**
+ * Provenance exposed by the backend map contract.  Android currently renders
+ * the 2D paths only; keeping the source explicit prevents a camera map from
+ * being presented as a metric 3D model by accident.
+ */
+enum class OneMapSource(val wireValue: String) {
+    CAMERA_CV_2D("camera-cv-2d"),
+    ROOMPLAN_LIDAR_3D("roomplan-lidar-3d"),
+    ARKIT_VIDEO_3D("arkit-video-3d"),
+    LEGACY_2D("legacy-2d"),
+    UNKNOWN("unknown");
+
+    companion object {
+        fun fromWire(value: String?): OneMapSource = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+enum class OneMapDimension(val wireValue: String) {
+    TWO_D("2d"),
+    THREE_D("3d"),
+    UNKNOWN("unknown");
+
+    companion object {
+        fun fromWire(value: String?): OneMapDimension = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+data class OneMapPoint(
+    val x: Float,
+    val y: Float
+)
+
+data class OneMapPolygon(
+    val id: String,
+    val label: String,
+    val points: List<OneMapPoint>,
+    val confidence: Float?
+)
+
+data class OneMapWall(
+    val id: String,
+    val start: OneMapPoint,
+    val end: OneMapPoint,
+    val confidence: Float?
+)
+
+data class OneMapFurniture(
+    val id: String,
+    val label: String,
+    val center: OneMapPoint,
+    val size: OneMapPoint,
+    val rotationDegrees: Float,
+    val confidence: Float?
+)
+
+data class OneMapOpening(
+    val id: String,
+    val kind: String,
+    val start: OneMapPoint,
+    val end: OneMapPoint,
+    val confidence: Float?
+)
+
 enum class DoseStatus(val label: String) {
     ACKNOWLEDGED("Acknowledged"),
     NEEDS_CONFIRMATION("Needs confirmation"),

@@ -1855,6 +1855,7 @@ private fun MapScreen(
     var observationObjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var observationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var importError by rememberSaveable { mutableStateOf<String?>(null) }
+    var importNotice by rememberSaveable { mutableStateOf<String?>(null) }
     val appContext = LocalContext.current.applicationContext
     val mapCoroutineScope = rememberCoroutineScope()
     val mapImportLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri ->
@@ -1869,6 +1870,7 @@ private fun MapScreen(
             }
             result.onSuccess {
                 importError = null
+                importNotice = buildMapImportNotice(it)
                 onCreateManualMap(it.roomName, it.zones, it.coordinateFrame)
             }.onFailure { importError = it.message ?: "No se pudo importar el mapa." }
         }
@@ -1926,6 +1928,7 @@ private fun MapScreen(
                 Text("Import map JSON")
             }
             Text("Compatible format: { room_name, zones: [{ label }] } or zones: [\"kitchen\", …]. ARCore scans can be converted to this format.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            importNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
             importError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { objectLabel = ""; objectDisplayName = ""; showObjectDialog = true }, modifier = Modifier.weight(1f)) { Text("Add object") }
@@ -2250,6 +2253,17 @@ private fun MapQualityCard(roomMap: OneRoomMap) {
             }
         }
     }
+}
+
+private fun buildMapImportNotice(import: OneMapImport): String = when {
+    import.dimension == OneMapDimension.THREE_D ->
+        "Se ha leído una referencia 3D (${import.geometryItemCount} elementos). Android conserva aquí las zonas para el mapa 2D; no convierte el archivo en un modelo 3D."
+    import.source == OneMapSource.LEGACY_2D || import.rescanRequired ->
+        "Importación compatible recibida como mapa legacy. Las zonas se pueden revisar, pero se recomienda un nuevo escaneo de cámara."
+    import.geometryItemCount > 0 ->
+        "Se han encontrado ${import.geometryItemCount} elementos geométricos y ${import.zones.size} zonas. La vista Android mantiene la geometría como contexto aproximado."
+    else ->
+        "Mapa importado con ${import.zones.size} zonas. Las ubicaciones siguen siendo aproximadas."
 }
 
 @Composable

@@ -4,4 +4,6 @@
     <string name="one_camera_capture_channel">Captura de cámara de ONE</string>
     <string name="one_livekit_channel">Publicación en directo de ONE</string>
     <string name="one_medication_channel">Recordatorios de medicación de ONE</string>
+    <string name="one_medication_notification_fallback">Es hora de revisar esta medicación.</string>
+    <string name="one_medication_notification_name">Recordatorio de medicación</string>
 </resources>

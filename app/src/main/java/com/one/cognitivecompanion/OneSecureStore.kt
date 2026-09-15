@@ -72,6 +72,9 @@ internal object OneSessionEnvelopeCodec {
 class OneSecureStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
+    // These writes intentionally use synchronous commit: authentication state
+    // must be durable before the app starts its authenticated flow.
+    @Suppress("UseKtx")
     fun saveSession(session: OneSession, onboardingComplete: Boolean = false) {
         val encrypted = encrypt(OneSessionEnvelopeCodec.encode(StoredOneSession(session, onboardingComplete)))
         val editor = preferences.edit().putString(SESSION_KEY, encrypted)
@@ -110,6 +113,7 @@ class OneSecureStore(context: Context) {
         }?.copy(onboardingComplete = true)
     }
 
+    @Suppress("UseKtx")
     fun clear() {
         check(preferences.edit().remove(SESSION_KEY).remove(ONBOARDING_KEYS).commit()) { "Could not clear the ONE session." }
     }

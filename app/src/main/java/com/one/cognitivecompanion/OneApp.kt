@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.annotation.OptIn
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
@@ -76,6 +77,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -107,6 +109,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.one.cognitivecompanion.ui.theme.OneAmber
 import com.one.cognitivecompanion.ui.theme.OneBlue
 import com.one.cognitivecompanion.ui.theme.OneCyan
@@ -224,6 +229,13 @@ fun OneApp() {
     var liveKitPublishing by rememberSaveable { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<OneEvent?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    val signOut: () -> Unit = {
+        selectedCameraId = null
+        selectedEvent = null
+        captureCameraId = null
+        liveKitPublishing = false
+        coroutineScope.launch { appState.signOut() }
+    }
     val authStage = AuthStage.valueOf(authStageName)
     val role = OneRole.valueOf(roleName)
     val tabs = when (role) {
@@ -232,6 +244,13 @@ fun OneApp() {
         OneRole.PUBLISHER -> publisherTabs
     }
     val selectedCamera = appState.cameras?.firstOrNull { it.id.toString() == selectedCameraId }
+
+    // Detail surfaces are an in-app navigation state. Handle the system back
+    // gesture/button here so it closes the detail first instead of exiting to
+    // the launcher.
+    BackHandler(enabled = selectedCamera != null || selectedEvent != null) {
+        if (selectedCamera != null) selectedCameraId = null else selectedEvent = null
+    }
 
     LaunchedEffect(appState) { appState.restoreSession() }
     LaunchedEffect(appState, appState.authStageName, appState.session) {
@@ -373,6 +392,7 @@ fun OneApp() {
                         reconnectError = appState.cameraReconnectError,
                         onCreateReconnectLink = { coroutineScope.launch { appState.createCameraReconnectLink() } },
                         onReconnect = { coroutineScope.launch { appState.reconnectPublisherCamera() } },
+                        onSignOut = signOut,
                         onStart = {
                             OneLiveKitPublisherService.start(appContext)
                             liveKitPublishing = true
@@ -543,7 +563,7 @@ fun OneApp() {
                             },
                             onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = { coroutineScope.launch { appState.signOut() } }
+                            onSignOut = signOut
                         )
                         else -> CaregiverHomeScreen(
                             homeSnapshot = appState.homeSnapshot,
@@ -652,7 +672,7 @@ fun OneApp() {
                             },
                             onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
                             onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
-                            onSignOut = { coroutineScope.launch { appState.signOut() } }
+                            onSignOut = signOut
                         )
                         else -> ResidentTodayScreen(
                             isBackend = appState.backendMode,
@@ -820,7 +840,7 @@ private fun LoginScreen(
     apiClient: OneApiClient,
     onAuthenticated: (OneSession?, Boolean) -> Unit
 ) {
-    var mode by rememberSaveable { mutableStateOf(0) }
+    var mode by rememberSaveable { mutableIntStateOf(0) }
     var pairingCode by rememberSaveable { mutableStateOf("") }
     var emailCode by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
@@ -840,9 +860,9 @@ private fun LoginScreen(
     val emailIsValid = email.trim().length >= 3 && email.trim().contains("@")
     val verificationCodeIsValid = emailCode.length == 6 && emailCode.all(Char::isDigit)
     val pairingCodeIsValid = pairingCode.length == 6 && pairingCode.all(Char::isDigit)
-    val canRequestEmail = emailIsValid && (!isCreateMode || (name.isNotBlank() && accountConsent))
+    val canRequestEmail = emailIsValid && (!isCreateMode || (name.isNotBlank() && homeName.isNotBlank() && accountConsent))
     val canContinue = when {
-        !useBackend -> if (isCreateMode) name.isNotBlank() && accountConsent else pairingCode.isNotBlank()
+        !useBackend -> !isCreateMode || (name.isNotBlank() && homeName.isNotBlank() && accountConsent)
         isEmailMode -> if (emailChallenge == null) canRequestEmail else verificationCodeIsValid
         else -> pairingCodeIsValid
     }
@@ -871,9 +891,9 @@ private fun LoginScreen(
         )
         PrimaryTabRow(selectedTabIndex = mode) {
             Tab(selected = mode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
-            Tab(selected = mode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create household") })
-            Tab(selected = mode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join household") })
-            Tab(selected = mode == 3, onClick = { mode = 3; emailChallenge = null; emailCode = "" }, text = { Text("Pair device") })
+            Tab(selected = mode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create") })
+            Tab(selected = mode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join") })
+            Tab(selected = mode == 3, onClick = { mode = 3; emailChallenge = null; emailCode = "" }, text = { Text("Pair") })
         }
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -946,7 +966,7 @@ private fun LoginScreen(
         }
         errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
         Text(
-            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend && mode == 2) "Invitation codes are six digits and are used only once." else if (useBackend) "Publisher pairing codes are six digits and are used only once." else "Demo mode is active. Any non-empty code continues without a server.",
+            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend && mode == 2) "Invitation codes are six digits and are used only once." else if (useBackend) "Publisher pairing codes are six digits and are used only once." else "Demo mode is active. Continue without a server.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1093,7 +1113,11 @@ private fun OnboardingScreen(
 
 @Composable
 private fun InfoCard(title: String, body: String) {
-    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1271,7 +1295,7 @@ private fun HomeObjectsRow(homeSnapshot: OneHomeSnapshot?, isBackend: Boolean) {
         homeSnapshot != null -> {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 items(homeSnapshot.objects) { remoteObject ->
-                    val lastSeen = remoteObject.lastSeenAt?.let { "Last seen ${it.toString().replace('T', ' ').take(16)}" }
+                    val lastSeen = remoteObject.lastSeenAt?.let { "Last seen ${it.toHumanDateTime()}" }
                     ObjectCard(
                         title = remoteObject.label,
                         subtitle = listOfNotNull(
@@ -1344,7 +1368,7 @@ private fun HomeCameraStatusCard(
             onStartLiveKit()
             permissionError = null
         } else if (requested != null) {
-            permissionError = "ONE necesita permisos de cámara${if (requested == "livekit") " y micrófono" else ""} para continuar."
+            permissionError = "ONE needs camera permission${if (requested == "livekit") " and microphone permission" else ""} to continue."
         }
     }
 
@@ -1398,7 +1422,7 @@ private fun HomeCameraStatusCard(
                 when {
                     paused -> "Camera capture is paused until the household enables room-data consent."
                     !videoConsentGranted -> "Enable room and camera consent in Account before starting capture."
-                    else -> "Camera viewing is local and consent-based."
+                    else -> "Camera viewing is consent-based. Live previews come from the paired device."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (!videoConsentGranted && !paused) OneAmber else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1605,9 +1629,9 @@ private fun PublisherPairingCard(
                             Text(status.status.humanLabel(), style = MaterialTheme.typography.labelMedium, color = statusTint, fontWeight = FontWeight.Bold)
                         }
                         status.deviceLabel?.let { label -> Text("Device: $label", style = MaterialTheme.typography.bodySmall) }
-                        status.connectedAt?.let { connectedAt -> Text("Connected $connectedAt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        status.connectedAt?.let { connectedAt -> Text("Connected ${connectedAt.toHumanDateTime()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         status.expiresAt?.let { expiresAt ->
-                            if (status.status != "connected") Text("Code expires $expiresAt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (status.status != "connected") Text("Code expires ${expiresAt.toHumanDateTime()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         OutlinedButton(
                             onClick = onRefreshStatus,
@@ -1631,6 +1655,7 @@ private fun PublisherScreen(
     reconnectError: String?,
     onCreateReconnectLink: () -> Unit,
     onReconnect: () -> Unit,
+    onSignOut: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -1678,7 +1703,15 @@ private fun PublisherScreen(
                         onClick = onCreateReconnectLink,
                         enabled = reconnectLoadState != OneCameraReconnectLoadState.SUBMITTING,
                         modifier = Modifier.weight(1f)
-                    ) { Text(if (reconnectLoadState == OneCameraReconnectLoadState.SUBMITTING) "Saving…" else "Refresh link") }
+                    ) {
+                        Text(
+                            when {
+                                reconnectLoadState == OneCameraReconnectLoadState.SUBMITTING -> "Saving…"
+                                hasReconnectLink -> "Refresh link"
+                                else -> "Create link"
+                            }
+                        )
+                    }
                     OutlinedButton(
                         onClick = onReconnect,
                         enabled = hasReconnectLink && reconnectLoadState != OneCameraReconnectLoadState.SUBMITTING,
@@ -1710,7 +1743,10 @@ private fun PublisherScreen(
             Text("Publishing is active in the foreground. Android will show an ongoing notification.", style = MaterialTheme.typography.bodySmall, color = OneMint)
         }
         permissionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-        Text("LiveKit publisher mode is receive-only for the care circle: the paired caregiver viewer does not publish this phone's camera or microphone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("The caregiver viewer is receive-only. This device publishes camera and microphone only while you keep publishing active.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
+            Text("Sign out")
+        }
     }
 }
 
@@ -1804,7 +1840,7 @@ private fun LiveCameraScreen(
                 Text("Back")
             }
         }
-        ScreenHeader("CAMERA", camera.name, "Consent-based local view · receive only")
+        ScreenHeader("CAMERA", camera.name, "Consent-based live view · receive only")
         when {
             tokenError != null -> {
                 InfoCard("Live view unavailable", tokenError ?: "ONE could not start the live camera view.")
@@ -2031,7 +2067,7 @@ private fun MapScreen(
             val result = runCatching {
                 val content = withContext(Dispatchers.IO) {
                     appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                        ?: error("No se pudo leer el archivo seleccionado.")
+                        ?: error("Could not read the selected file.")
                 }
                 parseOneMapImport(content)
             }
@@ -2039,7 +2075,7 @@ private fun MapScreen(
                 importError = null
                 importNotice = buildMapImportNotice(it)
                 onCreateManualMap(it.roomName, it.zones, it.coordinateFrame)
-            }.onFailure { importError = it.message ?: "No se pudo importar el mapa." }
+            }.onFailure { importError = it.message ?: "Could not import the map." }
         }
     }
     val manualZoneNames = manualZones.split(",", ";", "\n").map { it.trim() }.filter { it.isNotBlank() }.distinct()
@@ -2047,12 +2083,13 @@ private fun MapScreen(
     val selectedCalibrationCamera = calibrationCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
         ?: cameras.orEmpty().firstOrNull()
     val parsedCalibrationAccuracy = calibrationAccuracy.trim().takeIf { it.isNotBlank() }?.toDoubleOrNull()
+    val calibrationAccuracyValid = calibrationAccuracy.trim().isBlank() || parsedCalibrationAccuracy?.let { it in 0.0..100.0 } == true
     val calibrationAnchorNames = calibrationAnchors.split(",", ";", "\n").map(String::trim).filter(String::isNotBlank).distinct()
     val canSubmitCalibration = selectedCalibrationCamera != null && currentRoomMap != null && calibrationAnchorNames.size >= 3 &&
-        (parsedCalibrationAccuracy != null || calibrationAccuracy.trim().isBlank())
+        calibrationAccuracyValid
 
     ScreenScroll {
-        ScreenHeader("MAP", "Home map", "Approximate locations · local view")
+        ScreenHeader("MAP", "Home map", "Approximate locations for the care team.")
         if (mapIsStale) {
             AssistChip(onClick = onMapRetry, label = { Text("Offline · showing last known map") })
         }
@@ -2262,7 +2299,7 @@ private fun MapScreen(
                     if (calibrationAnchorNames.size < 3) {
                         Text("Name at least three stable anchors separated by commas.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
-                    if (calibrationAccuracy.isNotBlank() && parsedCalibrationAccuracy == null) {
+                    if (calibrationAccuracy.isNotBlank() && !calibrationAccuracyValid) {
                         Text("Enter a number between 0 and 100, or leave this field blank.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
                 }
@@ -2407,7 +2444,7 @@ private fun MapQualityCard(roomMap: OneRoomMap) {
                 }
             }
             val zoneSummary = roomMap.zones.joinToString(" · ").ifBlank { "No named zones" }
-            Text("${roomMap.coordinateFrame} · $zoneSummary", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${roomMap.coordinateFrame.toHumanCoordinateFrame()} · $zoneSummary", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("${roomMap.dimension.wireValue.uppercase()} · ${if (roomMap.metricScaleKnown) "metric scale" else "relative scale"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 roomMap.confidence?.let { Text("Confidence ${formatConfidence(it)}", style = MaterialTheme.typography.labelSmall, color = qualityColor) }
@@ -2424,13 +2461,13 @@ private fun MapQualityCard(roomMap: OneRoomMap) {
 
 private fun buildMapImportNotice(import: OneMapImport): String = when {
     import.dimension == OneMapDimension.THREE_D ->
-        "Se ha leído una referencia 3D (${import.geometryItemCount} elementos). Android conserva aquí las zonas para el mapa 2D; no convierte el archivo en un modelo 3D."
+        "A 3D reference was read (${import.geometryItemCount} items). Android keeps its zones in the 2D map; it does not convert the file into a 3D model."
     import.source == OneMapSource.LEGACY_2D || import.rescanRequired ->
-        "Importación compatible recibida como mapa legacy. Las zonas se pueden revisar, pero se recomienda un nuevo escaneo de cámara."
+        "A compatible legacy map was imported. Review its zones, then capture a new camera scan when possible."
     import.geometryItemCount > 0 ->
-        "Se han encontrado ${import.geometryItemCount} elementos geométricos y ${import.zones.size} zonas. La vista Android mantiene la geometría como contexto aproximado."
+        "Found ${import.geometryItemCount} geometry items and ${import.zones.size} zones. Android keeps this geometry as approximate context."
     else ->
-        "Mapa importado con ${import.zones.size} zonas. Las ubicaciones siguen siendo aproximadas."
+        "Map imported with ${import.zones.size} zones. Locations remain approximate."
 }
 
 @Composable
@@ -2968,7 +3005,7 @@ private fun FamilyScreen(
                     )
                 }
             }
-            Text("Showing the last ${medicationHistoryDays} day(s) plus upcoming check-ins.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Showing the last ${countLabel(medicationHistoryDays, "day")} plus upcoming check-ins.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             when {
                 medicationCheckIns == null && (medicationCheckInsLoadState == OneMedicationLoadState.IDLE || medicationCheckInsLoadState == OneMedicationLoadState.LOADING) -> {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -2998,7 +3035,7 @@ private fun FamilyScreen(
                                         Text(planLabel, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                                         Text(checkIn.status.humanLabel(), style = MaterialTheme.typography.labelSmall, color = statusTint, fontWeight = FontWeight.SemiBold)
                                     }
-                                    Text(checkIn.scheduledFor.toString().replace('T', ' ').take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(checkIn.scheduledFor.toHumanDateTime(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     checkIn.note?.takeIf { it.isNotBlank() }?.let { note ->
                                         Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
@@ -3040,7 +3077,7 @@ private fun FamilyScreen(
                         Text("Next action: ${result.nextAction}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Limitations: ${result.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (result.evidenceIds.isNotEmpty()) {
-                            Text("Bounded evidence: ${result.evidenceIds.size} record(s).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Bounded evidence: ${countLabel(result.evidenceIds.size, "record")}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (result.degraded) {
                             Text("This response used a limited local fallback.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
@@ -3253,7 +3290,7 @@ private fun FamilyScreen(
 private fun DemoFamilyMembersCard() {
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            CaregiverRow("Biel Martínez", "You", "Owner", OneBlue)
+            CaregiverRow("Biel Martínez", null, "Owner", OneBlue, isCurrentUser = true)
             HorizontalDivider()
             CaregiverRow("Marta Martínez", "Daughter", "Primary caregiver", OneBlue)
             HorizontalDivider()
@@ -3500,7 +3537,7 @@ private fun CareSpacesCard(
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(space.name, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "${space.careSetting.humanLabel()} · ${space.supportFocus.humanLabel()} · ${space.recipientCount} recipient(s)",
+                                "${space.careSetting.humanLabel()} · ${space.supportFocus.humanLabel()} · ${countLabel(space.recipientCount, "recipient")}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -3640,7 +3677,7 @@ private fun EventsScreen(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { ScreenHeader("EVENTS", "Reviewable moments", "A human-readable record of observed activity.") }
+        item { ScreenHeader("EVENTS", "Reviewable moments", "Recent activity for caregiver attention.") }
         if (!isBackend) {
             item { AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · illustrative events") }) }
         }
@@ -3695,7 +3732,7 @@ private fun EventsScreen(
         }
         item {
             Text(
-                if (eventClipsOnly) "Showing ${filteredEvents.size} event(s) with linked clips." else "Showing ${filteredEvents.size} event(s) in the selected period.",
+                if (eventClipsOnly) "Showing ${countLabel(filteredEvents.size, "event")} with linked clips." else "Showing ${countLabel(filteredEvents.size, "event")} in the selected period.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3811,7 +3848,7 @@ private fun EventDetailScreen(
                 Text("Back")
             }
         }
-        ScreenHeader("EVENT REVIEW", event.kind.label, "A human-readable record for caregiver attention.")
+        ScreenHeader("EVENT REVIEW", event.kind.label, "Review the context and evidence.")
         EventRow(event, hasClip = !linkedClips.isNullOrEmpty())
         SectionHeading("CONTEXT", "What ONE observed")
         InfoCard("Approximate location", event.location)
@@ -3845,7 +3882,7 @@ private fun EventDetailScreen(
 @OptIn(markerClass = [UnstableApi::class])
 private fun ClipPlayer(apiClient: OneApiClient, session: OneSession, clip: OneClip) {
     val context = LocalContext.current
-    var playbackState by remember(clip.id, session.accessToken) { mutableStateOf(Player.STATE_IDLE) }
+    var playbackState by remember(clip.id, session.accessToken) { mutableIntStateOf(Player.STATE_IDLE) }
     var isPlaying by remember(clip.id, session.accessToken) { mutableStateOf(false) }
     var playbackError by remember(clip.id, session.accessToken) { mutableStateOf<String?>(null) }
     val player = remember(clip.id, session.accessToken, apiClient) {
@@ -3941,7 +3978,7 @@ private fun ResidentTodayScreen(
     val nextDose = todayDoses.firstOrNull { it.status !in setOf(DoseStatus.TAKEN, DoseStatus.SKIPPED) }
 
     ScreenScroll {
-        ScreenHeader("TODAY", "A more independent day.", "A little support, right when you need it.")
+        ScreenHeader("TODAY", "A more independent day.", "Support when you need it.")
         if (nextDose != null) {
             Card(
                 shape = RoundedCornerShape(28.dp),
@@ -4086,7 +4123,7 @@ private fun AssistantScreen(
     val pushToTalkAllowed = !isBackend || audioConsentGranted
 
     ScreenScroll {
-        ScreenHeader("ASSISTANT", "I'm here with you.", "A calm daily check-in, one step at a time.")
+        ScreenHeader("ASSISTANT", "I'm here with you.", "A calm daily check-in.")
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.GraphicEq, contentDescription = null, tint = OneBlue, modifier = Modifier.size(30.dp))
@@ -4104,7 +4141,7 @@ private fun AssistantScreen(
             SectionHeading("LATEST CHECK-IN", "A human-readable summary")
             InfoCard("${checkIn.status.humanLabel()} · ${checkIn.trend.humanLabel()}", checkIn.explanation)
             if (checkIn.evidenceIds.isNotEmpty()) {
-                Text("Based on ${checkIn.evidenceIds.size} recent household observation(s).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Based on ${countLabel(checkIn.evidenceIds.size, "recent household observation")}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text("Limitations: ${checkIn.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (checkIn.degraded) {
@@ -4230,9 +4267,21 @@ private fun AccountScreen(
     onSignOut: () -> Unit
 ) {
     val accountContext = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var notificationPermissionRequestGranted by remember { mutableStateOf<Boolean?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationPermissionRequestGranted = granted
+    }
+    DisposableEffect(lifecycleOwner, accountContext) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                notificationPermissionRequestGranted =
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                        ContextCompat.checkSelfPermission(accountContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val systemNotificationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(accountContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -4325,7 +4374,7 @@ private fun AccountScreen(
             if (notificationsEnabled) "Notifications enabled" else "Notifications are off",
             if (notificationsEnabled) "ONE will alert the resident at scheduled medication times and repeat daily rules." else "Allow notifications so a scheduled dose is not easy to miss."
         )
-        if (!notificationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (!notificationsEnabled) {
             OutlinedButton(
                 onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
                 modifier = Modifier.fillMaxWidth()
@@ -4396,10 +4445,10 @@ private fun AccountScreen(
             val recordSummary = export.recordCounts.entries
                 .sortedByDescending { it.value }
                 .take(4)
-                .joinToString(" · ") { "${it.key}: ${it.value}" }
+                .joinToString(" · ") { "${it.key.humanLabel()}: ${it.value}" }
             InfoCard(
                 "Export prepared",
-                "${export.exportedAt ?: "Timestamp unavailable"} · $totalRecords records${recordSummary.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}. The payload is not stored on this device."
+                "${export.exportedAt?.toHumanDateTime() ?: "Timestamp unavailable"} · ${countLabel(totalRecords, "record")}${recordSummary.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}. The payload is not stored on this device."
             )
         }
         OutlinedButton(

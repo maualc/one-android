@@ -39,7 +39,7 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
         else -> EventKind.OTHER
     },
     location = "Home · approximate",
-    time = lastSeenAt?.toString() ?: "Time unavailable",
+    time = lastSeenAt?.toHumanDateTime() ?: "Time unavailable",
     explanation = explanation,
     confidence = when {
         confidence >= 0.8 -> "High confidence"

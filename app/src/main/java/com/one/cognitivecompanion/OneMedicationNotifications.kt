@@ -12,12 +12,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import org.json.JSONObject
 import java.time.Instant
+import java.time.DayOfWeek
 import java.time.LocalDate
-import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.UUID
 
 data class OneScheduledMedication(
@@ -36,11 +38,43 @@ object OneMedicationScheduler {
     const val ACTION_FIRE = "com.one.cognitivecompanion.action.MEDICATION_ALARM"
     const val CHANNEL_ID = "one_medication_reminders"
 
+    private val timePattern = Regex("(?<!\\d)(?:[01]?\\d|2[0-3]):[0-5]\\d(?!\\d)")
+    private val datePattern = Regex("20\\d{2}-\\d{2}-\\d{2}")
+    private val dayAliases = mapOf(
+        "mon" to DayOfWeek.MONDAY,
+        "monday" to DayOfWeek.MONDAY,
+        "tue" to DayOfWeek.TUESDAY,
+        "tues" to DayOfWeek.TUESDAY,
+        "tuesday" to DayOfWeek.TUESDAY,
+        "wed" to DayOfWeek.WEDNESDAY,
+        "wednesday" to DayOfWeek.WEDNESDAY,
+        "thu" to DayOfWeek.THURSDAY,
+        "thur" to DayOfWeek.THURSDAY,
+        "thurs" to DayOfWeek.THURSDAY,
+        "thursday" to DayOfWeek.THURSDAY,
+        "fri" to DayOfWeek.FRIDAY,
+        "friday" to DayOfWeek.FRIDAY,
+        "sat" to DayOfWeek.SATURDAY,
+        "saturday" to DayOfWeek.SATURDAY,
+        "sun" to DayOfWeek.SUNDAY,
+        "sunday" to DayOfWeek.SUNDAY
+    )
+
+    private data class ScheduleSlot(
+        val exactDate: LocalDate?,
+        val weekdays: Set<DayOfWeek>?,
+        val time: LocalTime
+    )
+
     fun schedule(context: Context, reminder: OneRemoteMedicationReminder): Boolean {
-        val triggerAt = reminder.scheduledFor?.toEpochMilli()
+        // The backend returns today's reminders with their current check-in
+        // status. Only pending doses should create a resident notification;
+        // a taken, skipped or missed dose must not be resurrected locally.
+        if (!reminder.status.equals("pending", ignoreCase = true)) return false
+        val now = System.currentTimeMillis()
+        val triggerAt = reminder.scheduledFor?.toEpochMilli()?.takeIf { it > now }
             ?: parseNextTime(reminder.scheduleRule)?.toEpochMilli()
             ?: return false
-        if (triggerAt <= System.currentTimeMillis()) return false
         val scheduled = OneScheduledMedication(
             planId = reminder.planId,
             name = reminder.name,
@@ -51,7 +85,7 @@ object OneMedicationScheduler {
         )
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val records = loadRecords(prefs).filterNot { it.planId == scheduled.planId && it.atEpochMillis == scheduled.atEpochMillis } + scheduled
-        prefs.edit().putString(RECORDS, records.joinToString("\n") { encode(it) }).apply()
+        prefs.edit { putString(RECORDS, records.joinToString("\n") { encode(it) }) }
         val alarm = context.getSystemService(AlarmManager::class.java)
         alarm.setAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
@@ -59,6 +93,19 @@ object OneMedicationScheduler {
             pendingIntent(context, scheduled)
         )
         return true
+    }
+
+    /**
+     * Reconcile the alarms for the plans represented by a fresh API response.
+     * A plan can change its time, become inactive, or return a different
+     * occurrence, so simply adding new AlarmManager entries leaves stale
+     * notifications behind. The response is authoritative for the plan IDs it
+     * contains; failed API calls never reach this method and therefore retain
+     * the last known schedule.
+     */
+    fun sync(context: Context, reminders: List<OneRemoteMedicationReminder>) {
+        reminders.map { it.planId }.toSet().forEach { cancel(context, it) }
+        reminders.forEach { schedule(context, it) }
     }
 
     fun cancel(context: Context, planId: UUID) {
@@ -101,17 +148,74 @@ object OneMedicationScheduler {
         }
     }
 
-    private fun parseNextTime(rule: String, from: Instant = Instant.now()): Instant? {
-        val match = Regex("\\b([01]?[0-9]|2[0-3]):([0-5][0-9])\\b").find(rule) ?: return null
-        val time = LocalTime.of(match.groupValues[1].toInt(), match.groupValues[2].toInt())
-        val zone = ZoneId.systemDefault()
-        var date = LocalDate.now(zone)
-        var local = LocalDateTime.of(date, time)
-        if (local.atZone(zone).toInstant() <= from) {
-            date = date.plusDays(1)
-            local = LocalDateTime.of(date, time)
+    /**
+     * Resolve the next occurrence using the same small grammar as the backend:
+     * daily times (08:00,20:00), weekday rules (Mon,Wed,Fri @ 08:00,
+     * weekdays 08:00, weekends 08:00), and exact dates (2026-09-12 @ 08:00).
+     * Unsupported text produces no occurrence instead of guessing.
+     */
+    internal fun nextMedicationTime(
+        rule: String,
+        from: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault()
+    ): Instant? {
+        val slots = parseSlots(rule)
+        if (slots.isEmpty()) return null
+        return slots.mapNotNull { slot ->
+            if (slot.exactDate != null) {
+                ZonedDateTime.of(slot.exactDate, slot.time, zone).toInstant()
+                    .takeIf { it > from }
+            } else {
+                val startDate = from.atZone(zone).toLocalDate()
+                (0..370).asSequence()
+                    .map { offset -> startDate.plusDays(offset.toLong()) }
+                    .filter { date -> slot.weekdays == null || date.dayOfWeek in slot.weekdays }
+                    .map { date -> ZonedDateTime.of(date, slot.time, zone).toInstant() }
+                    .firstOrNull { candidate -> candidate > from }
+            }
+        }.minOrNull()
+    }
+
+    private fun parseNextTime(rule: String, from: Instant = Instant.now()): Instant? =
+        nextMedicationTime(rule, from)
+
+    private fun parseSlots(rule: String): List<ScheduleSlot> = buildList {
+        rule.split(';', '\n').forEach { rawSegment ->
+            val segment = rawSegment.trim()
+            if (segment.isBlank()) return@forEach
+            val matches = timePattern.findAll(segment).toList()
+            if (matches.isEmpty()) return@forEach
+            val prefix = segment.substring(0, matches.first().range.first)
+                .trim()
+                .trim('@', ':', '-', ',')
+                .lowercase()
+            val dateText = datePattern.find(prefix)?.value
+            val exactDate = dateText?.let { value ->
+                runCatching { LocalDate.parse(value) }.getOrNull()
+            }
+            // A malformed date must not silently become a daily reminder.
+            if (dateText != null && exactDate == null) return@forEach
+            val weekdays = when {
+                exactDate != null -> null
+                prefix == "weekday" || prefix == "weekdays" ->
+                    setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)
+                prefix == "weekend" || prefix == "weekends" ->
+                    setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
+                else -> {
+                    val found = dayAliases.filterKeys { alias ->
+                        Regex("(?<![a-z])${Regex.escape(alias)}(?![a-z])").containsMatchIn(prefix)
+                    }.values.toSet()
+                    found.ifEmpty { null }
+                }
+            }
+            matches.forEach { match ->
+                val time = runCatching {
+                    val parts = match.value.split(':')
+                    LocalTime.of(parts[0].toInt(), parts[1].toInt())
+                }.getOrNull() ?: return@forEach
+                add(ScheduleSlot(exactDate = exactDate, weekdays = weekdays, time = time))
+            }
         }
-        return local.atZone(zone).toInstant()
     }
 
     private fun pendingIntent(context: Context, record: OneScheduledMedication): PendingIntent =
@@ -135,7 +239,7 @@ object OneMedicationScheduler {
         .lineSequence().mapNotNull { decode(it) }.toList()
 
     private fun saveRecords(prefs: android.content.SharedPreferences, records: List<OneScheduledMedication>) {
-        prefs.edit().putString(RECORDS, records.joinToString("\n") { encode(it) }).apply()
+        prefs.edit { putString(RECORDS, records.joinToString("\n") { encode(it) }) }
     }
 
     private fun encode(record: OneScheduledMedication): String = JSONObject()
@@ -174,11 +278,9 @@ class OneMedicationAlarmReceiver : BroadcastReceiver() {
         OneMedicationScheduler.fired(context, planId, at)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = context.getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            manager.createNotificationChannel(NotificationChannel(OneMedicationScheduler.CHANNEL_ID, context.getString(R.string.one_medication_channel), NotificationManager.IMPORTANCE_HIGH))
-        }
+        manager.createNotificationChannel(NotificationChannel(OneMedicationScheduler.CHANNEL_ID, context.getString(R.string.one_medication_channel), NotificationManager.IMPORTANCE_HIGH))
         val openApp = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val name = intent.getStringExtra("name").orEmpty()
+        val name = intent.getStringExtra("name").orEmpty().ifBlank { context.getString(R.string.one_medication_notification_name) }
         val dose = intent.getStringExtra("dose").orEmpty()
         val instructions = intent.getStringExtra("instructions").orEmpty()
         manager.notify(
@@ -187,7 +289,7 @@ class OneMedicationAlarmReceiver : BroadcastReceiver() {
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                 .setContentTitle("ONE · $name")
                 .setContentText(listOf(dose, instructions).filter { it.isNotBlank() }.joinToString(" · "))
-                .setStyle(NotificationCompat.BigTextStyle().bigText(instructions.ifBlank { "Es hora de revisar esta medicación." }))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(instructions.ifBlank { context.getString(R.string.one_medication_notification_fallback) }))
                 .setContentIntent(openApp)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

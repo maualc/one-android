@@ -6,8 +6,7 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- Household snapshots and medication alarm metadata stay on this
+         device and are not copied to cloud backups. -->
+    <exclude domain="sharedpref" path="." />
 </full-backup-content>

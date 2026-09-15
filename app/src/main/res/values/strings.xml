@@ -3,4 +3,6 @@
     <string name="one_camera_capture_channel">ONE camera capture</string>
     <string name="one_livekit_channel">ONE live publishing</string>
     <string name="one_medication_channel">ONE medication reminders</string>
+    <string name="one_medication_notification_fallback">It is time to review this medication.</string>
+    <string name="one_medication_notification_name">Medication reminder</string>
 </resources>

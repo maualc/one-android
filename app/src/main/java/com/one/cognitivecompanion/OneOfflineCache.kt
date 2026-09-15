@@ -1,6 +1,7 @@
 package com.one.cognitivecompanion
 
 import android.content.Context
+import androidx.core.content.edit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -14,6 +15,18 @@ import java.util.UUID
 class OneOfflineCache(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    /**
+     * Remove every cached household snapshot when the local session ends.
+     * Cached names, events and map metadata are sensitive even though they do
+     * not include access tokens or media bytes.
+     */
+    // Clear synchronously so a sign-out cannot race with a process death and
+    // leave the previous household snapshot on disk.
+    @Suppress("UseKtx")
+    fun clear() {
+        check(preferences.edit().clear().commit()) { "Could not clear the cached ONE household data." }
+    }
+
     fun saveHome(homeId: UUID, snapshot: OneHomeSnapshot) {
         val payload = JSONObject()
             .put("profile", JSONObject()
@@ -23,7 +36,7 @@ class OneOfflineCache(context: Context) {
                 .put("paused", snapshot.profile.paused))
             .put("objects", JSONArray(snapshot.objects.map(::objectJson)))
             .put("events", JSONArray(snapshot.events.map(::eventJson)))
-        preferences.edit().putString(key("home", homeId), payload.toString()).apply()
+        preferences.edit { putString(key("home", homeId), payload.toString()) }
     }
 
     fun readHome(homeId: UUID): OneHomeSnapshot? = runCatching {
@@ -42,7 +55,7 @@ class OneOfflineCache(context: Context) {
     }.getOrNull()
 
     fun saveCameras(homeId: UUID, cameras: List<OneCamera>) {
-        preferences.edit().putString(key("cameras", homeId), JSONArray(cameras.map(::cameraJson)).toString()).apply()
+        preferences.edit { putString(key("cameras", homeId), JSONArray(cameras.map(::cameraJson)).toString()) }
     }
 
     fun readCameras(homeId: UUID): List<OneCamera> = runCatching {
@@ -53,7 +66,7 @@ class OneOfflineCache(context: Context) {
         val payload = JSONObject()
             .put("rooms", JSONArray(rooms.map { JSONObject().put("id", it.id.toString()).put("home_id", it.homeId?.toString() ?: JSONObject.NULL).put("name", it.name) }))
             .put("map", map?.let(::mapJson) ?: JSONObject.NULL)
-        preferences.edit().putString(key("map", homeId), payload.toString()).apply()
+        preferences.edit { putString(key("map", homeId), payload.toString()) }
     }
 
     fun readMap(homeId: UUID): Pair<List<OneRoom>, OneRoomMap?>? = runCatching {

@@ -3,6 +3,7 @@ package com.one.cognitivecompanion
 import android.content.Context
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CancellationException
@@ -34,7 +35,7 @@ class OneAppState(
     var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
     var selectedTab by mutableStateOf("home")
-    var onboardingStep by mutableStateOf(0)
+    var onboardingStep by mutableIntStateOf(0)
     var onboardingConsentRoom by mutableStateOf(false)
     var onboardingConsentMic by mutableStateOf(false)
     var onboardingConsentMedication by mutableStateOf(false)
@@ -89,7 +90,7 @@ class OneAppState(
     var medicationCheckIns by mutableStateOf<List<OneRemoteMedicationCheckIn>?>(null)
     var medicationCheckInsLoadState by mutableStateOf(OneMedicationLoadState.IDLE)
     var medicationCheckInsLoadError by mutableStateOf<String?>(null)
-    var medicationHistoryDays by mutableStateOf(7)
+    var medicationHistoryDays by mutableIntStateOf(7)
     var medicationPlanActionState by mutableStateOf(OneMedicationPlanActionState.IDLE)
     var lastMedicationPlan by mutableStateOf<OneMedicationPlan?>(null)
     var medicationPlanActionError by mutableStateOf<String?>(null)
@@ -1171,8 +1172,8 @@ class OneAppState(
         try {
             medicationDoses = medicationRepository.load(authenticatedSession, subjectUserId)
             runCatching {
-                apiClient.medicationReminders(authenticatedSession, subjectUserId = subjectUserId)
-                    .forEach { OneMedicationScheduler.schedule(appContext, it) }
+                val reminders = apiClient.medicationReminders(authenticatedSession, subjectUserId = subjectUserId)
+                OneMedicationScheduler.sync(appContext, reminders)
             }
             medicationLoadState = OneMedicationLoadState.LOADED
         } catch (error: Exception) {
@@ -1341,6 +1342,11 @@ class OneAppState(
                     version = plan.version
                 )
             )
+            // Remove alarms for the old rule before loading the new set. The
+            // response may contain a different time, an inactive plan, or no
+            // reminder at all; leaving the old PendingIntent would otherwise
+            // notify the resident with stale medication details.
+            OneMedicationScheduler.cancel(appContext, plan.id)
             medicationPlanActionState = OneMedicationPlanActionState.LOADED
             loadMedicationReminders(plan.subjectUserId)
             loadMedicationPlans(plan.subjectUserId)
@@ -1374,6 +1380,10 @@ class OneAppState(
                 scheduledFor = scheduledFor,
                 status = wireStatus
             )
+            // Reconcile this plan after the status update. This removes the
+            // fired/edited occurrence and lets the next recurring reminder be
+            // scheduled from the server's authoritative response.
+            OneMedicationScheduler.cancel(appContext, planId)
             loadMedicationReminders()
         } catch (error: Exception) {
             medicationActionError = error.message ?: "Could not update this medication check-in."
@@ -1591,6 +1601,8 @@ class OneAppState(
     suspend fun signOut() {
         OneCaptureService.stop(appContext)
         OneLiveKitPublisherService.stop(appContext)
+        OneMedicationScheduler.cancelAll(appContext)
+        withContext(Dispatchers.IO) { runCatching { offlineCache.clear() } }
         val activeSession = session
         if (backendMode && activeSession != null) {
             runCatching { apiClient.logout(activeSession) }

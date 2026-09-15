@@ -16,6 +16,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +40,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -209,6 +212,26 @@ private fun OneAlertDialog(
             tonalElevation = 0.dp
         )
     }
+}
+
+@Composable
+private fun OneDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        modifier = modifier.widthIn(min = 240.dp),
+        shape = RoundedCornerShape(18.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        content = content
+    )
 }
 
 @Composable
@@ -1891,7 +1914,7 @@ private fun HomeCameraStatusCard(
                             onClick = { cameraRoomMenuExpanded = true },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Room: $selectedRoomName") }
-                        DropdownMenu(
+                        OneDropdownMenu(
                             expanded = cameraRoomMenuExpanded,
                             onDismissRequest = { cameraRoomMenuExpanded = false }
                         ) {
@@ -2849,7 +2872,7 @@ private fun MapScreen(
                             onClick = { roomScanCameraMenuExpanded = true },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Camera: ${selectedRoomScanCamera?.name ?: "Select camera"}") }
-                        DropdownMenu(
+                        OneDropdownMenu(
                             expanded = roomScanCameraMenuExpanded,
                             onDismissRequest = { roomScanCameraMenuExpanded = false }
                         ) {
@@ -2871,7 +2894,7 @@ private fun MapScreen(
                                 onClick = { roomScanRoomMenuExpanded = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text("Existing room: ${selectedRoomScanRoom?.name ?: "Optional"}") }
-                            DropdownMenu(
+                            OneDropdownMenu(
                                 expanded = roomScanRoomMenuExpanded,
                                 onDismissRequest = { roomScanRoomMenuExpanded = false }
                             ) {
@@ -2987,7 +3010,7 @@ private fun MapScreen(
                             onClick = { calibrationCameraMenuExpanded = true },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Camera: ${selectedCalibrationCamera?.name ?: "Select camera"}") }
-                        DropdownMenu(
+                        OneDropdownMenu(
                             expanded = calibrationCameraMenuExpanded,
                             onDismissRequest = { calibrationCameraMenuExpanded = false }
                         ) {
@@ -3082,13 +3105,13 @@ private fun MapScreen(
                     Text("This is derived household metadata, not a diagnosis. Coordinates are optional and uncertain.", style = MaterialTheme.typography.bodySmall)
                     Box {
                         OutlinedButton(onClick = { observationObjectMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text("Object: ${selectedObject?.label ?: "Select object"}") }
-                        DropdownMenu(observationObjectMenuExpanded, { observationObjectMenuExpanded = false }) {
+                        OneDropdownMenu(observationObjectMenuExpanded, { observationObjectMenuExpanded = false }) {
                             objects.orEmpty().forEach { item -> DropdownMenuItem(text = { Text(item.label) }, onClick = { observationObjectId = item.id.toString(); observationObjectMenuExpanded = false }) }
                         }
                     }
                     Box {
                         OutlinedButton(onClick = { observationCameraMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text("Camera: ${selectedCamera?.name ?: "Optional"}") }
-                        DropdownMenu(observationCameraMenuExpanded, { observationCameraMenuExpanded = false }) {
+                        OneDropdownMenu(observationCameraMenuExpanded, { observationCameraMenuExpanded = false }) {
                             DropdownMenuItem(text = { Text("No camera") }, onClick = { observationCameraId = null; observationCameraMenuExpanded = false })
                             cameras.orEmpty().forEach { item -> DropdownMenuItem(text = { Text(item.name) }, onClick = { observationCameraId = item.id.toString(); observationCameraMenuExpanded = false }) }
                         }
@@ -3498,7 +3521,7 @@ private fun FamilyScreen(
                     label = { Text(selectedSubjectName) },
                     leadingIcon = { Icon(Icons.Default.People, contentDescription = null) }
                 )
-                DropdownMenu(
+                OneDropdownMenu(
                     expanded = subjectMenuExpanded,
                     onDismissRequest = { subjectMenuExpanded = false }
                 ) {
@@ -3855,7 +3878,7 @@ private fun FamilyScreen(
                             ) {
                                 Text("Assigned caregiver: ${assignedCaregiverName ?: "None"}")
                             }
-                            DropdownMenu(
+                            OneDropdownMenu(
                                 expanded = assignedCaregiverMenuExpanded,
                                 onDismissRequest = { assignedCaregiverMenuExpanded = false }
                             ) {
@@ -4085,7 +4108,7 @@ private fun CaregiverAssistantScreen(
                             label = { Text("For $selectedSubjectName") },
                             leadingIcon = { Icon(Icons.Default.People, contentDescription = null) }
                         )
-                        DropdownMenu(
+                        OneDropdownMenu(
                             expanded = subjectMenuExpanded,
                             onDismissRequest = { subjectMenuExpanded = false }
                         ) {

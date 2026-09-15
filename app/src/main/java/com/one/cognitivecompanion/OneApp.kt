@@ -23,6 +23,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -109,6 +110,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
@@ -355,6 +357,10 @@ fun OneApp() {
             // is introduced here.
             while (true) {
                 delay(2_000)
+                // Do not keep replacing a stable API error (or an offline
+                // cached map) with a transient loading state. The caregiver
+                // can retry explicitly once connectivity is restored.
+                if (appState.mapLoadState == OneMapLoadState.ERROR || appState.mapIsStale) continue
                 appState.loadRoomMap()
                 appState.loadHome()
                 appState.refreshRoomMapGeneration(
@@ -2660,13 +2666,15 @@ private fun MapScreen(
         }
     }
     val manualZoneNames = manualZones.split(",", ";", "\n").map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    val usableRoomMap = currentRoomMap?.takeIf { it.isUsableForCareTeam() }
+    val hasUnusableRoomMap = currentRoomMap != null && usableRoomMap == null
     val canSubmitManualMap = manualRoomName.trim().isNotBlank() && manualZoneNames.isNotEmpty() && mapLoadState != OneMapLoadState.SUBMITTING
     val selectedCalibrationCamera = calibrationCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
         ?: cameras.orEmpty().firstOrNull()
     val parsedCalibrationAccuracy = calibrationAccuracy.trim().takeIf { it.isNotBlank() }?.toDoubleOrNull()
     val calibrationAccuracyValid = calibrationAccuracy.trim().isBlank() || parsedCalibrationAccuracy?.let { it in 0.0..100.0 } == true
     val calibrationAnchorNames = calibrationAnchors.split(",", ";", "\n").map(String::trim).filter(String::isNotBlank).distinct()
-    val canSubmitCalibration = selectedCalibrationCamera != null && currentRoomMap != null && calibrationAnchorNames.size >= 3 &&
+    val canSubmitCalibration = selectedCalibrationCamera != null && usableRoomMap != null && calibrationAnchorNames.size >= 3 &&
         calibrationAccuracyValid
     val selectedRoomScanCamera = roomScanCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
         ?: cameras.orEmpty().firstOrNull()
@@ -2676,6 +2684,10 @@ private fun MapScreen(
         else -> rooms.orEmpty().firstOrNull { it.id.toString() == roomScanRoomId }
     }
     val generationForSelectedCamera = mapGeneration?.takeIf { generation -> selectedRoomScanCamera?.id == generation.cameraId }
+    val generationResultIsUsable = generationForSelectedCamera?.let { generation ->
+        generation.status.equals("ready", ignoreCase = true) &&
+            generation.mapId != null && usableRoomMap?.id == generation.mapId
+    } == true
     val canStartRoomScan = selectedRoomScanCamera != null &&
         mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
         mapGeneration?.isProcessing != true
@@ -2694,7 +2706,11 @@ private fun MapScreen(
                 InfoCard("Map data unavailable", loadError ?: "ONE could not load the household map.")
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
-            else -> MapCanvas(objects = objects, roomMap = currentRoomMap, isBackend = isBackend)
+            else -> MapCanvas(
+                objects = if (usableRoomMap != null) objects else emptyList(),
+                roomMap = usableRoomMap,
+                isBackend = isBackend
+            )
         }
         if (isBackend) {
             when {
@@ -2705,11 +2721,17 @@ private fun MapScreen(
                 mapLoadState == OneMapLoadState.ERROR -> {
                     InfoCard("Room map unavailable", mapLoadError ?: "ONE could not load the current room map.")
                 }
-                currentRoomMap == null -> {
+                hasUnusableRoomMap -> {
+                    InfoCard(
+                        "No usable room map yet",
+                        "The last revision is kept for history, but it did not pass geometry validation. It will not be shown as the active map; capture a new camera walkthrough when the publisher is ready."
+                    )
+                }
+                usableRoomMap == null -> {
                     InfoCard("No room map uploaded yet", "Create a manual zone map below, or upload a scan from a supported device.")
                 }
                 else -> {
-                    MapQualityCard(currentRoomMap)
+                    MapQualityCard(usableRoomMap)
                 }
             }
         }
@@ -2764,7 +2786,8 @@ private fun MapScreen(
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 Text("The backend is analysing the room geometry.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            generation.status.equals("ready", true) -> Text("The new map is ready and will appear above after refresh.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                            generation.status.equals("ready", true) && generationResultIsUsable -> Text("The new map is ready and appears above.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                            generation.status.equals("ready", true) -> Text("The generation finished, but it did not produce a usable map. Capture a new walkthrough.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                             generation.isTerminal -> Text(generation.errorMessage ?: "Capture a new walkthrough when convenient.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -2823,8 +2846,8 @@ private fun MapScreen(
         SectionHeading("CALIBRATION", "Camera-to-map alignment")
         if (!isBackend) {
             InfoCard("Backend-only calibration", "Connect a backend to store camera alignment metadata.")
-        } else if (currentRoomMap == null) {
-            InfoCard("Map required", "Create or load a room map before calibrating a camera.")
+        } else if (usableRoomMap == null) {
+            InfoCard("Usable map required", "The previous revision is not safe to calibrate. Capture or load a validated room map first.")
         } else if (cameras.isNullOrEmpty()) {
             InfoCard("Camera required", "Register a household camera before calibrating it against this map.")
         } else {
@@ -3079,7 +3102,7 @@ private fun MapScreen(
                 Button(
                     onClick = {
                         val camera = selectedCalibrationCamera
-                        val map = currentRoomMap
+                        val map = usableRoomMap
                         if (camera != null && map != null) {
                             showCalibrationDialog = false
                             onCalibrateCamera(camera.id, map.id, parsedCalibrationAccuracy, calibrationAnchorNames)
@@ -3160,7 +3183,7 @@ private fun MapScreen(
                         onSubmitObservation(
                             selectedObject?.id,
                             selectedCamera?.id,
-                            currentRoomMap?.id,
+                            usableRoomMap?.id,
                             parsedX,
                             parsedY,
                             parsedUncertainty,
@@ -3280,6 +3303,8 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, roomMap: OneRoomMap?, isB
     val unpositionedObjects = objects.orEmpty().filterNot { it.pointX != null && it.pointY != null }
     val hasGeometry = roomMap?.let { it.polygons.isNotEmpty() || it.walls.isNotEmpty() || it.furniture.isNotEmpty() || it.openings.isNotEmpty() } == true
     val bounds = remember(roomMap, positionedObjects) { mapBounds(roomMap, positionedObjects) }
+    var mapScale by remember(roomMap?.id) { mutableStateOf(1f) }
+    var mapOffset by remember(roomMap?.id) { mutableStateOf(Offset.Zero) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!hasGeometry && positionedObjects.isEmpty()) {
             Surface(
@@ -3302,8 +3327,20 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, roomMap: OneRoomMap?, isB
                     .clip(RoundedCornerShape(26.dp))
                     .background(Brush.verticalGradient(listOf(Color(0xFFB3E4EA), Color(0xFFEAF1E8))))
                     .border(2.dp, OneBlue.copy(alpha = 0.45f), RoundedCornerShape(26.dp))
+                    .pointerInput(roomMap?.id) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            mapScale = (mapScale * zoom).coerceIn(1f, 4f)
+                            mapOffset += pan
+                        }
+                    }
+                    .graphicsLayer {
+                        scaleX = mapScale
+                        scaleY = mapScale
+                        translationX = mapOffset.x
+                        translationY = mapOffset.y
+                    }
                     .semantics {
-                        contentDescription = mapContentDescription(roomMap, positionedObjects)
+                        contentDescription = "${mapContentDescription(roomMap, positionedObjects)}. Drag to move and pinch to zoom."
                     }
             ) {
                 val currentBounds = bounds ?: MapBounds(0.0, 1.0, 0.0, 1.0)
@@ -3365,7 +3402,7 @@ private fun MapCanvas(objects: List<OneRemoteObject>?, roomMap: OneRoomMap?, isB
                         confidenceRadiusM = remoteObject.confidenceRadiusM
                     )
                 }
-                Text("Approximate geometry · rings show uncertainty", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Drag to move · pinch to zoom · approximate geometry", modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (unpositionedObjects.isNotEmpty()) {

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Local emulator development only. Release builds inherit the strict main config. -->
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">10.0.2.2</domain>
-    </domain-config>
+    <!--
+        Debug builds may connect to a developer backend over HTTP, either via
+        the emulator alias (10.0.2.2) or the host's private LAN address. The
+        release resource keeps the strict HTTPS-only policy from main.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

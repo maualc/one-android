@@ -118,8 +118,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -219,12 +221,13 @@ private fun OneDropdownMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
+    menuWidth: Dp? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
-        modifier = modifier.widthIn(min = 240.dp),
+        modifier = if (menuWidth != null) modifier.width(menuWidth) else modifier.widthIn(min = 240.dp),
         shape = RoundedCornerShape(18.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
@@ -3501,6 +3504,11 @@ private fun FamilyScreen(
     val medicationAccessGranted = !isBackend || selectedSubjectMedicationConsent
     val familyAccessGranted = !isBackend || selectedSubjectFamilyConsent
     val assistantAccessGranted = !isBackend || selectedSubjectAssistantConsent
+    val visibleMedicationDoses = if (isBackend) {
+        medicationDoses.orEmpty().filter(MedicationDose::isOpenReminder)
+    } else {
+        demoMedicationDoses.filter(MedicationDose::isOpenReminder)
+    }
     val canCreateMedicationPlan = isBackend && selectedFamilySubjectId != null && medicationAccessGranted && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
     val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
 
@@ -3652,7 +3660,11 @@ private fun FamilyScreen(
             }
         }
         if (!isBackend) {
-            demoMedicationDoses.forEach { dose -> MedicationRow(dose) }
+            if (visibleMedicationDoses.isEmpty()) {
+                InfoCard("No open reminders", "Today's completed reminders are available in the history section.")
+            } else {
+                visibleMedicationDoses.forEach { dose -> MedicationRow(dose) }
+            }
         } else when {
             medicationDoses == null && (medicationLoadState == OneMedicationLoadState.IDLE || medicationLoadState == OneMedicationLoadState.LOADING) -> {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -3662,12 +3674,19 @@ private fun FamilyScreen(
                 InfoCard("Medication data unavailable", medicationLoadError ?: "ONE could not load medication reminders.")
                 OutlinedButton(onClick = onMedicationRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
-            medicationDoses.isNullOrEmpty() -> InfoCard("No reminders for today", "No active medication reminder has been scheduled for this household today.")
+            visibleMedicationDoses.isEmpty() -> InfoCard(
+                if (medicationDoses.isNullOrEmpty()) "No reminders for today" else "No open reminders",
+                if (medicationDoses.isNullOrEmpty()) {
+                    "No active medication reminder has been scheduled for this household today."
+                } else {
+                    "Today's completed reminders are available in the history section."
+                }
+            )
             else -> {
                 medicationActionError?.let { error ->
                     Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-                medicationDoses.forEach { dose ->
+                visibleMedicationDoses.forEach { dose ->
                     MedicationRow(
                         dose = dose,
                         actionKey = medicationActionKey,
@@ -3880,18 +3899,42 @@ private fun FamilyScreen(
                             }
                             OneDropdownMenu(
                                 expanded = assignedCaregiverMenuExpanded,
-                                onDismissRequest = { assignedCaregiverMenuExpanded = false }
+                                onDismissRequest = { assignedCaregiverMenuExpanded = false },
+                                menuWidth = 224.dp
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("No caregiver assigned") },
+                                    text = {
+                                        Text(
+                                            "No caregiver assigned",
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textAlign = TextAlign.Center,
+                                            color = if (planAssignedCaregiverId == null) OneBlue else MaterialTheme.colorScheme.onSurface,
+                                            fontWeight = if (planAssignedCaregiverId == null) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (planAssignedCaregiverId == null) OneBlue.copy(alpha = 0.10f) else Color.Transparent),
                                     onClick = {
                                         planAssignedCaregiverId = null
                                         assignedCaregiverMenuExpanded = false
                                     }
                                 )
                                 caregiverMembers.forEach { caregiver ->
+                                    val isSelected = planAssignedCaregiverId == caregiver.id.toString()
                                     DropdownMenuItem(
-                                        text = { Text(caregiver.displayName) },
+                                        text = {
+                                            Text(
+                                                caregiver.displayName,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                textAlign = TextAlign.Center,
+                                                color = if (isSelected) OneBlue else MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (isSelected) OneBlue.copy(alpha = 0.10f) else Color.Transparent),
                                         onClick = {
                                             planAssignedCaregiverId = caregiver.id.toString()
                                             assignedCaregiverMenuExpanded = false
@@ -4566,6 +4609,12 @@ private fun MedicationRow(
 }
 
 private fun MedicationDose.medicationActionKey(): String = "${planId}:${scheduledFor}"
+
+private fun MedicationDose.isOpenReminder(): Boolean = status !in setOf(
+    DoseStatus.ACKNOWLEDGED,
+    DoseStatus.TAKEN,
+    DoseStatus.SKIPPED
+)
 
 private fun doseTint(status: DoseStatus): Color = when (status) {
     DoseStatus.ACKNOWLEDGED, DoseStatus.TAKEN -> OneMint

@@ -49,6 +49,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.one.cognitivecompanion.ui.theme.OneBlue
 import java.io.ByteArrayOutputStream
 import java.time.Instant
 import java.util.concurrent.ExecutorService
@@ -339,9 +340,14 @@ internal fun RoomSweepCapturePanel(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    "Capturing $frameCount/${OneRoomSweepCaptureConfig.MAX_FRAME_COUNT} frames…",
+                    "Capturing $frameCount/${OneRoomSweepCaptureConfig.MAX_FRAME_COUNT} frames · ${frameCount * 100 / OneRoomSweepCaptureConfig.MAX_FRAME_COUNT}%",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    roomSweepGuidance(frameCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OneBlue
                 )
             } else {
                 Text(
@@ -371,6 +377,14 @@ internal fun RoomSweepCapturePanel(
             cameraError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
     }
+}
+
+private fun roomSweepGuidance(frameCount: Int): String = when {
+    frameCount == 0 -> "Start at the doorway and move slowly. The next frame will be captured automatically."
+    frameCount < 6 -> "Frames $frameCount/20 captured. Turn a little and show the nearest wall and corner."
+    frameCount < 13 -> "Frames $frameCount/20 captured. Keep walking steadily toward the opposite walls and corners."
+    frameCount < 19 -> "Frames $frameCount/20 captured. Show the doorway and larger furniture as you continue."
+    else -> "Frames $frameCount/20 captured. Hold steady on the final view, then the scan will finish."
 }
 
 private fun ImageProxy.toRoomSweepJpeg(): ByteArray? {

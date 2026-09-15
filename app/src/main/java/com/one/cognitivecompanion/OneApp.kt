@@ -2090,6 +2090,7 @@ private fun PublisherScreen(
     var roomLabel by rememberSaveable { mutableStateOf("Living room") }
     var showRoomSweep by rememberSaveable { mutableStateOf(false) }
     var roomSweepPermissionError by rememberSaveable { mutableStateOf<String?>(null) }
+    var roomSweepPermissionRequestedForJob by rememberSaveable { mutableStateOf<String?>(null) }
     val scanJobMatchesCameraFormat = mapGeneration?.let { generation ->
         generation.resolutionWidth == OneRoomSweepCaptureConfig.TARGET_WIDTH &&
             generation.resolutionHeight == OneRoomSweepCaptureConfig.TARGET_HEIGHT &&
@@ -2129,8 +2130,30 @@ private fun PublisherScreen(
             roomSweepPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
-    LaunchedEffect(mapGeneration?.id, mapGeneration?.status) {
-        if (mapGeneration?.isCollecting != true) showRoomSweep = false
+    LaunchedEffect(
+        mapGeneration?.id,
+        mapGeneration?.status,
+        explicitRoomScanConsent,
+        isPublishing
+    ) {
+        if (mapGeneration?.isCollecting != true) {
+            showRoomSweep = false
+            return@LaunchedEffect
+        }
+        // Starting a scan on the publisher should lead directly to capture.
+        // The old flow left the job at 10% until the user noticed a second
+        // "Capture room walkthrough" button below the status text.
+        if (isPublishing || !explicitRoomScanConsent || !scanJobMatchesCameraFormat || showRoomSweep) return@LaunchedEffect
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            roomSweepPermissionError = null
+            showRoomSweep = true
+        } else if (roomSweepPermissionRequestedForJob != mapGeneration.id.toString()) {
+            roomSweepPermissionRequestedForJob = mapGeneration.id.toString()
+            roomSweepPermissionError = null
+            // Ask as soon as the publisher receives the collecting job so the
+            // scan does not appear to be stuck at 10% behind a hidden button.
+            roomSweepPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
     fun startPublisher() {
         val cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -2208,11 +2231,11 @@ private fun PublisherScreen(
                     enabled = explicitRoomScanConsent,
                     onChanged = { explicitRoomScanConsent = it }
                 )
-                Button(
-                    onClick = { onStartRoomMap(roomLabel) },
-                    enabled = explicitRoomScanConsent && roomLabel.trim().isNotBlank() &&
-                        mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
-                        mapGeneration?.isProcessing != true,
+                    Button(
+                        onClick = { onStartRoomMap(roomLabel) },
+                        enabled = !isPublishing && explicitRoomScanConsent && roomLabel.trim().isNotBlank() &&
+                            mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
+                            mapGeneration?.isProcessing != true,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) "Starting room scan…" else "Prepare room scan")

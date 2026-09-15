@@ -8,6 +8,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -291,9 +299,19 @@ fun OneApp() {
             appState.loadMedicationReminders()
         }
     }
-    LaunchedEffect(appState, appState.authStageName, appState.session, appState.selectedTab) {
+    LaunchedEffect(
+        appState,
+        appState.authStageName,
+        appState.session,
+        appState.selectedTab,
+        appState.cameras,
+        appState.mapGenerationCameraId
+    ) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.selectedTab == "map") {
             appState.loadRoomMap()
+            appState.refreshRoomMapGeneration(
+                appState.mapGenerationCameraId ?: appState.cameras?.firstOrNull()?.id
+            )
             // Keep the map and derived object positions close to the live
             // stream while this surface is visible.  The existing bounded
             // home/map reads are reused; no new endpoint or frame transport
@@ -302,6 +320,21 @@ fun OneApp() {
                 delay(2_000)
                 appState.loadRoomMap()
                 appState.loadHome()
+                appState.refreshRoomMapGeneration(
+                    appState.mapGenerationCameraId ?: appState.cameras?.firstOrNull()?.id
+                )
+            }
+        }
+    }
+    LaunchedEffect(appState, appState.authStageName, appState.roleName, appState.session?.userId) {
+        if (
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.roleName == OneRole.PUBLISHER.name &&
+            appState.session != null
+        ) {
+            while (true) {
+                appState.refreshRoomMapGeneration(appState.session?.userId)
+                delay(2_500)
             }
         }
     }
@@ -384,25 +417,56 @@ fun OneApp() {
                         clipLoadError = appState.clipLoadError,
                         onClose = { selectedEvent = null }
                     )
-                } else when (role) {
-                    OneRole.PUBLISHER -> PublisherScreen(
-                        isPublishing = liveKitPublishing,
-                        hasReconnectLink = appState.session?.reconnectToken != null,
-                        reconnectLoadState = appState.cameraReconnectLoadState,
-                        reconnectError = appState.cameraReconnectError,
-                        onCreateReconnectLink = { coroutineScope.launch { appState.createCameraReconnectLink() } },
-                        onReconnect = { coroutineScope.launch { appState.reconnectPublisherCamera() } },
-                        onSignOut = signOut,
-                        onStart = {
-                            OneLiveKitPublisherService.start(appContext)
-                            liveKitPublishing = true
+                } else {
+                    val tabIndex = tabs.mapIndexed { index, tab -> tab.key to index }.toMap()
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            val direction = if ((tabIndex[targetState] ?: 0) >= (tabIndex[initialState] ?: 0)) 1 else -1
+                            (fadeIn(animationSpec = tween(220)) + slideInHorizontally(
+                                animationSpec = tween(260)
+                            ) { fullWidth -> fullWidth / 6 * direction }) togetherWith
+                                (fadeOut(animationSpec = tween(160)) + slideOutHorizontally(
+                                    animationSpec = tween(220)
+                                ) { fullWidth -> -fullWidth / 10 * direction })
                         },
-                        onStop = {
-                            OneLiveKitPublisherService.stop(appContext)
-                            liveKitPublishing = false
-                        }
-                    )
-                    OneRole.CAREGIVER -> when (selectedTab) {
+                        label = "Bottom navigation screen transition"
+                    ) { visibleTab ->
+                        when (role) {
+                            OneRole.PUBLISHER -> PublisherScreen(
+                                isPublishing = liveKitPublishing,
+                                hasReconnectLink = appState.session?.reconnectToken != null,
+                                reconnectLoadState = appState.cameraReconnectLoadState,
+                                reconnectError = appState.cameraReconnectError,
+                                mapGeneration = appState.mapGeneration,
+                                mapGenerationLoadState = appState.mapGenerationLoadState,
+                                mapGenerationError = appState.mapGenerationError,
+                                onCreateReconnectLink = { coroutineScope.launch { appState.createCameraReconnectLink() } },
+                                onReconnect = { coroutineScope.launch { appState.reconnectPublisherCamera() } },
+                                onStartRoomMap = { label ->
+                                    appState.session?.userId?.let { cameraId ->
+                                        coroutineScope.launch {
+                                            appState.startRoomMapGeneration(cameraId, null, label)
+                                        }
+                                    }
+                                },
+                                onRefreshRoomMap = {
+                                    coroutineScope.launch { appState.refreshRoomMapGeneration(appState.session?.userId) }
+                                },
+                                onSubmitRoomSweep = { frames ->
+                                    coroutineScope.launch { appState.submitRoomMapSweep(frames) }
+                                },
+                                onSignOut = signOut,
+                                onStart = {
+                                    OneLiveKitPublisherService.start(appContext)
+                                    liveKitPublishing = true
+                                },
+                                onStop = {
+                                    OneLiveKitPublisherService.stop(appContext)
+                                    liveKitPublishing = false
+                                }
+                            )
+                            OneRole.CAREGIVER -> when (visibleTab) {
                         "map" -> MapScreen(
                             objects = appState.homeSnapshot?.objects,
                             events = appState.homeSnapshot?.events,
@@ -421,7 +485,19 @@ fun OneApp() {
                             mapLoadState = appState.mapLoadState,
                             mapLoadError = appState.mapLoadError,
                             mapIsStale = appState.mapIsStale,
+                            rooms = appState.rooms,
+                            mapGeneration = appState.mapGeneration,
+                            mapGenerationLoadState = appState.mapGenerationLoadState,
+                            mapGenerationError = appState.mapGenerationError,
                             onMapRetry = { coroutineScope.launch { appState.loadRoomMap() } },
+                            onStartMapGeneration = { cameraId, roomId, roomLabel ->
+                                coroutineScope.launch {
+                                    appState.startRoomMapGeneration(cameraId, roomId, roomLabel)
+                                }
+                            },
+                            onRefreshMapGeneration = { cameraId ->
+                                coroutineScope.launch { appState.refreshRoomMapGeneration(cameraId) }
+                            },
                             onCreateManualMap = { roomName, zones, coordinateFrame ->
                                 coroutineScope.launch { appState.createManualRoomMap(roomName, zones, coordinateFrame) }
                             },
@@ -617,7 +693,7 @@ fun OneApp() {
                             }
                         )
                     }
-                    OneRole.RESIDENT -> when (selectedTab) {
+                            OneRole.RESIDENT -> when (visibleTab) {
                         "today" -> ResidentTodayScreen(
                             isBackend = appState.backendMode,
                             medicationDoses = appState.medicationDoses,
@@ -682,11 +758,13 @@ fun OneApp() {
                             onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
                             onOpenAssistant = { selectedTab = "assistant" }
                         )
+                        }
                     }
                 }
             }
         }
     }
+}
 }
 
 @Composable
@@ -778,13 +856,21 @@ private fun OneBottomBar(
         ) {
             tabs.forEach { tab ->
                 val selected = selectedTab == tab.key
+                val tabBackgroundColor by animateColorAsState(
+                    targetValue = if (selected) OneBlue else Color.Transparent,
+                    animationSpec = tween(220),
+                    label = "${tab.key} tab background"
+                )
+                val tabContentColor by animateColorAsState(
+                    targetValue = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    animationSpec = tween(180),
+                    label = "${tab.key} tab content"
+                )
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            if (selected) OneBlue else Color.Transparent
-                        )
+                        .background(tabBackgroundColor)
                         .clickable(role = Role.Tab) { onTabSelected(tab.key) }
                         .padding(horizontal = 4.dp, vertical = 7.dp)
                         .semantics(mergeDescendants = true) {
@@ -798,21 +884,13 @@ private fun OneBottomBar(
                         imageVector = tab.icon,
                         contentDescription = null,
                         modifier = Modifier.size(21.dp),
-                        tint = if (selected) {
-                            Color.White
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        tint = tabContentColor
                     )
                     Text(
                         text = tab.label,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (selected) {
-                            Color.White
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+                        color = tabContentColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1653,15 +1731,30 @@ private fun PublisherScreen(
     hasReconnectLink: Boolean,
     reconnectLoadState: OneCameraReconnectLoadState,
     reconnectError: String?,
+    mapGeneration: OneMapGeneration?,
+    mapGenerationLoadState: OneMapGenerationLoadState,
+    mapGenerationError: String?,
     onCreateReconnectLink: () -> Unit,
     onReconnect: () -> Unit,
+    onStartRoomMap: (String) -> Unit,
+    onRefreshRoomMap: () -> Unit,
+    onSubmitRoomSweep: (List<OneMapGenerationFrame>) -> Unit,
     onSignOut: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
     val context = LocalContext.current
     var explicitMediaConsent by rememberSaveable { mutableStateOf(false) }
+    var explicitRoomScanConsent by rememberSaveable { mutableStateOf(false) }
     var permissionError by rememberSaveable { mutableStateOf<String?>(null) }
+    var roomLabel by rememberSaveable { mutableStateOf("Living room") }
+    var showRoomSweep by rememberSaveable { mutableStateOf(false) }
+    var roomSweepPermissionError by rememberSaveable { mutableStateOf<String?>(null) }
+    val scanJobMatchesCameraFormat = mapGeneration?.let { generation ->
+        generation.resolutionWidth == OneRoomSweepCaptureConfig.TARGET_WIDTH &&
+            generation.resolutionHeight == OneRoomSweepCaptureConfig.TARGET_HEIGHT &&
+            generation.orientation.equals("landscape", ignoreCase = true)
+    } == true
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val cameraGranted = grants[Manifest.permission.CAMERA] == true || ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val audioGranted = grants[Manifest.permission.RECORD_AUDIO] == true || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -1671,6 +1764,33 @@ private fun PublisherScreen(
         } else {
             permissionError = "Camera and microphone permissions are required to publish this device."
         }
+    }
+    val roomSweepPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            roomSweepPermissionError = null
+            showRoomSweep = true
+        } else {
+            roomSweepPermissionError = "Camera permission is required to capture a room walkthrough."
+        }
+    }
+    fun openRoomSweep() {
+        if (isPublishing) {
+            roomSweepPermissionError = "Stop publishing before opening the room scanner."
+            return
+        }
+        if (!explicitRoomScanConsent) {
+            roomSweepPermissionError = "Confirm the room scan acknowledgment before opening the camera."
+            return
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            roomSweepPermissionError = null
+            showRoomSweep = true
+        } else {
+            roomSweepPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+    LaunchedEffect(mapGeneration?.id, mapGeneration?.status) {
+        if (mapGeneration?.isCollecting != true) showRoomSweep = false
     }
     fun startPublisher() {
         val cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -1723,6 +1843,91 @@ private fun PublisherScreen(
                 }
                 reconnectError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             }
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Room mapping", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Start a bounded room walkthrough from this paired camera. Android sends the temporary RGB frames to the existing backend map pipeline, which returns an approximate 2D layout.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = roomLabel,
+                    onValueChange = { roomLabel = it.take(120) },
+                    label = { Text("Room label") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                ConsentRow(
+                    label = "I understand this walkthrough temporarily captures room images for an approximate map.",
+                    enabled = explicitRoomScanConsent,
+                    onChanged = { explicitRoomScanConsent = it }
+                )
+                Button(
+                    onClick = { onStartRoomMap(roomLabel) },
+                    enabled = explicitRoomScanConsent && roomLabel.trim().isNotBlank() &&
+                        mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
+                        mapGeneration?.isProcessing != true,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) "Starting room scan…" else "Prepare room scan")
+                }
+                mapGeneration?.let { generation ->
+                    Text(
+                        "${generation.roomLabel} · ${generation.status.toMapGenerationLabel()} · ${generation.progress}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (generation.status.equals("failed", true) || generation.status.equals("needs_rescan", true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (generation.isCollecting) {
+                        if (!scanJobMatchesCameraFormat) {
+                            Text(
+                                "This pending job uses ${generation.resolutionWidth}×${generation.resolutionHeight} ${generation.orientation} frames. The Android scanner needs 640×480 landscape frames; capture on the device that started the job or start a new job after it expires.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Button(
+                            onClick = ::openRoomSweep,
+                            enabled = !isPublishing && explicitRoomScanConsent && scanJobMatchesCameraFormat &&
+                                mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (showRoomSweep) "Scanner open" else "Capture room walkthrough") }
+                    } else if (generation.isProcessing) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("The backend is analysing the room geometry. Keep this device paired until processing finishes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (generation.status.equals("ready", true)) {
+                        Text("Room map ready. A caregiver can review it in the Map tab.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                    } else if (generation.isTerminal) {
+                        Text(generation.errorMessage ?: "The room scan needs another attempt.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (mapGenerationLoadState == OneMapGenerationLoadState.LOADING) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                mapGenerationError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onRefreshRoomMap, modifier = Modifier.weight(1f)) { Text("Refresh status") }
+                    if (showRoomSweep) {
+                        OutlinedButton(onClick = { showRoomSweep = false }, modifier = Modifier.weight(1f)) { Text("Hide scanner") }
+                    }
+                }
+                roomSweepPermissionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+        OneArCoreCapabilityCard()
+        if (showRoomSweep && mapGeneration?.isCollecting == true && scanJobMatchesCameraFormat) {
+            RoomSweepCapturePanel(
+                onFramesReady = { frames ->
+                    showRoomSweep = false
+                    onSubmitRoomSweep(frames)
+                },
+                onCancel = { showRoomSweep = false }
+            )
         }
         ConsentRow(
             label = "I understand this device will publish camera and microphone while active.",
@@ -2028,7 +2233,13 @@ private fun MapScreen(
     mapLoadState: OneMapLoadState,
     mapLoadError: String?,
     mapIsStale: Boolean,
+    rooms: List<OneRoom>?,
+    mapGeneration: OneMapGeneration?,
+    mapGenerationLoadState: OneMapGenerationLoadState,
+    mapGenerationError: String?,
     onMapRetry: () -> Unit,
+    onStartMapGeneration: (UUID, UUID?, String) -> Unit,
+    onRefreshMapGeneration: (UUID) -> Unit,
     onCreateManualMap: (String, List<String>, String) -> Unit,
     objectActionState: OneObjectActionState,
     objectActionError: String?,
@@ -2045,6 +2256,12 @@ private fun MapScreen(
     var calibrationAccuracy by rememberSaveable { mutableStateOf("") }
     var calibrationAnchors by rememberSaveable { mutableStateOf("door, sofa, table") }
     var calibrationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var showRoomScanDialog by rememberSaveable { mutableStateOf(false) }
+    var roomScanCameraId by rememberSaveable { mutableStateOf<String?>(null) }
+    var roomScanRoomId by rememberSaveable { mutableStateOf<String?>(null) }
+    var roomScanRoomLabel by rememberSaveable { mutableStateOf("") }
+    var roomScanCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var roomScanRoomMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var showObjectDialog by rememberSaveable { mutableStateOf(false) }
     var objectLabel by rememberSaveable { mutableStateOf("") }
     var objectDisplayName by rememberSaveable { mutableStateOf("") }
@@ -2087,6 +2304,17 @@ private fun MapScreen(
     val calibrationAnchorNames = calibrationAnchors.split(",", ";", "\n").map(String::trim).filter(String::isNotBlank).distinct()
     val canSubmitCalibration = selectedCalibrationCamera != null && currentRoomMap != null && calibrationAnchorNames.size >= 3 &&
         calibrationAccuracyValid
+    val selectedRoomScanCamera = roomScanCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
+        ?: cameras.orEmpty().firstOrNull()
+    val selectedRoomScanRoom = when (roomScanRoomId) {
+        null -> rooms.orEmpty().firstOrNull()
+        "none" -> null
+        else -> rooms.orEmpty().firstOrNull { it.id.toString() == roomScanRoomId }
+    }
+    val generationForSelectedCamera = mapGeneration?.takeIf { generation -> selectedRoomScanCamera?.id == generation.cameraId }
+    val canStartRoomScan = selectedRoomScanCamera != null &&
+        mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
+        mapGeneration?.isProcessing != true
 
     ScreenScroll {
         ScreenHeader("MAP", "Home map", "Approximate locations for the care team.")
@@ -2121,6 +2349,68 @@ private fun MapScreen(
                 }
             }
         }
+        SectionHeading("ROOM SCAN", "Build a 2D room layout from a paired camera")
+        if (!isBackend) {
+            InfoCard("Backend-only room scan", "Connect a consented backend and pair a publisher device before starting a camera walkthrough.")
+        } else if (cameras.isNullOrEmpty()) {
+            InfoCard("Paired camera required", "Register or pair a publisher camera first. The caregiver coordinates the job; the paired device captures the frames.")
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Camera walkthrough", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Choose the paired camera and room. The publisher phone will receive the collecting job and submit up to 20 temporary RGB frames. The result is an approximate 2D map with explicit uncertainty.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    generationForSelectedCamera?.let { generation ->
+                        Text(
+                            "${generation.roomLabel} · ${generation.status.toMapGenerationLabel()} · ${generation.progress}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (generation.status.equals("failed", true) || generation.status.equals("needs_rescan", true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        when {
+                            generation.isCollecting -> Text("Waiting for the paired publisher device to capture the room.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                            generation.isProcessing -> {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Text("The backend is analysing the room geometry.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            generation.status.equals("ready", true) -> Text("The new map is ready and will appear above after refresh.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                            generation.isTerminal -> Text(generation.errorMessage ?: "Capture a new walkthrough when convenient.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            roomScanCameraId = selectedRoomScanCamera?.id?.toString()
+                            roomScanRoomId = selectedRoomScanRoom?.id?.toString()
+                            roomScanRoomLabel = generationForSelectedCamera?.roomLabel
+                                ?: selectedRoomScanRoom?.name
+                                ?: selectedRoomScanCamera?.name.orEmpty()
+                            showRoomScanDialog = true
+                        },
+                        enabled = canStartRoomScan,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) "Starting room scan…" else "Start camera walkthrough")
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { selectedRoomScanCamera?.let { onRefreshMapGeneration(it.id) } },
+                            enabled = selectedRoomScanCamera != null && mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING,
+                            modifier = Modifier.weight(1f)
+                        ) { Text(if (mapGenerationLoadState == OneMapGenerationLoadState.LOADING) "Refreshing…" else "Refresh scan status") }
+                    }
+                    mapGenerationError?.let { error ->
+                        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+        OneArCoreCapabilityCard()
         SectionHeading("SETUP", "Map and object memory")
         if (isBackend) {
             OutlinedButton(
@@ -2204,6 +2494,101 @@ private fun MapScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+    if (showRoomScanDialog) {
+        OneAlertDialog(
+            onDismissRequest = {
+                if (mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING) showRoomScanDialog = false
+            },
+            title = { Text("Start camera walkthrough") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "The paired publisher phone must be online and will show the capture controls. This Android flow produces an approximate 2D RGB map; it does not claim metric 3D geometry.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { roomScanCameraMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Camera: ${selectedRoomScanCamera?.name ?: "Select camera"}") }
+                        DropdownMenu(
+                            expanded = roomScanCameraMenuExpanded,
+                            onDismissRequest = { roomScanCameraMenuExpanded = false }
+                        ) {
+                            cameras.orEmpty().forEach { camera ->
+                                DropdownMenuItem(
+                                    text = { Text(camera.name) },
+                                    onClick = {
+                                        roomScanCameraId = camera.id.toString()
+                                        if (roomScanRoomLabel.isBlank()) roomScanRoomLabel = camera.name
+                                        roomScanCameraMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    if (rooms.orEmpty().isNotEmpty()) {
+                        Box {
+                            OutlinedButton(
+                                onClick = { roomScanRoomMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Existing room: ${selectedRoomScanRoom?.name ?: "Optional"}") }
+                            DropdownMenu(
+                                expanded = roomScanRoomMenuExpanded,
+                                onDismissRequest = { roomScanRoomMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("No existing room") },
+                                    onClick = {
+                                        roomScanRoomId = "none"
+                                        roomScanRoomMenuExpanded = false
+                                    }
+                                )
+                                rooms.orEmpty().forEach { room ->
+                                    DropdownMenuItem(
+                                        text = { Text(room.name) },
+                                        onClick = {
+                                            roomScanRoomId = room.id.toString()
+                                            roomScanRoomLabel = room.name
+                                            roomScanRoomMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = roomScanRoomLabel,
+                        onValueChange = { roomScanRoomLabel = it.take(120) },
+                        label = { Text("Room label") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (roomScanRoomLabel.trim().isBlank()) {
+                        Text("Enter a room label before starting.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val camera = selectedRoomScanCamera
+                        if (camera != null && roomScanRoomLabel.trim().isNotBlank()) {
+                            showRoomScanDialog = false
+                            onStartMapGeneration(camera.id, selectedRoomScanRoom?.id, roomScanRoomLabel.trim())
+                        }
+                    },
+                    enabled = canStartRoomScan && roomScanRoomLabel.trim().isNotBlank()
+                ) { Text(if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) "Starting…" else "Start scan") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRoomScanDialog = false },
+                    enabled = mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING
+                ) { Text("Cancel") }
+            }
+        )
     }
     if (showManualMapDialog) {
         OneAlertDialog(
@@ -2449,14 +2834,29 @@ private fun MapQualityCard(roomMap: OneRoomMap) {
                 Text("${roomMap.dimension.wireValue.uppercase()} · ${if (roomMap.metricScaleKnown) "metric scale" else "relative scale"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 roomMap.confidence?.let { Text("Confidence ${formatConfidence(it)}", style = MaterialTheme.typography.labelSmall, color = qualityColor) }
             }
+            Text(
+                "Localization: ${roomMap.localizationStatus.replace('-', ' ').replaceFirstChar { it.uppercase() }}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Text("Live map refresh is active while this tab is open.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             when {
                 needsRescan -> Text("The backend retained this revision for history, but its geometry is not safe to render. Capture a new map when convenient.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 roomMap.dimension == OneMapDimension.THREE_D -> Text("Android shows a truthful top-down overlay for this 3D source. Full native model viewing remains device-specific.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                roomMap.source == OneMapSource.CAMERA_CV_2D -> Text("RGB mapping is relative and approximate. A reference scale may improve measurements without turning it into a 3D model.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                roomMap.source == OneMapSource.CAMERA_CV_2D -> Text("RGB mapping is relative and approximate. A reference scale may improve measurements. Person and object detections remain unlocated until a compatible camera calibration can project them onto this map.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
+}
+
+private fun String.toMapGenerationLabel(): String = when (lowercase()) {
+    "collecting" -> "Waiting for capture"
+    "processing" -> "Analysing geometry"
+    "ready" -> "Ready"
+    "needs_rescan" -> "Rescan required"
+    "unavailable" -> "Service unavailable"
+    "failed" -> "Failed"
+    else -> replace('-', ' ').replaceFirstChar { it.uppercase() }
 }
 
 private fun buildMapImportNotice(import: OneMapImport): String = when {

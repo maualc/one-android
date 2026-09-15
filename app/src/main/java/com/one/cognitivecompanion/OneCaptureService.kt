@@ -192,6 +192,9 @@ class OneCaptureService : LifecycleService() {
         val api = OneHttpApiClient()
         result.detections.forEach { detection ->
             val key = detection.label.lowercase()
+            // The backend already persists tracked person detections. Creating
+            // another client-side person object would duplicate those tracks.
+            if (key == "person") return@forEach
             val now = SystemClock.elapsedRealtime()
             if (now - (lastObservationAt[key] ?: 0L) < OBSERVATION_INTERVAL_MS) return@forEach
             val objectId = knownObjectIds[key] ?: runCatching {
@@ -319,7 +322,7 @@ class OneCaptureService : LifecycleService() {
         const val MAX_LABELS = 20
         const val OBSERVATION_INTERVAL_MS = 30_000L
         const val CONSENT_RECHECK_INTERVAL_MS = 30_000L
-        val DEFAULT_LABELS = listOf("keys", "glasses", "mug", "wallet", "phone")
+        val DEFAULT_LABELS = listOf("person", "keys", "glasses", "mug", "wallet", "phone")
 
         fun start(context: Context, cameraId: UUID, candidateLabels: List<String> = DEFAULT_LABELS) {
             val intent = Intent(context, OneCaptureService::class.java).apply {

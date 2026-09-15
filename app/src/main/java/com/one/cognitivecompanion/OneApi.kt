@@ -268,6 +268,55 @@ data class OneRoomMap(
     val usdzAvailable: Boolean = false
 )
 
+data class OneMapGenerationStartRequest(
+    val roomId: UUID? = null,
+    val roomLabel: String? = null,
+    val orientation: String = "landscape",
+    val resolutionWidth: Int = OneRoomSweepCaptureConfig.TARGET_WIDTH,
+    val resolutionHeight: Int = OneRoomSweepCaptureConfig.TARGET_HEIGHT
+)
+
+data class OneMapGenerationFrame(
+    val frameBase64: String,
+    val width: Int,
+    val height: Int,
+    val capturedAt: Instant? = null
+)
+
+data class OneMapGeneration(
+    val id: UUID,
+    val homeId: UUID,
+    val cameraId: UUID,
+    val roomId: UUID?,
+    val roomLabel: String,
+    val orientation: String,
+    val status: String,
+    val progress: Int,
+    val source: OneMapSource,
+    val dimension: OneMapDimension,
+    val metricScaleKnown: Boolean,
+    val frameCount: Int,
+    val resolutionWidth: Int,
+    val resolutionHeight: Int,
+    val mapId: UUID?,
+    val errorCode: String?,
+    val errorMessage: String?,
+    val metrics: Map<String, String>,
+    val modelVersion: String?,
+    val createdAt: Instant?,
+    val updatedAt: Instant?,
+    val completedAt: Instant?
+) {
+    val isCollecting: Boolean
+        get() = status.equals("collecting", ignoreCase = true)
+
+    val isProcessing: Boolean
+        get() = status.equals("processing", ignoreCase = true)
+
+    val isTerminal: Boolean
+        get() = status.lowercase() in setOf("ready", "needs_rescan", "unavailable", "failed")
+}
+
 data class OneRemoteCamera(
     val id: UUID,
     val name: String,
@@ -477,6 +526,19 @@ interface OneApiClient {
         zones: List<String>,
         coordinateFrame: String = "manual-zones"
     ): OneRoomMap
+    suspend fun startMapGeneration(
+        session: OneSession,
+        cameraId: UUID,
+        generationRequest: OneMapGenerationStartRequest
+    ): OneMapGeneration
+    suspend fun latestMapGeneration(session: OneSession, cameraId: UUID): OneMapGeneration?
+    suspend fun mapGeneration(session: OneSession, cameraId: UUID, jobId: UUID): OneMapGeneration
+    suspend fun submitMapGenerationFrames(
+        session: OneSession,
+        cameraId: UUID,
+        jobId: UUID,
+        frames: List<OneMapGenerationFrame>
+    ): OneMapGeneration
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
     suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
@@ -985,6 +1047,93 @@ class OneHttpApiClient(
             token = session.accessToken
         )
         return parseRoomMap(body, homeId = session.homeId, fallbackRoomId = roomId, fallbackZones = zones)
+    }
+
+    override suspend fun startMapGeneration(
+        session: OneSession,
+        cameraId: UUID,
+        generationRequest: OneMapGenerationStartRequest
+    ): OneMapGeneration {
+        require(generationRequest.resolutionWidth in 1..7_680 && generationRequest.resolutionHeight in 1..4_320) {
+            "Room sweep resolution is not supported."
+        }
+        val payload = JSONObject()
+            .put("room_id", generationRequest.roomId?.toString() ?: JSONObject.NULL)
+            .put("orientation", generationRequest.orientation.trim().ifBlank { "landscape" }.take(32))
+            .put("resolution_width", generationRequest.resolutionWidth)
+            .put("resolution_height", generationRequest.resolutionHeight)
+        generationRequest.roomLabel?.trim()?.takeIf { it.isNotBlank() }?.let { payload.put("room_label", it.take(120)) }
+        return parseMapGeneration(
+            body = request(
+                "/homes/${session.homeId}/cameras/$cameraId/map-generation",
+                "POST",
+                payload,
+                token = session.accessToken
+            ),
+            homeId = session.homeId,
+            fallbackCameraId = cameraId
+        )
+    }
+
+    override suspend fun latestMapGeneration(session: OneSession, cameraId: UUID): OneMapGeneration? {
+        return try {
+            parseMapGeneration(
+                body = request(
+                    "/homes/${session.homeId}/cameras/$cameraId/map-generation",
+                    "GET",
+                    token = session.accessToken
+                ),
+                homeId = session.homeId,
+                fallbackCameraId = cameraId
+            )
+        } catch (error: OneApiException) {
+            if (error.statusCode == 404) null else throw error
+        }
+    }
+
+    override suspend fun mapGeneration(session: OneSession, cameraId: UUID, jobId: UUID): OneMapGeneration =
+        parseMapGeneration(
+            body = request(
+                "/homes/${session.homeId}/cameras/$cameraId/map-generation/$jobId",
+                "GET",
+                token = session.accessToken
+            ),
+            homeId = session.homeId,
+            fallbackCameraId = cameraId
+        )
+
+    override suspend fun submitMapGenerationFrames(
+        session: OneSession,
+        cameraId: UUID,
+        jobId: UUID,
+        frames: List<OneMapGenerationFrame>
+    ): OneMapGeneration {
+        require(frames.size in 3..OneRoomSweepCaptureConfig.MAX_FRAME_COUNT) {
+            "A room sweep needs between 3 and ${OneRoomSweepCaptureConfig.MAX_FRAME_COUNT} frames."
+        }
+        val frameRows = JSONArray()
+        frames.forEach { frame ->
+            require(frame.frameBase64.isNotBlank() && frame.frameBase64.length <= 4_000_000) {
+                "A room sweep frame is empty or too large."
+            }
+            frameRows.put(
+                JSONObject()
+                    .put("frame_base64", frame.frameBase64)
+                    .put("width", frame.width)
+                    .put("height", frame.height)
+                    .apply { frame.capturedAt?.let { put("captured_at", it.toString()) } }
+            )
+        }
+        return parseMapGeneration(
+            body = request(
+                "/homes/${session.homeId}/cameras/$cameraId/map-generation/$jobId/frames",
+                "POST",
+                JSONObject().put("frames", frameRows),
+                token = session.accessToken
+            ),
+            homeId = session.homeId,
+            fallbackCameraId = cameraId
+        )
     }
 
     override suspend fun homeCameras(session: OneSession): List<OneRemoteCamera> {
@@ -1613,6 +1762,50 @@ class OneHttpApiClient(
         )
     }
 
+    private fun parseMapGeneration(
+        body: JSONObject,
+        homeId: UUID,
+        fallbackCameraId: UUID? = null
+    ): OneMapGeneration {
+        val metricsObject = body.optJSONObject("metrics")
+        val metrics = metricsObject?.let { json ->
+            buildMap {
+                json.keys().forEach { key ->
+                    when (val value = json.opt(key)) {
+                        is String, is Number, is Boolean -> put(key, value.toString())
+                    }
+                }
+            }
+        }.orEmpty()
+        val jobId = body.optNullableUuid("id") ?: body.requiredUuid("job_id")
+        return OneMapGeneration(
+            id = jobId,
+            homeId = body.optNullableUuid("home_id") ?: homeId,
+            cameraId = body.optNullableUuid("camera_id") ?: fallbackCameraId
+                ?: throw OneApiException("ONE API response is missing 'camera_id'."),
+            roomId = body.optNullableUuid("room_id"),
+            roomLabel = body.optString("room_label").ifBlank { "Room" },
+            orientation = body.optString("orientation").ifBlank { "portrait" },
+            status = body.optString("status").ifBlank { "unknown" },
+            progress = body.optInt("progress", 0).coerceIn(0, 100),
+            source = OneMapSource.fromWire(body.optString("source")),
+            dimension = OneMapDimension.fromWire(body.optString("dimension")),
+            metricScaleKnown = body.optBoolean("metric_scale_known", false),
+            frameCount = body.optInt("frame_count", 0).coerceAtLeast(0),
+            resolutionWidth = body.optInt("resolution_width", 0).coerceAtLeast(0),
+            resolutionHeight = body.optInt("resolution_height", 0).coerceAtLeast(0),
+            mapId = body.optNullableUuid("map_id"),
+            errorCode = body.optNullableString("error_code"),
+            errorMessage = body.optNullableString("error_message")
+                ?: body.optNullableString("error"),
+            metrics = metrics,
+            modelVersion = body.optNullableString("model_version"),
+            createdAt = body.optNullableString("created_at")?.toInstantOrNull(),
+            updatedAt = body.optNullableString("updated_at")?.toInstantOrNull(),
+            completedAt = body.optNullableString("completed_at")?.toInstantOrNull()
+        )
+    }
+
     private fun parseRoomMap(
         body: JSONObject,
         homeId: UUID,
@@ -1658,10 +1851,11 @@ class OneHttpApiClient(
             ?: scale?.optNullableDouble("metersPerNormalizedUnit")
         val polygonRows = geometry?.optJSONArray("polygons")
             ?: geometry?.optJSONArray("rooms")
+            ?: mapData?.optJSONArray("polygons")
             ?: body.optJSONArray("polygons")
-        val wallRows = geometry?.optJSONArray("walls") ?: body.optJSONArray("walls")
-        val furnitureRows = geometry?.optJSONArray("furniture") ?: body.optJSONArray("furniture")
-        val openingRows = geometry?.optJSONArray("openings") ?: body.optJSONArray("openings")
+        val wallRows = geometry?.optJSONArray("walls") ?: mapData?.optJSONArray("walls") ?: body.optJSONArray("walls")
+        val furnitureRows = geometry?.optJSONArray("furniture") ?: mapData?.optJSONArray("furniture") ?: body.optJSONArray("furniture")
+        val openingRows = geometry?.optJSONArray("openings") ?: mapData?.optJSONArray("openings") ?: body.optJSONArray("openings")
         return OneRoomMap(
             id = body.requiredUuid("id"),
             homeId = body.optNullableUuid("home_id") ?: homeId,

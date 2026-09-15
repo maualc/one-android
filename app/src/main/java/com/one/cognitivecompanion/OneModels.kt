@@ -122,6 +122,14 @@ enum class OneMapLoadState {
     ERROR
 }
 
+enum class OneMapGenerationLoadState {
+    IDLE,
+    LOADING,
+    SUBMITTING,
+    LOADED,
+    ERROR
+}
+
 enum class OneCalibrationActionState {
     IDLE,
     SUBMITTING,

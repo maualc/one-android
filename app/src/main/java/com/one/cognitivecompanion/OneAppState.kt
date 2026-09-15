@@ -55,6 +55,10 @@ class OneAppState(
     var mapLoadState by mutableStateOf(OneMapLoadState.IDLE)
     var mapLoadError by mutableStateOf<String?>(null)
     var mapIsStale by mutableStateOf(false)
+    var mapGeneration by mutableStateOf<OneMapGeneration?>(null)
+    var mapGenerationCameraId by mutableStateOf<UUID?>(null)
+    var mapGenerationLoadState by mutableStateOf(OneMapGenerationLoadState.IDLE)
+    var mapGenerationError by mutableStateOf<String?>(null)
     var calibrationActionState by mutableStateOf(OneCalibrationActionState.IDLE)
     var lastCalibration by mutableStateOf<OneCameraCalibration?>(null)
     var calibrationActionError by mutableStateOf<String?>(null)
@@ -208,6 +212,10 @@ class OneAppState(
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
         mapIsStale = false
+        mapGeneration = null
+        mapGenerationCameraId = null
+        mapGenerationLoadState = OneMapGenerationLoadState.IDLE
+        mapGenerationError = null
         calibrationActionState = OneCalibrationActionState.IDLE
         lastCalibration = null
         calibrationActionError = null
@@ -812,6 +820,114 @@ class OneAppState(
             }
             mapLoadState = if (mapIsStale) OneMapLoadState.LOADED else OneMapLoadState.ERROR
             mapLoadError = error.message ?: "Could not load the room map."
+        }
+    }
+
+    suspend fun startRoomMapGeneration(
+        cameraId: UUID,
+        roomId: UUID?,
+        roomLabel: String?,
+        orientation: String = "landscape"
+    ) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "Connect a backend session before starting a room scan."
+            return
+        }
+        val isPublisherCamera = authenticatedSession.role == OneRole.PUBLISHER && authenticatedSession.userId == cameraId
+        if (!isPublisherCamera && !canManageFamily) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "Only a caregiver or the paired publisher device can start a room scan."
+            return
+        }
+        if (authenticatedSession.role == OneRole.PUBLISHER && authenticatedSession.userId != cameraId) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "This publisher can only scan its paired camera."
+            return
+        }
+        val cleanLabel = roomLabel?.trim()?.takeIf { it.isNotBlank() }
+        mapGenerationCameraId = cameraId
+        mapGenerationLoadState = OneMapGenerationLoadState.SUBMITTING
+        mapGenerationError = null
+        try {
+            mapGeneration = apiClient.startMapGeneration(
+                session = authenticatedSession,
+                cameraId = cameraId,
+                generationRequest = OneMapGenerationStartRequest(
+                    roomId = roomId,
+                    roomLabel = cleanLabel,
+                    orientation = orientation.trim().ifBlank { "landscape" }
+                )
+            )
+            mapGenerationLoadState = OneMapGenerationLoadState.LOADED
+        } catch (error: Exception) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = error.message ?: "Could not start the room scan."
+        }
+    }
+
+    suspend fun refreshRoomMapGeneration(cameraId: UUID?, jobId: UUID? = null) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || cameraId == null) return
+        if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) return
+        if (authenticatedSession.role == OneRole.PUBLISHER && authenticatedSession.userId != cameraId) return
+        mapGenerationCameraId = cameraId
+        mapGenerationLoadState = OneMapGenerationLoadState.LOADING
+        mapGenerationError = null
+        try {
+            mapGeneration = if (jobId == null) {
+                apiClient.latestMapGeneration(authenticatedSession, cameraId)
+            } else {
+                apiClient.mapGeneration(authenticatedSession, cameraId, jobId)
+            }
+            mapGenerationLoadState = OneMapGenerationLoadState.LOADED
+            if (
+                authenticatedSession.role != OneRole.PUBLISHER &&
+                mapGeneration?.status.equals("ready", ignoreCase = true) &&
+                mapGeneration?.mapId != null &&
+                currentRoomMap?.id != mapGeneration?.mapId
+            ) {
+                loadRoomMap()
+            }
+        } catch (error: Exception) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = error.message ?: "Could not refresh the room scan status."
+        }
+    }
+
+    suspend fun submitRoomMapSweep(frames: List<OneMapGenerationFrame>) {
+        val authenticatedSession = session
+        val generation = mapGeneration
+        val cameraId = mapGenerationCameraId ?: generation?.cameraId
+        if (!backendMode || authenticatedSession == null || generation == null || cameraId == null) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "Start a room scan before submitting its frames."
+            return
+        }
+        if (authenticatedSession.role != OneRole.PUBLISHER || authenticatedSession.userId != cameraId) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "Only the paired publisher device can submit room scan frames."
+            return
+        }
+        if (!generation.isCollecting) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = "This room scan is no longer waiting for frames."
+            return
+        }
+        mapGenerationLoadState = OneMapGenerationLoadState.SUBMITTING
+        mapGenerationError = null
+        try {
+            mapGeneration = apiClient.submitMapGenerationFrames(
+                session = authenticatedSession,
+                cameraId = cameraId,
+                jobId = generation.id,
+                frames = frames
+            )
+            mapGenerationLoadState = OneMapGenerationLoadState.LOADED
+        } catch (error: Exception) {
+            mapGenerationLoadState = OneMapGenerationLoadState.ERROR
+            mapGenerationError = error.message ?: "Could not submit the room scan."
         }
     }
 
@@ -1622,6 +1738,10 @@ class OneAppState(
         mapLoadState = OneMapLoadState.IDLE
         mapLoadError = null
         mapIsStale = false
+        mapGeneration = null
+        mapGenerationCameraId = null
+        mapGenerationLoadState = OneMapGenerationLoadState.IDLE
+        mapGenerationError = null
         calibrationActionState = OneCalibrationActionState.IDLE
         lastCalibration = null
         calibrationActionError = null

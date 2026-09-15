@@ -26,11 +26,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -66,12 +68,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -156,7 +160,7 @@ private val caregiverTabs = listOf(
     OneNavItem("home", "Home", Icons.Default.Home),
     OneNavItem("map", "Map", Icons.Default.Map),
     OneNavItem("family", "Family", Icons.Default.People),
-    OneNavItem("events", "Events", Icons.Default.Notifications),
+    OneNavItem("assistant", "Assistant", Icons.Default.GraphicEq),
     OneNavItem("account", "Account", Icons.Default.AccountCircle)
 )
 
@@ -236,10 +240,12 @@ fun OneApp() {
     var captureCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var liveKitPublishing by rememberSaveable { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<OneEvent?>(null) }
+    var showEvents by rememberSaveable { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val signOut: () -> Unit = {
         selectedCameraId = null
         selectedEvent = null
+        showEvents = false
         captureCameraId = null
         liveKitPublishing = false
         coroutineScope.launch { appState.signOut() }
@@ -256,8 +262,12 @@ fun OneApp() {
     // Detail surfaces are an in-app navigation state. Handle the system back
     // gesture/button here so it closes the detail first instead of exiting to
     // the launcher.
-    BackHandler(enabled = selectedCamera != null || selectedEvent != null) {
-        if (selectedCamera != null) selectedCameraId = null else selectedEvent = null
+    BackHandler(enabled = selectedCamera != null || selectedEvent != null || showEvents) {
+        when {
+            selectedCamera != null -> selectedCameraId = null
+            selectedEvent != null -> selectedEvent = null
+            else -> showEvents = false
+        }
     }
 
     LaunchedEffect(appState) { appState.restoreSession() }
@@ -268,14 +278,15 @@ fun OneApp() {
             if (appState.roleName == OneRole.CAREGIVER.name) {
                 appState.loadHome()
                 appState.loadCameras()
+                appState.loadFamily()
             }
         }
     }
-    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
+    LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab, showEvents, selectedEvent != null) {
         if (
             appState.authStageName == AuthStage.AUTHENTICATED.name &&
             appState.roleName == OneRole.CAREGIVER.name &&
-            appState.selectedTab == "events"
+            (appState.selectedTab == "home" || showEvents || selectedEvent != null)
         ) {
             appState.loadClips()
             appState.observeHomeEvents()
@@ -362,7 +373,7 @@ fun OneApp() {
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
     Scaffold(
-        bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null && selectedEvent == null) {
+        bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null && selectedEvent == null && !showEvents) {
             {
                 OneBottomBar(
                     tabs = tabs,
@@ -416,6 +427,23 @@ fun OneApp() {
                         clipLoadState = appState.clipLoadState,
                         clipLoadError = appState.clipLoadError,
                         onClose = { selectedEvent = null }
+                    )
+                } else if (showEvents && role == OneRole.CAREGIVER) {
+                    EventsScreen(
+                        events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
+                        isBackend = appState.backendMode,
+                        homeLoadState = appState.homeLoadState,
+                        homeLoadError = appState.homeLoadError,
+                        homeIsStale = appState.homeIsStale,
+                        eventStreamState = appState.eventStreamState,
+                        eventStreamError = appState.eventStreamError,
+                        clips = appState.clips,
+                        clipLoadState = appState.clipLoadState,
+                        clipLoadError = appState.clipLoadError,
+                        onRetry = { coroutineScope.launch { appState.loadHome() } },
+                        onClipRetry = { coroutineScope.launch { appState.loadClips() } },
+                        onOpenEvent = { selectedEvent = it },
+                        onClose = { showEvents = false }
                     )
                 } else {
                     val tabIndex = tabs.mapIndexed { index, tab -> tab.key to index }.toMap()
@@ -578,30 +606,27 @@ fun OneApp() {
                                     appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active, assignedCaregiverId)
                                 }
                             },
-                            familyAssistantLoadState = appState.familyAssistantLoadState,
-                            familyAssistantResult = appState.familyAssistantResult,
-                            familyAssistantLoadError = appState.familyAssistantLoadError,
-                            onFamilyAssistantSubmit = { message -> coroutineScope.launch { appState.submitFamilyAssistant(message) } },
                             medicationActionKey = appState.medicationActionKey,
                             medicationActionError = appState.medicationActionError,
                             onMedicationStatusChange = { dose, status ->
                                 coroutineScope.launch { appState.updateMedicationDose(dose, status) }
                             }
                         )
-                        "events" -> EventsScreen(
-                            events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
+                        "assistant" -> CaregiverAssistantScreen(
                             isBackend = appState.backendMode,
-                            homeLoadState = appState.homeLoadState,
-                            homeLoadError = appState.homeLoadError,
-                            homeIsStale = appState.homeIsStale,
-                            eventStreamState = appState.eventStreamState,
-                            eventStreamError = appState.eventStreamError,
-                            clips = appState.clips,
-                            clipLoadState = appState.clipLoadState,
-                            clipLoadError = appState.clipLoadError,
-                            onRetry = { coroutineScope.launch { appState.loadHome() } },
-                            onClipRetry = { coroutineScope.launch { appState.loadClips() } },
-                            onOpenEvent = { selectedEvent = it }
+                            members = appState.familyMembers,
+                            selectedFamilySubjectId = appState.selectedFamilySubjectId,
+                            selectedSubjectAssistantConsent = appState.selectedFamilySubjectId?.let {
+                                appState.consentStatesBySubject[it]?.get("family_assistant")
+                            } == true,
+                            familyLoadState = appState.familyLoadState,
+                            familyLoadError = appState.familyLoadError,
+                            onFamilyRetry = { coroutineScope.launch { appState.loadFamily() } },
+                            onSelectFamilySubject = { subjectId -> coroutineScope.launch { appState.selectFamilySubject(subjectId) } },
+                            familyAssistantLoadState = appState.familyAssistantLoadState,
+                            familyAssistantResult = appState.familyAssistantResult,
+                            familyAssistantLoadError = appState.familyAssistantLoadError,
+                            onFamilyAssistantSubmit = { message -> coroutineScope.launch { appState.submitFamilyAssistant(message) } }
                         )
                         "account" -> AccountScreen(
                             role = role,
@@ -647,6 +672,24 @@ fun OneApp() {
                             homeLoadError = appState.homeLoadError,
                             homeIsStale = appState.homeIsStale,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
+                            isBackend = appState.backendMode,
+                            currentUserName = appState.familyMembers?.firstOrNull { it.id == appState.session?.userId }?.displayName
+                                ?: if (!appState.backendMode) "Biel Martínez" else null,
+                            careSpaces = appState.careSpaces,
+                            careSpacesLoadState = appState.careSpacesLoadState,
+                            careSpacesLoadError = appState.careSpacesLoadError,
+                            careSpaceActionState = appState.careSpaceActionState,
+                            careSpaceActionError = appState.careSpaceActionError,
+                            canCreateCareSpace = appState.canManageFamily,
+                            onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
+                            onCreateCareSpace = { name, setting, focus ->
+                                coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
+                            },
+                            onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
+                            medicationDoses = appState.medicationDoses,
+                            medicationLoadState = appState.medicationLoadState,
+                            medicationLoadError = appState.medicationLoadError,
+                            onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
                             cameras = appState.cameras,
                             camerasAreStale = appState.camerasAreStale,
                             rooms = appState.rooms,
@@ -664,6 +707,8 @@ fun OneApp() {
                             onOpenCamera = { selectedCameraId = it.id.toString() },
                             onOpenMap = { selectedTab = "map" },
                             onOpenPlan = { selectedTab = "family" },
+                            onOpenEvents = { showEvents = true },
+                            onOpenEvent = { selectedEvent = it; showEvents = true },
                             videoConsentGranted = appState.consentStates?.get("video_capture") == true,
                             publisherPairing = appState.publisherPairing,
                             publisherPairingLoadState = appState.publisherPairingLoadState,
@@ -1202,14 +1247,29 @@ private fun InfoCard(title: String, body: String) {
         }
     }
 }
-
 @Composable
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
 private fun CaregiverHomeScreen(
     homeSnapshot: OneHomeSnapshot?,
     homeLoadState: OneHomeLoadState,
     homeLoadError: String?,
     homeIsStale: Boolean,
     onRetry: () -> Unit,
+    isBackend: Boolean,
+    currentUserName: String?,
+    careSpaces: List<OneCareSpace>?,
+    careSpacesLoadState: OneCareSpaceLoadState,
+    careSpacesLoadError: String?,
+    careSpaceActionState: OneCareSpaceActionState,
+    careSpaceActionError: String?,
+    canCreateCareSpace: Boolean,
+    onCareSpacesRetry: () -> Unit,
+    onCreateCareSpace: (String, String, String) -> Unit,
+    onActivateCareSpace: (OneCareSpace) -> Unit,
+    medicationDoses: List<MedicationDose>?,
+    medicationLoadState: OneMedicationLoadState,
+    medicationLoadError: String?,
+    onMedicationRetry: () -> Unit,
     cameras: List<OneCamera>?,
     camerasAreStale: Boolean,
     rooms: List<OneRoom>?,
@@ -1223,6 +1283,8 @@ private fun CaregiverHomeScreen(
     onOpenCamera: (OneCamera) -> Unit,
     onOpenMap: () -> Unit,
     onOpenPlan: () -> Unit,
+    onOpenEvents: () -> Unit,
+    onOpenEvent: (OneEvent) -> Unit,
     videoConsentGranted: Boolean,
     publisherPairing: PublisherPairingStartResponse?,
     publisherPairingLoadState: OneFamilyInviteLoadState,
@@ -1239,116 +1301,125 @@ private fun CaregiverHomeScreen(
     onStartLiveKit: () -> Unit,
     onStopLiveKit: () -> Unit
 ) {
-    val isBackendHome = homeLoadState != OneHomeLoadState.IDLE || homeSnapshot != null
-    var selectedHomeFilter by rememberSaveable { mutableStateOf("Today") }
-    val homeFilters = listOf("Today", "Objects", "Cameras", "Check-in")
+    var showCareSpaces by rememberSaveable { mutableStateOf(false) }
+    var showCameraSetup by rememberSaveable { mutableStateOf(false) }
+    val isBackendHome = isBackend
+    val events = homeSnapshot?.events ?: if (isBackendHome) emptyList() else demoEvents
+    val doses = (if (isBackendHome) medicationDoses.orEmpty() else demoMedicationDoses)
+        .sortedWith(compareBy<MedicationDose> { it.scheduledFor ?: Instant.MAX }.thenBy { it.time })
+    val nextDose = doses.firstOrNull {
+        it.status !in setOf(DoseStatus.ACKNOWLEDGED, DoseStatus.TAKEN, DoseStatus.SKIPPED)
+    } ?: doses.firstOrNull()
+    val activeCareSpace = careSpaces?.firstOrNull { it.active } ?: careSpaces?.firstOrNull()
+    val firstName = currentUserName
+        ?.trim()
+        ?.split(" ")
+        ?.firstOrNull()
+        ?.takeIf { it.isNotBlank() }
+    val greeting = firstName?.let { "Welcome back, $it" } ?: "Welcome back"
+    val residentName = homeSnapshot?.profile?.residentName?.takeIf { it.isNotBlank() }
+    val firstCheckIn = events.firstOrNull { it.kind == EventKind.CHECK_IN }
+    val hasOnlineCamera = cameras.orEmpty().any { it.status.equals("online", ignoreCase = true) }
+
     ScreenScroll {
-        ScreenHeader(
-            eyebrow = "ONE",
-            title = homeSnapshot?.profile?.homeName?.let { "$it, in view." } ?: "Your home, in view.",
-            subtitle = homeSnapshot?.profile?.residentName?.let { "A calm view of ${it}'s home, with consent." }
-                ?: "A calm, human-readable picture of today."
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(greeting, style = MaterialTheme.typography.headlineLarge)
+                Text(
+                    residentName?.let { "Here’s what matters for $it today." }
+                        ?: "A calm, human-readable picture of today.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Image(
+                painter = painterResource(R.drawable.one_logo),
+                contentDescription = "ONE logo",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(34.dp)
+            )
+        }
+
+        CareSpaceContextCard(
+            space = activeCareSpace,
+            isLoading = careSpacesLoadState == OneCareSpaceLoadState.LOADING,
+            onClick = { showCareSpaces = true }
         )
+
         if (homeIsStale) {
             AssistChip(onClick = onRetry, label = { Text("Offline · showing last known data") })
         }
         if (!isBackendHome) {
-            AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · synthetic data") })
+            AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · synthetic home data") })
         }
+
         when {
-            homeLoadState == OneHomeLoadState.LOADING && homeSnapshot == null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            homeLoadState == OneHomeLoadState.LOADING && homeSnapshot == null -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
             homeLoadState == OneHomeLoadState.ERROR && homeSnapshot == null -> {
                 InfoCard("Home data unavailable", homeLoadError ?: "ONE could not reach the household right now.")
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
             }
-            isBackendHome -> HomeCameraStatusCard(
-                paused = homeSnapshot?.profile?.paused == true,
-                cameras = cameras,
-                camerasAreStale = camerasAreStale,
-                rooms = rooms,
-                loadState = cameraLoadState,
-                loadError = cameraLoadError,
-                actionState = cameraActionState,
-                actionError = cameraActionError,
-                onRetry = onCameraRetry,
-                onRegisterCamera = onRegisterCamera,
-                onUpdateCamera = onUpdateCamera,
-                onOpenCamera = onOpenCamera,
-                videoConsentGranted = videoConsentGranted,
-                captureCameraId = captureCameraId,
-                liveKitPublishing = liveKitPublishing,
-                onStartCapture = onStartCapture,
-                onStopCapture = onStopCapture,
-                onStartLiveKit = onStartLiveKit,
-                onStopLiveKit = onStopLiveKit
+        }
+
+        HomeTodayCard(
+            nextDose = nextDose,
+            eventCount = events.size,
+            checkInTime = firstCheckIn?.time,
+            isMedicationLoading = medicationLoadState == OneMedicationLoadState.LOADING && isBackendHome,
+            onOpenPlan = onOpenPlan
+        )
+        if (isBackendHome && medicationLoadState == OneMedicationLoadState.ERROR && medicationDoses == null) {
+            Text(
+                medicationLoadError ?: "ONE could not load today's medication plan.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
             )
-            else -> CameraHeroCard(isDemo = true)
+            OutlinedButton(onClick = onMedicationRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry today's plan") }
         }
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(homeFilters) { label ->
-                FilterChip(
-                    selected = label == selectedHomeFilter,
-                    onClick = { selectedHomeFilter = label },
-                    label = { Text(label) }
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionHeading("HOME", "At a glance")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                HomeGlanceCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Map",
+                    detail = when {
+                        homeSnapshot?.objects?.isNotEmpty() == true -> "${homeSnapshot.objects.size} mapped objects"
+                        else -> "Set up your home"
+                    },
+                    icon = Icons.Default.Map,
+                    status = if (homeSnapshot?.objects?.isNotEmpty() == true) OneMint else OneBlue,
+                    onClick = onOpenMap
+                )
+                HomeGlanceCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Cameras",
+                    detail = when {
+                        cameras.isNullOrEmpty() -> "Pair a camera"
+                        else -> "${cameras.size} paired · ${if (hasOnlineCamera) "online" else "offline"}"
+                    },
+                    icon = Icons.Default.Visibility,
+                    status = if (hasOnlineCamera) OneMint else OneAmber,
+                    onClick = { showCameraSetup = true }
                 )
             }
         }
-        when (selectedHomeFilter) {
-            "Objects" -> {
-                SectionHeading("MEMORY", "Objects in the home map")
-                HomeObjectsRow(homeSnapshot = homeSnapshot, isBackend = isBackendHome)
-                Text("Pins are approximate and include the confidence returned by ONE.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            "Cameras" -> {
-                SectionHeading("CAMERAS", "Paired views")
-                if (isBackendHome) {
-                    HomeCameraStatusCard(
-                        paused = homeSnapshot?.profile?.paused == true,
-                        cameras = cameras,
-                        camerasAreStale = camerasAreStale,
-                        rooms = rooms,
-                        loadState = cameraLoadState,
-                        loadError = cameraLoadError,
-                        actionState = cameraActionState,
-                        actionError = cameraActionError,
-                        onRetry = onCameraRetry,
-                        onRegisterCamera = onRegisterCamera,
-                        onUpdateCamera = onUpdateCamera,
-                        onOpenCamera = onOpenCamera,
-                        videoConsentGranted = videoConsentGranted,
-                        captureCameraId = captureCameraId,
-                        liveKitPublishing = liveKitPublishing,
-                        onStartCapture = onStartCapture,
-                        onStopCapture = onStopCapture,
-                        onStartLiveKit = onStartLiveKit,
-                        onStopLiveKit = onStopLiveKit
-                    )
-                } else {
-                    InfoCard("Camera preview", "Connect a backend to see paired household cameras and open a consented live view.")
-                }
-            }
-            "Check-in" -> {
-                SectionHeading("CHECK-IN", "Recent human-readable moments")
-                val visibleEvents = homeSnapshot?.events ?: if (isBackendHome) emptyList() else demoEvents
-                val checkIns = visibleEvents.filter { it.kind == EventKind.CHECK_IN || it.kind == EventKind.ASSISTANT }
-                if (checkIns.isEmpty()) {
-                    InfoCard("No check-ins recorded yet", "A check-in will appear here after the resident or assistant records a consented interaction.")
-                } else {
-                    checkIns.take(3).forEach { event -> EventRow(event) }
-                }
-                Text("ONE supports attention and conversation. It does not diagnose or make medical decisions.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
-            }
-            else -> {
-                SectionHeading("TODAY", "Observed objects")
-                HomeObjectsRow(homeSnapshot = homeSnapshot, isBackend = isBackendHome)
-                HouseholdStatusCard(
-                    homeSnapshot = homeSnapshot,
-                    isDemo = !isBackendHome,
-                    onOpenStatus = onOpenMap,
-                    onOpenPlan = onOpenPlan
-                )
-            }
-        }
+
+        HomeRecentEvents(
+            events = events,
+            onOpenEvents = onOpenEvents,
+            onOpenEvent = onOpenEvent
+        )
+
         if (isBackendHome) {
             PublisherPairingCard(
                 pairing = publisherPairing,
@@ -1361,6 +1432,249 @@ private fun CaregiverHomeScreen(
                 onRefreshStatus = onRefreshCameraPairingStatus
             )
         }
+    }
+
+    if (showCareSpaces) {
+        ModalBottomSheet(onDismissRequest = { showCareSpaces = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ScreenHeader("CARE SPACES", "Choose where you’re caring.", "People, cameras, maps and consent stay scoped to one household.")
+                CareSpacesCard(
+                    role = OneRole.CAREGIVER,
+                    isBackend = isBackendHome,
+                    spaces = careSpaces,
+                    loadState = careSpacesLoadState,
+                    loadError = careSpacesLoadError,
+                    actionState = careSpaceActionState,
+                    actionError = careSpaceActionError,
+                    canCreate = canCreateCareSpace,
+                    onRetry = onCareSpacesRetry,
+                    onCreate = onCreateCareSpace,
+                    onActivate = onActivateCareSpace
+                )
+            }
+        }
+    }
+
+    if (showCameraSetup) {
+        ModalBottomSheet(onDismissRequest = { showCameraSetup = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ScreenHeader("CAMERAS", "Paired views", "Camera viewing remains consent-based and receive-only for caregivers.")
+                HomeCameraStatusCard(
+                    paused = homeSnapshot?.profile?.paused == true,
+                    cameras = cameras,
+                    camerasAreStale = camerasAreStale,
+                    rooms = rooms,
+                    loadState = cameraLoadState,
+                    loadError = cameraLoadError,
+                    actionState = cameraActionState,
+                    actionError = cameraActionError,
+                    onRetry = onCameraRetry,
+                    onRegisterCamera = onRegisterCamera,
+                    onUpdateCamera = onUpdateCamera,
+                    onOpenCamera = onOpenCamera,
+                    videoConsentGranted = videoConsentGranted,
+                    captureCameraId = captureCameraId,
+                    liveKitPublishing = liveKitPublishing,
+                    onStartCapture = onStartCapture,
+                    onStopCapture = onStopCapture,
+                    onStartLiveKit = onStartLiveKit,
+                    onStopLiveKit = onStopLiveKit
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CareSpaceContextCard(
+    space: OneCareSpace?,
+    isLoading: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(OneBlue.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Home, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("CARING FOR", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                Text(space?.name ?: "Current care space", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    space?.let { "${it.recipientCount} people · ${it.careSetting.humanLabel()}" } ?: if (isLoading) "Loading household details…" else "Manage homes and residences",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (isLoading && space == null) {
+                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                Text("⌃⌄", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeTodayCard(
+    nextDose: MedicationDose?,
+    eventCount: Int,
+    checkInTime: String?,
+    isMedicationLoading: Boolean,
+    onOpenPlan: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionHeading("TODAY", "Care overview")
+                Spacer(Modifier.weight(1f))
+                if (isMedicationLoading) {
+                    androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+            }
+            if (nextDose != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(
+                        modifier = Modifier.size(42.dp).clip(CircleShape).background(OneBlue.copy(alpha = 0.10f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Schedule, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(nextDose.name, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (nextDose.status == DoseStatus.ACKNOWLEDGED || nextDose.status == DoseStatus.TAKEN) "Done · ${nextDose.time}" else "Due ${nextDose.time}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                Text("Nothing scheduled right now", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("$eventCount events", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                checkInTime?.let { Text("Check-in $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            TextButton(onClick = onOpenPlan, contentPadding = PaddingValues(0.dp)) {
+                Text("Open today’s plan", color = OneBlue, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.width(6.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = OneBlue, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeGlanceCard(
+    modifier: Modifier,
+    title: String,
+    detail: String,
+    icon: ImageVector,
+    status: Color,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.weight(1f))
+                Box(Modifier.size(9.dp).background(status, CircleShape))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeRecentEvents(
+    events: List<OneEvent>,
+    onOpenEvents: () -> Unit,
+    onOpenEvent: (OneEvent) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            SectionHeading("RECENT", "Events")
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenEvents, contentPadding = PaddingValues(0.dp)) { Text("See all", color = OneBlue, fontWeight = FontWeight.SemiBold) }
+        }
+        if (events.isEmpty()) {
+            InfoCard("No recent events", "Recorded household events will appear here when ONE has them.")
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    events.take(3).forEachIndexed { index, event ->
+                        if (index > 0) HorizontalDivider()
+                        HomeRecentEventRow(event = event, onClick = { onOpenEvent(event) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeRecentEventRow(event: OneEvent, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 13.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(Modifier.size(40.dp).background(OneBlue.copy(alpha = 0.10f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Notifications, contentDescription = null, tint = OneBlue, modifier = Modifier.size(21.dp))
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(event.kind.label, style = MaterialTheme.typography.titleSmall)
+            Text(event.explanation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("${event.location} · ${event.time}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(event.confidence, style = MaterialTheme.typography.labelSmall, color = if (event.confidence.startsWith("High")) OneMint else OneAmber, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -2276,6 +2590,7 @@ private fun MapScreen(
     var observationCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var importError by rememberSaveable { mutableStateOf<String?>(null) }
     var importNotice by rememberSaveable { mutableStateOf<String?>(null) }
+    var showMapTools by rememberSaveable { mutableStateOf(false) }
     val appContext = LocalContext.current.applicationContext
     val mapCoroutineScope = rememberCoroutineScope()
     val mapImportLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri ->
@@ -2349,6 +2664,27 @@ private fun MapScreen(
                 }
             }
         }
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showMapTools = !showMapTools },
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = OneBlue.copy(alpha = 0.08f))
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Map, contentDescription = null, tint = OneBlue, modifier = Modifier.size(23.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Map tools and evidence", style = MaterialTheme.typography.titleMedium)
+                    Text("Scan, calibrate, import and review observations", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(if (showMapTools) "Hide" else "Open", style = MaterialTheme.typography.labelLarge, color = OneBlue, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        if (showMapTools) {
         SectionHeading("ROOM SCAN", "Build a 2D room layout from a paired camera")
         if (!isBackend) {
             InfoCard("Backend-only room scan", "Connect a consented backend and pair a publisher device before starting a camera walkthrough.")
@@ -2493,6 +2829,7 @@ private fun MapScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
         }
     }
     if (showRoomScanDialog) {
@@ -3113,10 +3450,6 @@ private fun FamilyScreen(
     medicationPlanActionError: String?,
     onCreateMedicationPlan: (String, String, String, String, UUID?) -> Unit,
     onUpdateMedicationPlan: (OneMedicationPlan, String, String, String, String, Boolean, UUID?) -> Unit,
-    familyAssistantLoadState: OneFamilyAssistantLoadState,
-    familyAssistantResult: OneFamilyAssistantResult?,
-    familyAssistantLoadError: String?,
-    onFamilyAssistantSubmit: (String) -> Unit,
     medicationActionKey: String?,
     medicationActionError: String?,
     onMedicationStatusChange: (MedicationDose, DoseStatus) -> Unit
@@ -3137,7 +3470,6 @@ private fun FamilyScreen(
     var planAssignedCaregiverId by rememberSaveable { mutableStateOf<String?>(null) }
     var assignedCaregiverMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
-    var familyAssistantMessage by rememberSaveable { mutableStateOf("") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
     val editingMedicationPlan = editingMedicationPlanId?.let { id -> medicationPlans.orEmpty().firstOrNull { it.id.toString() == id } }
@@ -3150,7 +3482,7 @@ private fun FamilyScreen(
     val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
 
     ScreenScroll {
-        ScreenHeader("CARE CIRCLE", "Family, in sync.", "People, reminders, and permissions around the home.")
+        ScreenHeader("CARE CIRCLE", "Family", "People, reminders, and permissions around the home.")
         if (!isBackend) {
             AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · synthetic family data") })
         }
@@ -3181,60 +3513,12 @@ private fun FamilyScreen(
                     }
                 }
             }
-            if (canInvite) {
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = { showInviteDialog = true }) { Text("Invite") }
-            }
         }
         Text("Showing plans and observations for $selectedSubjectName. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (isBackend && selectedFamilySubjectId != null) {
             if (!familyAccessGranted) InfoCard("Family sharing is paused", "An active family_mode consent for $selectedSubjectName is required before reviewing family details.")
             if (!medicationAccessGranted) InfoCard("Medication controls are paused", "An active medication_management consent for $selectedSubjectName is required. The information below stays administrative and non-medical.")
             if (!assistantAccessGranted) InfoCard("Family assistant is paused", "An active family_assistant consent for $selectedSubjectName is required before sending a bounded summary request.")
-        }
-        SectionHeading("PEOPLE", "Your care circle")
-        when {
-            !isBackend -> DemoFamilyMembersCard()
-            members == null && (loadState == OneFamilyLoadState.IDLE || loadState == OneFamilyLoadState.LOADING) -> {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Text("Loading the care circle…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            members == null && loadState == OneFamilyLoadState.ERROR -> {
-                InfoCard("Family data unavailable", loadError ?: "ONE could not load the care circle.")
-                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
-            }
-            members.isNullOrEmpty() -> InfoCard("No family members recorded yet", "Invite a trusted person from the care circle when family sharing is enabled.")
-            else -> {
-                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        members.forEachIndexed { index, member ->
-                            if (index > 0) HorizontalDivider()
-                            val isCurrentUser = member.id == currentUserId
-                            CaregiverRow(
-                                name = member.displayName,
-                                relationship = null,
-                                role = member.familyRoleLabel(),
-                                tint = member.familyTint(),
-                                isCurrentUser = isCurrentUser,
-                                actions = if (isBackend && canInvite && !isCurrentUser && !member.role.equals("admin", ignoreCase = true)) {
-                                    {
-                                        FamilyMemberAccessActions(
-                                            member = member,
-                                            isBusy = familyMemberActionState == OneFamilyMemberActionState.SUBMITTING && familyMemberActionId == member.id,
-                                            canPromote = isAdmin,
-                                            onUpdate = onUpdateFamilyMember,
-                                            onRemove = onRemoveFamilyMember
-                                        )
-                                    }
-                                } else null
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        familyMemberActionError?.let { error ->
-            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         SectionHeading("CARE RECIPIENTS", "People receiving support")
         CareRecipientsCard(
@@ -3250,27 +3534,6 @@ private fun FamilyScreen(
             onUpdate = onUpdateCareRecipient,
             onDelete = onDeleteCareRecipient
         )
-        familyInviteLoadError?.let { error ->
-            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
-        familyInvite?.let { invite ->
-            val roleLabel = if (invite.role.equals("resident", ignoreCase = true)) "Resident" else "Caregiver"
-            InfoCard(
-                "Invitation ready",
-                "Share this one-time code with the invited person. Role: $roleLabel · expires in ${invite.expiresInSeconds / 3600}h."
-            )
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = OneBlue.copy(alpha = 0.10f))
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("ONE-TIME INVITE CODE", style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
-                    Text(invite.code, style = MaterialTheme.typography.headlineMedium, color = OneBlue, fontWeight = FontWeight.Bold)
-                    Text("The code is shown only on this device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
         SectionHeading("TODAY'S PLAN", "Medication reminders")
         if (canCreateMedicationPlan) {
             OutlinedButton(
@@ -3446,46 +3709,25 @@ private fun FamilyScreen(
                 }
             }
         }
-        SectionHeading("FAMILY ASSISTANT", "Bounded administrative summary")
-        if (!isBackend) {
-            InfoCard("Backend-only assistant", "Connect a backend to ask about the selected person's medication plans and check-ins.")
-        } else {
-            OutlinedTextField(
-                value = familyAssistantMessage,
-                onValueChange = { familyAssistantMessage = it.take(1_000) },
-                label = { Text("Question (optional)") },
-                placeholder = { Text("What should I review with the care team?") },
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = { onFamilyAssistantSubmit(familyAssistantMessage) },
-                enabled = selectedFamilySubjectId != null && assistantAccessGranted && familyAssistantLoadState != OneFamilyAssistantLoadState.SUBMITTING,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (familyAssistantLoadState == OneFamilyAssistantLoadState.SUBMITTING) "Preparing summary…" else "Ask family assistant")
-            }
-            Text("Only the selected person's active medication plans and bounded check-ins are sent. An active family-assistant consent is required.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            familyAssistantLoadError?.let { error ->
-                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-            familyAssistantResult?.let { result ->
-                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text("Summary for $selectedSubjectName", style = MaterialTheme.typography.titleMedium)
-                        Text(result.summary, style = MaterialTheme.typography.bodyLarge)
-                        Text("Next action: ${result.nextAction}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Limitations: ${result.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (result.evidenceIds.isNotEmpty()) {
-                            Text("Bounded evidence: ${countLabel(result.evidenceIds.size, "record")}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (result.degraded) {
-                            Text("This response used a limited local fallback.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
-                        }
-                    }
-                }
-            }
-        }
+        FamilyMembersSection(
+            members = members,
+            currentUserId = currentUserId,
+            isBackend = isBackend,
+            loadState = loadState,
+            loadError = loadError,
+            onRetry = onRetry,
+            canInvite = canInvite,
+            onInvite = { showInviteDialog = true },
+            familyInvite = familyInvite,
+            familyInviteLoadError = familyInviteLoadError,
+            familyMemberActionState = familyMemberActionState,
+            familyMemberActionError = familyMemberActionError,
+            familyMemberActionId = familyMemberActionId,
+            isAdmin = isAdmin,
+            onUpdateFamilyMember = onUpdateFamilyMember,
+            onRemoveFamilyMember = onRemoveFamilyMember
+        )
+
     }
     if (showInviteDialog) {
         OneAlertDialog(
@@ -3683,6 +3925,275 @@ private fun FamilyScreen(
                 ) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+private fun FamilyMembersSection(
+    members: List<OneFamilyMember>?,
+    currentUserId: UUID?,
+    isBackend: Boolean,
+    loadState: OneFamilyLoadState,
+    loadError: String?,
+    onRetry: () -> Unit,
+    canInvite: Boolean,
+    onInvite: () -> Unit,
+    familyInvite: OneFamilyInvite?,
+    familyInviteLoadError: String?,
+    familyMemberActionState: OneFamilyMemberActionState,
+    familyMemberActionError: String?,
+    familyMemberActionId: UUID?,
+    isAdmin: Boolean,
+    onUpdateFamilyMember: (OneFamilyMember, OneRole) -> Unit,
+    onRemoveFamilyMember: (OneFamilyMember) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionHeading("ACCESS", "People with access")
+            Spacer(Modifier.weight(1f))
+            if (canInvite) {
+                OutlinedButton(onClick = onInvite) { Text("Invite") }
+            }
+        }
+        when {
+            !isBackend -> DemoFamilyMembersCard()
+            members == null && loadState in setOf(OneFamilyLoadState.IDLE, OneFamilyLoadState.LOADING) -> {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text("Loading the care circle…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            members == null && loadState == OneFamilyLoadState.ERROR -> {
+                InfoCard("Family data unavailable", loadError ?: "ONE could not load the care circle.")
+                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            members.isNullOrEmpty() -> InfoCard("No family members recorded yet", "Invite a trusted person from the care circle when family sharing is enabled.")
+            else -> {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        members.forEachIndexed { index, member ->
+                            if (index > 0) HorizontalDivider()
+                            val isCurrentUser = member.id == currentUserId
+                            CaregiverRow(
+                                name = member.displayName,
+                                relationship = null,
+                                role = member.familyRoleLabel(),
+                                tint = member.familyTint(),
+                                isCurrentUser = isCurrentUser,
+                                actions = if (isBackend && canInvite && !isCurrentUser && !member.role.equals("admin", ignoreCase = true)) {
+                                    {
+                                        FamilyMemberAccessActions(
+                                            member = member,
+                                            isBusy = familyMemberActionState == OneFamilyMemberActionState.SUBMITTING && familyMemberActionId == member.id,
+                                            canPromote = isAdmin,
+                                            onUpdate = onUpdateFamilyMember,
+                                            onRemove = onRemoveFamilyMember
+                                        )
+                                    }
+                                } else null
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        familyMemberActionError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        familyInviteLoadError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        familyInvite?.let { invite ->
+            val roleLabel = if (invite.role.equals("resident", ignoreCase = true)) "Resident" else "Caregiver"
+            InfoCard(
+                "Invitation ready",
+                "Share this one-time code with the invited person. Role: $roleLabel · expires in ${invite.expiresInSeconds / 3600}h."
+            )
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = OneBlue.copy(alpha = 0.10f))
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("ONE-TIME INVITE CODE", style = MaterialTheme.typography.labelSmall, color = OneBlue, fontWeight = FontWeight.Bold)
+                    Text(invite.code, style = MaterialTheme.typography.headlineMedium, color = OneBlue, fontWeight = FontWeight.Bold)
+                    Text("The code is shown only on this device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaregiverAssistantScreen(
+    isBackend: Boolean,
+    members: List<OneFamilyMember>?,
+    selectedFamilySubjectId: UUID?,
+    selectedSubjectAssistantConsent: Boolean,
+    familyLoadState: OneFamilyLoadState,
+    familyLoadError: String?,
+    onFamilyRetry: () -> Unit,
+    onSelectFamilySubject: (UUID) -> Unit,
+    familyAssistantLoadState: OneFamilyAssistantLoadState,
+    familyAssistantResult: OneFamilyAssistantResult?,
+    familyAssistantLoadError: String?,
+    onFamilyAssistantSubmit: (String) -> Unit
+) {
+    var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var questionHistory by rememberSaveable { mutableStateOf(listOf<String>()) }
+    val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
+        ?: if (isBackend) "My view" else "Everyone"
+    val canSend = isBackend && selectedFamilySubjectId != null && selectedSubjectAssistantConsent &&
+        draft.trim().isNotBlank() && familyAssistantLoadState != OneFamilyAssistantLoadState.SUBMITTING
+
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                ScreenHeader(
+                    "ASSISTANT",
+                    "A calmer view for the care team.",
+                    "Summaries from recorded medication plans and check-ins only."
+                )
+            }
+            if (isBackend && members == null && familyLoadState in setOf(OneFamilyLoadState.IDLE, OneFamilyLoadState.LOADING)) {
+                item {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text("Loading the people in this care space…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (isBackend && members == null && familyLoadState == OneFamilyLoadState.ERROR) {
+                item {
+                    InfoCard("Care circle unavailable", familyLoadError ?: "ONE could not load the people represented by this space.")
+                    OutlinedButton(onClick = onFamilyRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+                }
+            }
+            if (!isBackend) {
+                item { AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · illustrative assistant") }) }
+            }
+            if (members.orEmpty().isNotEmpty()) {
+                item {
+                    Box {
+                        AssistChip(
+                            onClick = { subjectMenuExpanded = true },
+                            label = { Text("For $selectedSubjectName") },
+                            leadingIcon = { Icon(Icons.Default.People, contentDescription = null) }
+                        )
+                        DropdownMenu(
+                            expanded = subjectMenuExpanded,
+                            onDismissRequest = { subjectMenuExpanded = false }
+                        ) {
+                            members.orEmpty().forEach { member ->
+                                DropdownMenuItem(
+                                    text = { Text("${member.displayName} · ${member.familyRoleLabel()}") },
+                                    onClick = {
+                                        subjectMenuExpanded = false
+                                        onSelectFamilySubject(member.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                InfoCard(
+                    "Bounded family assistant",
+                    "I can summarize the selected person's active medication plans and recorded check-ins. I do not make care or medication decisions."
+                )
+            }
+            if (isBackend && selectedFamilySubjectId != null && !selectedSubjectAssistantConsent) {
+                item {
+                    InfoCard(
+                        "Family assistant is paused",
+                        "An active family_assistant consent for $selectedSubjectName is required before sending a summary request."
+                    )
+                }
+            }
+            items(questionHistory) { question ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Text(
+                        question,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier
+                            .fillMaxWidth(0.84f)
+                            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(20.dp))
+                            .padding(14.dp)
+                    )
+                }
+            }
+            familyAssistantResult?.let { result ->
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text("Summary for $selectedSubjectName", style = MaterialTheme.typography.titleMedium)
+                            Text(result.summary, style = MaterialTheme.typography.bodyLarge)
+                            Text("Next action: ${result.nextAction}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Limitations: ${result.limitations}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (result.evidenceIds.isNotEmpty()) {
+                                Text("Bounded evidence: ${countLabel(result.evidenceIds.size, "record")}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (result.degraded) {
+                                Text("This response used a limited local fallback.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                            }
+                        }
+                    }
+                }
+            }
+            familyAssistantLoadError?.let { error ->
+                item { Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(1_000) },
+                    modifier = Modifier.weight(1f),
+                    enabled = isBackend,
+                    placeholder = { Text("Ask about the recorded plan") },
+                    minLines = 1,
+                    maxLines = 4,
+                    shape = RoundedCornerShape(24.dp)
+                )
+                IconButton(
+                    onClick = {
+                        val message = draft.trim()
+                        if (!canSend) return@IconButton
+                        questionHistory = (questionHistory + message).takeLast(20)
+                        draft = ""
+                        onFamilyAssistantSubmit(message)
+                    },
+                    enabled = canSend,
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(if (canSend) OneBlue else OneBlue.copy(alpha = 0.25f))
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Send", tint = Color.White)
+                }
+            }
+        }
     }
 }
 
@@ -4053,7 +4564,8 @@ private fun EventsScreen(
     clipLoadError: String?,
     onRetry: () -> Unit,
     onClipRetry: () -> Unit,
-    onOpenEvent: (OneEvent) -> Unit
+    onOpenEvent: (OneEvent) -> Unit,
+    onClose: (() -> Unit)? = null
 ) {
     var eventRangeFilter by rememberSaveable { mutableStateOf("7d") }
     var eventKindFilter by rememberSaveable { mutableStateOf("all") }
@@ -4077,6 +4589,13 @@ private fun EventsScreen(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (onClose != null) {
+            item {
+                TextButton(onClick = onClose, contentPadding = PaddingValues(0.dp)) {
+                    Text("Back", color = OneBlue, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
         item { ScreenHeader("EVENTS", "Reviewable moments", "Recent activity for caregiver attention.") }
         if (!isBackend) {
             item { AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · illustrative events") }) }
@@ -4630,6 +5149,7 @@ private fun AssistantScreen(
 private fun String.humanLabel(): String = replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
 
 @Composable
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
 private fun AccountScreen(
     role: OneRole,
     isBackend: Boolean,
@@ -4691,6 +5211,7 @@ private fun AccountScreen(
     var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
     var demoFamilyConsent by rememberSaveable { mutableStateOf(false) }
     var demoFamilyAssistantConsent by rememberSaveable { mutableStateOf(false) }
+    var showCareSpaces by rememberSaveable { mutableStateOf(false) }
     var showDeletionConfirmation by rememberSaveable { mutableStateOf(false) }
     val canEditConsents = !isBackend || consentLoadState == OneConsentLoadState.LOADED
     val canRequestDeletion = isBackend && isAdmin && deletionLoadState != OneDeletionLoadState.SUBMITTING && dataDeletion == null
@@ -4703,60 +5224,12 @@ private fun AccountScreen(
 
     ScreenScroll {
         ScreenHeader("ACCOUNT", "Privacy and control.", "Your home, your choices.")
-        SectionHeading("CARE SPACES", "Your households")
-        CareSpacesCard(
-            role = role,
-            isBackend = isBackend,
-            spaces = careSpaces,
-            loadState = careSpacesLoadState,
-            loadError = careSpacesLoadError,
-            actionState = careSpaceActionState,
-            actionError = careSpaceActionError,
-            canCreate = canCreateCareSpace,
-            onRetry = onCareSpacesRetry,
-            onCreate = onCreateCareSpace,
-            onActivate = onActivateCareSpace
+        CareSpaceContextCard(
+            space = careSpaces?.firstOrNull { it.active } ?: careSpaces?.firstOrNull(),
+            isLoading = careSpacesLoadState == OneCareSpaceLoadState.LOADING,
+            onClick = { showCareSpaces = true }
         )
-        SectionHeading("BACKEND", "Connection status")
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("Connection", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                when {
-                    !isBackend -> {
-                        Text("Demo mode · no backend session is connected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    backendHealthLoadState == OneBackendHealthLoadState.LOADING && backendHealth == null -> {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text("Checking API health…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    backendHealthLoadState == OneBackendHealthLoadState.ERROR && backendHealth == null -> {
-                        Text(backendHealthError ?: "ONE could not reach the backend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                        OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry backend check") }
-                    }
-                    backendHealth != null -> {
-                        val health = backendHealth
-                        val statusTint = if (health.status.equals("ok", ignoreCase = true)) OneMint else OneAmber
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(9.dp).background(statusTint, CircleShape))
-                            Spacer(Modifier.width(7.dp))
-                            Text("API ${health.status.humanLabel()}", style = MaterialTheme.typography.titleSmall, color = statusTint, fontWeight = FontWeight.SemiBold)
-                        }
-                        Text("Database: ${health.databaseStatus ?: health.database ?: "unknown"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        health.localInferenceModel?.let { model ->
-                            Text("Inference model: $model", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (backendHealthLoadState == OneBackendHealthLoadState.ERROR) {
-                            Text(backendHealthError ?: "The last health check failed; showing the previous result.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
-                            OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Check again") }
-                        }
-                    }
-                }
-            }
-        }
+        SectionHeading("PRIVACY", "Privacy and consent")
         if (isBackend) {
             when {
                 consentLoadState == OneConsentLoadState.LOADING && consentStates == null -> {
@@ -4823,12 +5296,13 @@ private fun AccountScreen(
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         Text("Room and camera consent also governs short event clips. Sensitive data stays local unless you explicitly enable sharing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        SectionHeading("DEMO", "Preview another experience")
-        OutlinedButton(onClick = { onRoleChange(if (role == OneRole.CAREGIVER) OneRole.RESIDENT else OneRole.CAREGIVER) }, modifier = Modifier.fillMaxWidth()) {
-            Icon(if (role == OneRole.CAREGIVER) Icons.Default.Person else Icons.Default.People, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (role == OneRole.CAREGIVER) "Preview resident experience" else "Preview caregiver experience")
-        }
+        BackendStatusSection(
+            isBackend = isBackend,
+            backendHealth = backendHealth,
+            backendHealthLoadState = backendHealthLoadState,
+            backendHealthError = backendHealthError,
+            onBackendHealthRetry = onBackendHealthRetry
+        )
         SectionHeading("YOUR DATA", "Human control")
         OutlinedButton(
             onClick = onExport,
@@ -4889,7 +5363,40 @@ private fun AccountScreen(
         TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
             Text(if (dataDeletion != null) "Finish and sign out" else "Preview signed-out flow")
         }
+        SectionHeading("DEMO", "Preview another experience")
+        OutlinedButton(onClick = { onRoleChange(if (role == OneRole.CAREGIVER) OneRole.RESIDENT else OneRole.CAREGIVER) }, modifier = Modifier.fillMaxWidth()) {
+            Icon(if (role == OneRole.CAREGIVER) Icons.Default.Person else Icons.Default.People, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(if (role == OneRole.CAREGIVER) "Preview resident experience" else "Preview caregiver experience")
+        }
         Text("Observations support human attention. They are not medical advice or a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+    }
+    if (showCareSpaces) {
+        ModalBottomSheet(onDismissRequest = { showCareSpaces = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ScreenHeader("CARE SPACES", "Choose where you’re caring.", "Each care space keeps its people, cameras, maps, routines and consent separate.")
+                CareSpacesCard(
+                    role = role,
+                    isBackend = isBackend,
+                    spaces = careSpaces,
+                    loadState = careSpacesLoadState,
+                    loadError = careSpacesLoadError,
+                    actionState = careSpaceActionState,
+                    actionError = careSpaceActionError,
+                    canCreate = canCreateCareSpace,
+                    onRetry = onCareSpacesRetry,
+                    onCreate = onCreateCareSpace,
+                    onActivate = onActivateCareSpace
+                )
+            }
+        }
     }
     if (showDeletionConfirmation) {
         OneAlertDialog(
@@ -4913,6 +5420,58 @@ private fun AccountScreen(
                 TextButton(onClick = { showDeletionConfirmation = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+private fun BackendStatusSection(
+    isBackend: Boolean,
+    backendHealth: BackendHealth?,
+    backendHealthLoadState: OneBackendHealthLoadState,
+    backendHealthError: String?,
+    onBackendHealthRetry: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionHeading("BACKEND", "Connection status")
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("Connection", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                when {
+                    !isBackend -> {
+                        Text("Demo mode · no backend session is connected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    backendHealthLoadState == OneBackendHealthLoadState.LOADING && backendHealth == null -> {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("Checking API health…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    backendHealthLoadState == OneBackendHealthLoadState.ERROR && backendHealth == null -> {
+                        Text(backendHealthError ?: "ONE could not reach the backend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry backend check") }
+                    }
+                    backendHealth != null -> {
+                        val health = backendHealth
+                        val statusTint = if (health.status.equals("ok", ignoreCase = true)) OneMint else OneAmber
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(9.dp).background(statusTint, CircleShape))
+                            Spacer(Modifier.width(7.dp))
+                            Text("API ${health.status.humanLabel()}", style = MaterialTheme.typography.titleSmall, color = statusTint, fontWeight = FontWeight.SemiBold)
+                        }
+                        Text("Database: ${health.databaseStatus ?: health.database ?: "unknown"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        health.localInferenceModel?.let { model ->
+                            Text("Inference model: $model", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (backendHealthLoadState == OneBackendHealthLoadState.ERROR) {
+                            Text(backendHealthError ?: "The last health check failed; showing the previous result.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                            OutlinedButton(onClick = onBackendHealthRetry, modifier = Modifier.fillMaxWidth()) { Text("Check again") }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -6,10 +6,13 @@
 
 Fecha de actualización: 2026-09-15
 Proyecto local de Codex: Hackathon
-Carpeta contenedora actual: C:\Users\alcar\Desktop\Development\ONE
+Carpeta contenedora actual en este PC: C:\Users\Mauro\Desktop\develop\ONE
 Producto: ONE Cognitive Companion
 Estado general: MVP multi-cliente local-first, con backend FastAPI, cliente
 iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
+Estado de esta sesión: se ha completado una primera equiparación de la interfaz
+Android con iOS; los cambios de código Android y esta actualización de contexto
+deben revisarse y publicarse antes de continuar en otra máquina.
 
 ---
 
@@ -17,15 +20,17 @@ iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
 
 Estas reglas son obligatorias salvo que el usuario las cambie expresamente:
 
-1. NO modificar el código de las APIs del repositorio one-backend. Ese
-   repositorio lo mantiene otro compañero. Puede inspeccionarse, ejecutarse y
-   llamarse desde los clientes, pero no se deben editar sus archivos desde
-   este flujo de trabajo salvo autorización expresa y coordinación.
+1. NO modificar el código de las APIs del repositorio backend. En este
+   checkout el repositorio está en la carpeta `one` (en conversaciones antiguas
+   puede aparecer como `one-backend`). Ese repositorio lo mantiene otro
+   compañero. Puede inspeccionarse, ejecutarse y llamarse desde los clientes,
+   pero no se deben editar sus archivos desde este flujo de trabajo salvo
+   autorización expresa y coordinación.
 2. one-android/app/src/main/java/com/one/cognitivecompanion/OneApi.kt es el
    adaptador Android del contrato. Se puede modificar si hace falta para
    adaptar Android, corregir el mapeo cliente o añadir soporte a endpoints ya
    existentes, pero no se deben cambiar los endpoints ni sus contratos sin
-   coordinarlo con la persona responsable de one-backend.
+   coordinarlo con la persona responsable del backend.
 3. No inventar endpoints nuevos ni cambiar nombres, cuerpos o semántica de
    endpoints desde Android. Si el contrato no permite una funcionalidad, se
    debe explicar y pedir autorización antes de ampliar el backend.
@@ -50,11 +55,13 @@ funcional y visual.
 ## 2. Estructura real del proyecto y Git
 
 La carpeta ONE es una carpeta contenedora y no es un repositorio Git. No se debe
-ejecutar git pull en ONE. Cada subcarpeta principal es un repo independiente:
+ejecutar git pull en ONE. Cada subcarpeta principal es un repo independiente.
+En este checkout, el repositorio backend se llama `one` (en otros equipos puede
+haberse elegido otro nombre local):
 
 - one-android: app Android Kotlin/Compose
   Remoto: https://github.com/maualc/one-android
-- one-backend: API FastAPI y servicios locales
+- one: API FastAPI y servicios locales
   Remoto: https://github.com/0xbiel/one.git
 - one-frontend: dashboard/publisher React + Vite
   Remoto: https://github.com/0xbiel/one-frontend.git
@@ -70,22 +77,30 @@ tarea concreta lo necesite.
 
 ### Estado observado en este PC
 
-Todos los repos estaban en la rama main, limpios y alineados con origin/main en
-la última comprobación.
+Todos los repositorios están en `main` y alineados con `origin/main`. El único
+repositorio con cambios locales es `one-android`, donde la equiparación de UI
+descrita más abajo todavía no tiene commit ni push.
 
-Commits relevantes actuales:
+Commits relevantes observados:
 
-- one-android — 50ed0da fix: complete Android UI and reliability review
-- one-backend — b90262c Support concurrent live person tracking
-- one-frontend — 100bb17 Refresh live map data every two seconds
-- one-ios — 05d2f63 Refresh native map data every two seconds
-- one-docs — 6ea7719 Document near-real-time live map updates
+- one-android — `2cf4629 feat(android): add 2D room mapping from camera walkthroughs`
+  (HEAD y origin/main antes de los cambios de UI).
+- one — `9cac758 Add guided person camera calibration` (backend, limpio).
+- one-frontend — `9118b9b Add guided standing-point calibration` (limpio).
+- one-ios — `2c67c37 Fix care-recipient medication UUID encoding` (limpio).
+- one-docs — `61f5d0d Document care-recipient medication flow` (limpio).
 
-El archivo presente en la raíz, CONTEXTO_ONE_PORTATIL.md, no se incluirá en ningún
-pull mientras permanezca en la raíz, porque esa carpeta no tiene Git. Hay que
-copiarlo manualmente al portátil una vez. Si se quiere conservarlo mediante
-Git, se puede añadir conscientemente a one-docs en un commit separado; no
-asumirlo automáticamente.
+Cambios locales pendientes en `one-android`:
+
+- `app/src/main/java/com/one/cognitivecompanion/OneApp.kt`: equiparación de
+  navegación, Home, Family, Assistant, Map y Account con la disposición de iOS.
+- `CONTEXTO_ONE_PORTATIL.md`: este documento de traspaso.
+
+Este archivo está dentro de `one-android` y está versionado por ese repositorio;
+después de hacer commit y push se podrá recuperar con el pull de Android. Si se
+trabaja antes de publicar, copiarlo manualmente al otro PC. La carpeta ONE
+contenedora sigue sin ser un repositorio y nunca se debe hacer `git add .` desde
+ella.
 
 ---
 
@@ -98,7 +113,7 @@ por separado. Usar --ff-only para no crear merges automáticos inesperados:
 
     cd C:\ruta\al\ONE
     git -C one-android pull --ff-only origin main
-    git -C one-backend pull --ff-only origin main
+    git -C one pull --ff-only origin main
     git -C one-frontend pull --ff-only origin main
     git -C one-ios pull --ff-only origin main
     git -C one-docs pull --ff-only origin main
@@ -114,19 +129,23 @@ No sobrescribir cambios locales sin confirmar con el usuario.
     mkdir C:\ruta\al\ONE
     cd C:\ruta\al\ONE
     git clone https://github.com/maualc/one-android.git one-android
-    git clone https://github.com/0xbiel/one.git one-backend
+    git clone https://github.com/0xbiel/one.git one
     git clone https://github.com/0xbiel/one-frontend.git one-frontend
     git clone https://github.com/0xbiel/one-ios.git one-ios
     git clone https://github.com/0xbiel/one-docs.git one-docs
 
-Copiar después este archivo a la raíz del nuevo ONE. También se puede abrir la
-carpeta raíz en Codex para que el agente vea los cinco repos y este contexto.
+Copiar después este archivo a la raíz del nuevo ONE si no se ha publicado aún.
+También se puede abrir la carpeta raíz en Codex para que el agente vea los cinco
+repos y este contexto.
 En Android Studio se debe abrir específicamente one-android, no la carpeta
 contenedora.
 
 ### Requisitos aproximados
 
-- Android Studio compatible con AGP 9.4.0, JDK 11 y Android SDK compile 37.
+- Android Studio compatible con AGP 9.4.0, Gradle JDK 17 o superior (se
+  recomienda el JBR incluido en Android Studio) y Android SDK compile 37.
+  El código mantiene Java source/target 11; eso no significa que Gradle pueda
+  ejecutarse con un JDK 11 antiguo.
 - Un emulador Android API 36 o un dispositivo físico para pruebas reales.
 - Python 3.12 o superior para backend.
 - Node.js moderno; one-docs declara Node >=22.15.
@@ -193,7 +212,7 @@ consejo clínico ni decidir automáticamente una dosis.
   medicación, mapas, eventos, notificaciones, logout y caché.
 - OneApi.kt: modelos, sesiones y cliente HTTP del contrato. Puede editarse
   cuando la tarea sea específica del cliente Android; preservar siempre la
-  compatibilidad con one-backend.
+  compatibilidad con el backend.
 - OneModels.kt: modelos auxiliares de la app.
 - OneHomeRepository.kt: carga de hogar y datos relacionados.
 - OneFamilyRepository.kt: flujos de familia/care circle.
@@ -224,20 +243,30 @@ El rol de la cuenta y una acción para cambiar la vista no deben confundirse:
 - El publisher no debe ganar por accidente la navegación del cuidador ni el
   acceso a datos familiares.
 
-La navegación de cuidador incluye las áreas equivalentes a Home, Map, Events,
-Family y Account/Privacy, además de flujos de cámara y pairing. La pantalla de
-residente tiene Today, Assistant y cuenta/ajustes según el estado actual.
-Today debe ser el resumen del día y mostrar recordatorios de medicación con
-hora, instrucciones y estado cuando existan. Assistant debe permanecer
-centrado en conversación/check-in y remitir a Today para las pastillas.
+La navegación actual del cuidador está alineada con el shell de iOS y contiene
+cinco áreas en la barra inferior: Home, Map, Family, Assistant y Account.
+Events ya no ocupa una pestaña propia: se abre desde “See all” o desde los
+eventos recientes de Home como una pantalla secundaria, y desde allí se puede
+abrir el detalle de un evento. Las pantallas de cámara, evento y Events ocultan
+la barra inferior; el botón/gesto atrás cierra primero el detalle y después la
+pantalla secundaria.
 
-Las filas de resumen de Home tienen acciones reales:
+Todas las pestañas usan una transición Compose direccional con fade y
+desplazamiento horizontal. La transición se calcula con el orden visible de
+cada rol, por lo que también funciona para Resident y Publisher. El cambio de
+rol debe seguir siendo una acción de demo/vista y no alterar accidentalmente
+los permisos reales de la cuenta.
 
-- Household status abre Map.
-- This week's plan abre Family, en la zona del plan de medicación.
+La Home activa tiene acciones reales: el contexto de care space abre el
+selector, el plan de hoy abre Family, Map abre el mapa, Cameras abre la gestión
+de cámaras, “See all” abre Events y cada evento abre su detalle. No dejar una
+flecha visual en una fila que no tenga `onClick` o una acción accesible
+equivalente.
 
-No dejar una flecha visual en una fila que no tenga onClick o una acción
-accesible equivalente.
+La pantalla de residente tiene Today, Assistant y Account. Today muestra el
+resumen del día y los recordatorios de medicación con hora, instrucciones y
+estado cuando existan. Assistant permanece centrado en conversación/check-in y
+remite a Today para las pastillas.
 
 ### Diseño visual ya aplicado
 
@@ -251,6 +280,41 @@ accesible equivalente.
 - El nombre actual y YOU deben permanecer alineados en las filas de familia.
 - Mantener una interfaz calmada, blanca, con tipografía amplia, contornos
   discretos y azul/cian ONE. Evitar introducir morados o colores de plantilla.
+
+### Equiparación Android con la interfaz de iOS (15-09-2026)
+
+La implementación actual está concentrada en `OneApp.kt` y conserva los
+repositorios, modelos, consentimientos y endpoints existentes. Se ha replicado
+la jerarquía funcional de `one-ios` sin intentar copiar literalmente los
+patrones de SwiftUI:
+
+- Home: saludo personalizado, persona atendida, logo, contexto del care space,
+  estado offline/demo, tarjeta de Today, accesos compactos a Map y Cameras,
+  eventos recientes y pairing del publisher. El selector de care space y la
+  gestión completa de cámaras se muestran en `ModalBottomSheet` para no hacer
+  crecer la Home.
+- Family: selector de persona y avisos de consentimiento arriba; después
+  destinatarios de cuidado, plan/recordatorios de medicación, historial y,
+  finalmente, acceso de miembros e invitaciones. El asistente familiar ya no se
+  mezcla dentro de esta pantalla.
+- Assistant: nueva pantalla propia para el cuidador, con selector de persona,
+  historial local de preguntas, resultado acotado a planes/check-ins,
+  limitaciones visibles y compositor inferior que respeta el teclado. El envío
+  solo se habilita con sesión backend, sujeto seleccionado y consentimiento
+  `family_assistant` activo.
+- Map: el canvas 2D y la calidad del mapa aparecen antes que las herramientas.
+  Room scan, ARCore, configuración, calibración, evidencias, importación,
+  mapas manuales, objetos y observaciones quedan agrupados en “Map tools and
+  evidence” y se despliegan bajo demanda.
+- Account: contexto de care space al principio con selector en hoja inferior;
+  después privacidad/consentimientos y notificaciones, estado secundario del
+  backend, exportación/borrado, sesión y la vista demo de otro rol.
+- Events: se mantiene el listado y el detalle ya existentes, pero el listado es
+  un destino secundario desde Home, no una pestaña inferior independiente.
+
+Se conservaron los estados de carga, error, stale/offline y demo, además de las
+acciones existentes de cámaras, pairing, clips, medicación, familia y mapas.
+No se modificó `OneApi.kt` ni el backend para esta equiparación.
 
 ### Correcciones ya realizadas en Android
 
@@ -271,6 +335,16 @@ one-android:
 - 6be3791: alineación de identidad: YOU al lado del nombre grande y email
   oculto.
 - 50ed0da: revisión general de UI y fiabilidad Android.
+- 2cf4629: mapeado 2D de habitaciones a partir de recorridos de cámara,
+  incluyendo generación, calibración, evidencias, importación y mapas manuales.
+
+### Cambios de UI pendientes de commit
+
+Después de `2cf4629`, se modificó `app/src/main/java/com/one/cognitivecompanion/OneApp.kt`
+para completar la equiparación Android/iOS descrita arriba. La modificación aún
+está en el working tree de `main`; no hacer `pull` en otro equipo hasta haber
+hecho commit y push, o copiar explícitamente el archivo si se necesita seguir
+sin publicar.
 
 La revisión final comunicada para 50ed0da indicó:
 
@@ -282,7 +356,7 @@ La revisión final comunicada para 50ed0da indicó:
   alarmas, protección de caché/backup, splash, tarjetas, pestañas, demo y
   textos.
 - OneApi.kt quedó intacto en esa revisión, pero no es una prohibición
-  permanente: puede adaptarse en tareas Android sin modificar one-backend.
+  permanente: puede adaptarse en tareas Android sin modificar el backend.
 
 No asumir que build correcta significa que todos los flujos físicos estén
 verificados: permisos, cámara/WebRTC, LiveKit, notificaciones y dispositivos
@@ -318,6 +392,19 @@ Desde one-android:
     .\gradlew.bat assembleDebug
     .\gradlew.bat assembleRelease -PoneApiBaseUrl=https://configure-me.invalid/api/v1
 
+Última verificación realizada en este PC (15-09-2026):
+
+    $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio1\jbr'
+    .\gradlew.bat :app:compileDebugKotlin
+    .\gradlew.bat :app:testDebugUnitTest
+    .\gradlew.bat :app:assembleDebug
+
+Las tres tareas terminaron con `BUILD SUCCESSFUL`. El APK se generó en
+`app/build/outputs/apk/debug/app-debug.apk`. Si Android Studio muestra “Project
+JDK is not defined”, abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime`
+incluido, o usar `Add JDK from disk` apuntando a la carpeta `jbr` de la
+instalación de Android Studio. La ruta exacta cambia según el PC.
+
 El test instrumentado requiere un emulador/dispositivo conectado:
 
     .\gradlew.bat connectedDebugAndroidTest
@@ -352,7 +439,7 @@ es local o una vista LiveKit remota.
 
 ---
 
-## 7. Backend (one-backend): referencia de solo lectura
+## 7. Backend (carpeta local `one`): referencia de solo lectura
 
 El backend es un monolito modular FastAPI para el MVP local-first. Usa
 PostgreSQL como base autoritativa en Compose y SQLite como fallback de cero
@@ -416,7 +503,7 @@ por hogar, sujeto, rol y consentimiento. Las dosis son estados administrativos
 
 ### Ejecutar backend en Windows sin Docker
 
-Desde one-backend:
+Desde la carpeta local `one`:
 
     py -3.12 -m venv .venv
     .\.venv\Scripts\Activate.ps1
@@ -426,7 +513,7 @@ Desde one-backend:
 
 En otra terminal, para tests:
 
-    cd C:\ruta\al\ONE\one-backend
+    cd C:\ruta\al\ONE\one
     .\.venv\Scripts\Activate.ps1
     $env:ONE_DATABASE_URL = "sqlite:///./one.db"
     pytest
@@ -437,7 +524,7 @@ chat.
 
 ### Ejecutar con Docker
 
-    cd C:\ruta\al\ONE\one-backend
+    cd C:\ruta\al\ONE\one
     docker compose up --build
 
 Compose incluye API, PostgreSQL, Redis, MinIO, LiveKit de desarrollo y Caddy.
@@ -501,6 +588,13 @@ publisher de navegador. No asumir que Android deba copiar literalmente cada
 detalle de iOS: replicar comportamiento y principios, adaptando patrones
 nativos de Android.
 
+Para la equiparación de Android realizada el 15-09-2026 se revisaron
+`One/Features/Home/HomeView.swift`, `Family/FamilyView.swift`,
+`Assistant/AssistantView.swift`, `Map/MapView.swift`,
+`Settings/SettingsView.swift` y `One/Core/DesignSystem/OneTheme.swift`.
+El shell de cuidador de iOS usa Home, Map, Family, Assistant y Account; Android
+mantiene esa misma jerarquía y conserva Events como destino secundario.
+
 ---
 
 ## 10. Seguridad, privacidad y lenguaje de producto
@@ -549,8 +643,9 @@ seguimiento, no como autorización automática para cambiar el backend:
 8. Comprobar backup del dispositivo y ausencia de datos sensibles no deseados.
 9. Verificar textos visibles en todas las pantallas, incluidos estados vacíos,
    errores de red, publisher, cámara, mapas y permisos.
-10. Verificar que Household status y This week's plan sigan abriendo sus
-    destinos correctos.
+10. Verificar que las acciones activas de Home sigan abriendo sus destinos:
+    care space/selector, plan de hoy/Family, Map, Cameras, Events y detalle de
+    evento.
 11. Confirmar que YOU aparece junto al nombre y que el email no reaparece en la
     vista de familia.
 12. Revisar que todos los popup mantienen el estilo ONE en pantallas pequeñas,
@@ -567,7 +662,7 @@ permisos físicos, documentar el bloqueo exacto en vez de simular que pasó.
 1. Leer este archivo y el README del repo afectado.
 2. Confirmar el repo afectado y ejecutar git status --short --branch.
 3. Si es Android, inspeccionar primero OneApp.kt, OneAppState.kt, OneApi.kt y
-   los modelos necesarios. Mantener one-backend sin cambios y conservar la
+   los modelos necesarios. Mantener el backend sin cambios y conservar la
    compatibilidad del adaptador con su contrato.
 4. Identificar si el problema es de UI, estado local, navegación, permisos,
    caché o contrato. No solucionar un problema de UI editando la API.
@@ -586,7 +681,7 @@ Ejemplo seguro para Android después de modificar código:
     .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
     git diff --check
     git diff --stat
-    git add app
+    git add app CONTEXTO_ONE_PORTATIL.md
     git commit -m "describe the Android change"
     git push origin main
 
@@ -606,13 +701,13 @@ Ejemplo para cambios Android hechos en el portátil:
     git pull --ff-only origin main
     # trabajar y probar
     git status --short --branch
-    git add app
+    git add app CONTEXTO_ONE_PORTATIL.md
     git commit -m "describe the change"
     git push origin main
 
 Después, en el PC principal:
 
-    cd C:\Users\alcar\Desktop\Development\ONE\one-android
+    cd C:\ruta\al\ONE\one-android
     git pull --ff-only origin main
 
 Para cambios de backend, frontend, iOS o docs se repite el mismo patrón,
@@ -630,7 +725,7 @@ estado, revisar el conflicto y pedir instrucciones si el resultado no es obvio.
 Se puede pegar el siguiente texto junto con este archivo:
 
 Lee CONTEXTO_ONE_PORTATIL.md completo antes de trabajar. Estoy continuando ONE
-Cognitive Companion desde one-android. Respeta estrictamente que one-backend
+Cognitive Companion desde one-android. Respeta estrictamente que el backend
 es solo lectura porque lo mantiene otro compañero. Puedes modificar el
 adaptador Android OneApi.kt y sus llamadas si la tarea lo requiere, pero no
 cambies los contratos del backend sin coordinación. Primero
@@ -644,8 +739,11 @@ antes de ampliar el alcance.
 
 ## 15. Checklist de llegada al portátil
 
-- [ ] Copiar este archivo a la raíz del nuevo ONE.
-- [ ] Confirmar que los cinco repos están clonados con los remotos indicados.
+- [ ] Si este contexto todavía no se ha publicado, copiarlo a la raíz del
+      nuevo ONE; si ya se publicó dentro de `one-android`, recuperarlo con el
+      pull de ese repo.
+- [ ] Confirmar que los cinco repos están clonados con los remotos indicados:
+      `one-android`, `one`, `one-frontend`, `one-ios` y `one-docs`.
 - [ ] Ejecutar git pull --ff-only origin main dentro de cada repo.
 - [ ] Abrir one-android en Android Studio y sincronizar Gradle.
 - [ ] Configurar un emulador/dispositivo y permisos necesarios.

@@ -3889,7 +3889,7 @@ private fun FamilyScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (isBackend) {
-                        Box {
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                             OutlinedButton(
                                 onClick = { assignedCaregiverMenuExpanded = true },
                                 modifier = Modifier.fillMaxWidth(),
@@ -3900,7 +3900,7 @@ private fun FamilyScreen(
                             OneDropdownMenu(
                                 expanded = assignedCaregiverMenuExpanded,
                                 onDismissRequest = { assignedCaregiverMenuExpanded = false },
-                                menuWidth = 224.dp
+                                menuWidth = maxWidth
                             ) {
                                 DropdownMenuItem(
                                     text = {

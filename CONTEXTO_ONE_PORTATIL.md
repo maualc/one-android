@@ -17,14 +17,15 @@ iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
 
 Estas reglas son obligatorias salvo que el usuario las cambie expresamente:
 
-1. NO modificar el código de las APIs. El repositorio de APIs es
-   one-backend. Puede inspeccionarse, ejecutarse y llamarse desde los
-   clientes, pero no se deben editar sus archivos en las tareas de cliente.
-2. NO modificar
-   one-android/app/src/main/java/com/one/cognitivecompanion/OneApi.kt.
-   Es el adaptador Android del contrato y las llamadas existentes deben
-   conservarse. Se pueden corregir UI, estado, navegación, validaciones,
-   permisos, caché y notificaciones alrededor del adaptador.
+1. NO modificar el código de las APIs del repositorio one-backend. Ese
+   repositorio lo mantiene otro compañero. Puede inspeccionarse, ejecutarse y
+   llamarse desde los clientes, pero no se deben editar sus archivos desde
+   este flujo de trabajo salvo autorización expresa y coordinación.
+2. one-android/app/src/main/java/com/one/cognitivecompanion/OneApi.kt es el
+   adaptador Android del contrato. Se puede modificar si hace falta para
+   adaptar Android, corregir el mapeo cliente o añadir soporte a endpoints ya
+   existentes, pero no se deben cambiar los endpoints ni sus contratos sin
+   coordinarlo con la persona responsable de one-backend.
 3. No inventar endpoints nuevos ni cambiar nombres, cuerpos o semántica de
    endpoints desde Android. Si el contrato no permite una funcionalidad, se
    debe explicar y pedir autorización antes de ampliar el backend.
@@ -190,7 +191,9 @@ consejo clínico ni decidir automáticamente una dosis.
   textos y componentes visuales. Es grande; localizar símbolos antes de editar.
 - OneAppState.kt: estado y coordinación de sesión, hogar, familia,
   medicación, mapas, eventos, notificaciones, logout y caché.
-- OneApi.kt: modelos, sesiones y cliente HTTP del contrato. NO editarlo.
+- OneApi.kt: modelos, sesiones y cliente HTTP del contrato. Puede editarse
+  cuando la tarea sea específica del cliente Android; preservar siempre la
+  compatibilidad con one-backend.
 - OneModels.kt: modelos auxiliares de la app.
 - OneHomeRepository.kt: carga de hogar y datos relacionados.
 - OneFamilyRepository.kt: flujos de familia/care circle.
@@ -278,7 +281,8 @@ La revisión final comunicada para 50ed0da indicó:
 - Se añadieron/ajustaron vuelta atrás, logout de publisher, reconciliación de
   alarmas, protección de caché/backup, splash, tarjetas, pestañas, demo y
   textos.
-- OneApi.kt quedó intacto según la instrucción del usuario.
+- OneApi.kt quedó intacto en esa revisión, pero no es una prohibición
+  permanente: puede adaptarse en tareas Android sin modificar one-backend.
 
 No asumir que build correcta significa que todos los flujos físicos estén
 verificados: permisos, cámara/WebRTC, LiveKit, notificaciones y dispositivos
@@ -562,8 +566,9 @@ permisos físicos, documentar el bloqueo exacto en vez de simular que pasó.
 
 1. Leer este archivo y el README del repo afectado.
 2. Confirmar el repo afectado y ejecutar git status --short --branch.
-3. Si es Android, inspeccionar primero OneApp.kt, OneAppState.kt y los modelos
-   necesarios. Mantener OneApi.kt sin cambios.
+3. Si es Android, inspeccionar primero OneApp.kt, OneAppState.kt, OneApi.kt y
+   los modelos necesarios. Mantener one-backend sin cambios y conservar la
+   compatibilidad del adaptador con su contrato.
 4. Identificar si el problema es de UI, estado local, navegación, permisos,
    caché o contrato. No solucionar un problema de UI editando la API.
 5. Implementar el cambio mínimo y coherente con el diseño ONE.
@@ -626,8 +631,9 @@ Se puede pegar el siguiente texto junto con este archivo:
 
 Lee CONTEXTO_ONE_PORTATIL.md completo antes de trabajar. Estoy continuando ONE
 Cognitive Companion desde one-android. Respeta estrictamente que one-backend
-es solo lectura y que no debes modificar
-one-android/.../OneApi.kt ni cambiar llamadas o contratos de API. Primero
+es solo lectura porque lo mantiene otro compañero. Puedes modificar el
+adaptador Android OneApi.kt y sus llamadas si la tarea lo requiere, pero no
+cambies los contratos del backend sin coordinación. Primero
 comprueba git status, inspecciona el código relevante, implementa solo lo
 solicitado y verifica con Gradle/lint/tests. No expongas secretos ni valores de
 .env. Si hay una discrepancia entre el contexto, el README y el código, trata
@@ -650,6 +656,4 @@ antes de ampliar el alcance.
 - [ ] Antes de publicar, revisar git diff, git status y el repo exacto.
 
 Fin del contexto de traspaso.
-
-
 

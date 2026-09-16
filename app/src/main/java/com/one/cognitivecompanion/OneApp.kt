@@ -543,6 +543,7 @@ fun OneApp() {
                             },
                             currentRoomMap = appState.currentRoomMap,
                             mapLoadState = appState.mapLoadState,
+                            mapHasLoadedOnce = appState.mapHasLoadedOnce,
                             mapLoadError = appState.mapLoadError,
                             mapIsStale = appState.mapIsStale,
                             rooms = appState.rooms,
@@ -2600,6 +2601,7 @@ private fun MapScreen(
     onCalibrateCamera: (UUID, UUID, Double?, List<String>) -> Unit,
     currentRoomMap: OneRoomMap?,
     mapLoadState: OneMapLoadState,
+    mapHasLoadedOnce: Boolean,
     mapLoadError: String?,
     mapIsStale: Boolean,
     rooms: List<OneRoom>?,
@@ -2714,7 +2716,7 @@ private fun MapScreen(
         }
         if (isBackend) {
             when {
-                mapLoadState == OneMapLoadState.LOADING && currentRoomMap == null -> {
+                mapLoadState == OneMapLoadState.LOADING && currentRoomMap == null && !mapHasLoadedOnce -> {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Text("Loading the current room map…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

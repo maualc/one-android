@@ -53,6 +53,7 @@ class OneAppState(
     var rooms by mutableStateOf<List<OneRoom>?>(null)
     var currentRoomMap by mutableStateOf<OneRoomMap?>(null)
     var mapLoadState by mutableStateOf(OneMapLoadState.IDLE)
+    var mapHasLoadedOnce by mutableStateOf(false)
     var mapLoadError by mutableStateOf<String?>(null)
     var mapIsStale by mutableStateOf(false)
     var mapGeneration by mutableStateOf<OneMapGeneration?>(null)
@@ -210,6 +211,7 @@ class OneAppState(
         rooms = null
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
+        mapHasLoadedOnce = false
         mapLoadError = null
         mapIsStale = false
         mapGeneration = null
@@ -801,6 +803,7 @@ class OneAppState(
             rooms = null
             currentRoomMap = null
             mapLoadState = OneMapLoadState.IDLE
+            mapHasLoadedOnce = false
             mapLoadError = null
             return
         }
@@ -811,12 +814,14 @@ class OneAppState(
             currentRoomMap = apiClient.currentRoomMap(authenticatedSession)
             offlineCache.saveMap(authenticatedSession.homeId, rooms.orEmpty(), currentRoomMap)
             mapIsStale = false
+            mapHasLoadedOnce = true
             mapLoadState = OneMapLoadState.LOADED
         } catch (error: Exception) {
             offlineCache.readMap(authenticatedSession.homeId)?.let { (cachedRooms, cachedMap) ->
                 rooms = cachedRooms
                 currentRoomMap = cachedMap
                 mapIsStale = true
+                mapHasLoadedOnce = true
             }
             mapLoadState = if (mapIsStale) OneMapLoadState.LOADED else OneMapLoadState.ERROR
             mapLoadError = error.message ?: "Could not load the room map."
@@ -1736,6 +1741,7 @@ class OneAppState(
         rooms = null
         currentRoomMap = null
         mapLoadState = OneMapLoadState.IDLE
+        mapHasLoadedOnce = false
         mapLoadError = null
         mapIsStale = false
         mapGeneration = null

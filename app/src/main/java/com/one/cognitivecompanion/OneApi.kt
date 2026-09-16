@@ -272,8 +272,8 @@ data class OneMapGenerationStartRequest(
     val roomId: UUID? = null,
     val roomLabel: String? = null,
     val orientation: String = "landscape",
-    val resolutionWidth: Int = OneRoomSweepCaptureConfig.TARGET_WIDTH,
-    val resolutionHeight: Int = OneRoomSweepCaptureConfig.TARGET_HEIGHT
+    val resolutionWidth: Int = 640,
+    val resolutionHeight: Int = 480
 )
 
 data class OneMapGenerationFrame(
@@ -1108,8 +1108,8 @@ class OneHttpApiClient(
         jobId: UUID,
         frames: List<OneMapGenerationFrame>
     ): OneMapGeneration {
-        require(frames.size in 3..OneRoomSweepCaptureConfig.MAX_FRAME_COUNT) {
-            "A room sweep needs between 3 and ${OneRoomSweepCaptureConfig.MAX_FRAME_COUNT} frames."
+        require(frames.size in 3..30) {
+            "A room sweep needs between 3 and 30 frames."
         }
         val frameRows = JSONArray()
         frames.forEach { frame ->

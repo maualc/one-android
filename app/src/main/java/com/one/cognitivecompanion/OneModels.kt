@@ -114,29 +114,6 @@ enum class OneCameraReconnectLoadState {
     ERROR
 }
 
-enum class OneMapLoadState {
-    IDLE,
-    LOADING,
-    SUBMITTING,
-    LOADED,
-    ERROR
-}
-
-enum class OneMapGenerationLoadState {
-    IDLE,
-    LOADING,
-    SUBMITTING,
-    LOADED,
-    ERROR
-}
-
-enum class OneCalibrationActionState {
-    IDLE,
-    SUBMITTING,
-    LOADED,
-    ERROR
-}
-
 enum class OneObjectActionState {
     IDLE,
     SUBMITTING,

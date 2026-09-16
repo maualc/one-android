@@ -9,4 +9,7 @@
     <!-- Household snapshots and medication alarm metadata stay on this
          device and are not copied to cloud backups. -->
     <exclude domain="sharedpref" path="." />
+    <!-- Location history and outside-zone alerts are sensitive and remain
+         local to the tracking phone. -->
+    <exclude domain="database" path="one_outside_tracking.db" />
 </full-backup-content>

@@ -4,17 +4,17 @@
 > Leerlo completo antes de modificar código. Este archivo es un contexto de
 > trabajo, no sustituye a los README ni al contrato OpenAPI versionado.
 
-Fecha de actualización: 2026-09-16
+Fecha de actualización: 2026-09-17
 Proyecto local de Codex: Hackathon
 Carpeta contenedora de referencia en este PC: C:\Users\alcar\Desktop\Development\ONE
 Producto: ONE Cognitive Companion
 Estado general: MVP multi-cliente local-first, con backend FastAPI, cliente
 iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
-Estado de esta sesión: Android está alineado con la interfaz principal de iOS,
-la captura de recorridos 2D del publisher tiene flujo guiado y el mapa solo se
-considera activo cuando contiene geometría validada. Los cambios están
-publicados en `origin/main` de `one-android`; este contexto debe actualizarse
-con cada traspaso entre máquinas.
+Estado de esta sesión: `main` conserva la experiencia Android alineada con iOS.
+La rama `feature/outside-companion-tracking` sustituye en Android el antiguo
+mapa interior 2D/3D por un tracker exterior local, con GPS, zonas, historial,
+alertas y simulación de rutas. Este contexto debe actualizarse con cada
+traspaso entre máquinas.
 
 ---
 
@@ -74,17 +74,18 @@ análisis del hackathon. tmp no es necesario para compilar la aplicación y
 contiene archivos grandes; no incluirlo en un repo ni subirlo salvo que una
 tarea concreta lo necesite.
 
-### Estado observado el 16-09-2026
+### Estado observado el 17-09-2026
 
-Todos los repositorios están en `main`, limpios y alineados con `origin/main`.
-`one-android` es el repositorio de trabajo principal. Tiene además la rama
-experimental `feature/exterior-companion-map`, publicada por separado, que
-contiene la prueba de mapa exterior/MapLibre y no forma parte de `main`.
+`one-android/main` sigue siendo la base alineada con iOS. La rama experimental
+`feature/exterior-companion-map` se conserva publicada sin cambios. Se creó una
+tercera rama, `feature/outside-companion-tracking`, desde `main` para el tracker
+exterior; sus cambios Android son deliberadamente independientes de iOS,
+frontend y backend.
 
 Commits relevantes observados:
 
-- one-android — `cc7221f fix: hide unusable room maps` (HEAD y
-  `origin/main`, limpio).
+- one-android — `719c82b docs: refresh portable handoff context` (`main` y
+  `origin/main`, limpio antes de abrir la rama del tracker).
 - one-backend — `fe5e131 Keep calibration targets on clear floor` (limpio).
 - one-frontend — `7a6220b Support iPhone-guided camera calibration` (limpio).
 - one-ios — `f7f8ae2 Show calibration targets in room geometry` (limpio).
@@ -178,9 +179,9 @@ consejo clínico ni decidir automáticamente una dosis.
   permisos por rol.
 - Los frames de cámara se procesan de forma acotada y en memoria; no se debe
   presentar una retención de vídeo que no exista.
-- Los mapas tienen procedencia explícita: zonas manuales, geometría relativa,
-  ARKit/RoomPlan y mapas RoomPlan/LiDAR métricos no son equivalentes.
-- La vista del cuidador puede revisar hogar, cámaras, mapa, eventos, clips,
+- La ubicación exterior siempre muestra que es aproximada y distingue GPS de
+  simulación; una zona no equivale a una coordenada exacta.
+- La vista del cuidador puede revisar hogar, cámaras, mapa exterior, eventos, clips,
   familiares, planes y privacidad según sus permisos.
 - La vista del residente debe ser simple y calmada: Today muestra las próximas
   rutinas/medicaciones y Assistant se centra en check-in y conversación.
@@ -212,7 +213,9 @@ consejo clínico ni decidir automáticamente una dosis.
 - OneApp.kt: shell Compose, autenticación, navegación, pantallas, diálogos,
   textos y componentes visuales. Es grande; localizar símbolos antes de editar.
 - OneAppState.kt: estado y coordinación de sesión, hogar, familia,
-  medicación, mapas, eventos, notificaciones, logout y caché.
+  medicación, familia, eventos, notificaciones, logout y caché. El estado del
+  tracker exterior vive en `OneOutsideTrackingStore` para no mezclarlo con la
+  caché del backend.
 - OneApi.kt: modelos, sesiones y cliente HTTP del contrato. Debe conservarse
   sin cambios de rutas, cuerpos ni semántica; no tocarlo para arreglar una
   incidencia puramente visual o de conectividad local.
@@ -227,10 +230,14 @@ consejo clínico ni decidir automáticamente una dosis.
 - OneCaptureService.kt: servicio de captura/publicación.
 - OneLiveKitPublisher.kt: conexión LiveKit del publisher.
 - OneEventStream.kt: consumo de eventos.
-- OneMapImport.kt: importación de JSON de mapas/zones.
-- OneMapUsability.kt: criterio cliente para aceptar únicamente mapas con
-  geometría validada y procedencia soportada.
-- OneRoomSweepCapture.kt: captura CameraX acotada a 20 frames en memoria.
+- OneOutsideTrackingUi.kt: mapa exterior, zonas, historial, alertas,
+  simulación de rutas y mensajes locales de prueba.
+- OneOutsideTrackingStore.kt: SQLite local con perfiles, lugares, puntos y
+  alertas; conserva como máximo siete días de historial.
+- OneOutsideLocationService.kt: servicio foreground de ubicación, geofences y
+  notificaciones Android.
+- OneExteriorMap.kt y OneExteriorCompanionModels.kt: MapLibre/OSM y geometría
+  geográfica de soporte.
 - OneSpeechRecognizer.kt: reconocimiento de voz.
 - OneFormatting.kt: formato de fechas, etiquetas y valores.
 - ui/theme/Color.kt, Theme.kt, Type.kt: sistema visual.
@@ -249,8 +256,10 @@ El rol de la cuenta y una acción para cambiar la vista no deben confundirse:
 - El publisher no debe ganar por accidente la navegación del cuidador ni el
   acceso a datos familiares.
 
-La navegación actual del cuidador está alineada con el shell de iOS y contiene
-cinco áreas en la barra inferior: Home, Map, Family, Assistant y Account.
+La navegación de `main` sigue alineada con el shell de iOS y contiene cinco
+áreas en la barra inferior: Home, Map, Family, Assistant y Account. En
+`feature/outside-companion-tracking`, Map es exclusivamente el tracker exterior
+local; no se muestran escaneo, calibración ni generación de mapas interiores.
 Events ya no ocupa una pestaña propia: se abre desde “See all” o desde los
 eventos recientes de Home como una pantalla secundaria, y desde allí se puede
 abrir el detalle de un evento. Las pantallas de cámara, evento y Events ocultan
@@ -346,34 +355,40 @@ La revisión final comunicada para `50ed0da` indicó:
 - Se añadieron/ajustaron vuelta atrás, logout de publisher, reconciliación de
   alarmas, protección de caché/backup, splash, tarjetas, pestañas, demo y
   textos.
-- `OneApi.kt` y `one-backend` siguen sin cambios en estas correcciones.
+- `one-backend` sigue sin cambios. La rama del tracker solo conserva el
+  cliente API heredado como compatibilidad; no añade rutas ni datos de
+  ubicación remotos.
 
 No asumir que build correcta significa que todos los flujos físicos estén
 verificados: permisos, cámara/WebRTC, LiveKit, notificaciones y dispositivos
 reales siguen dependiendo del entorno.
 
-### Recorrido de cámara y mapa 2D
+### Tracker exterior en `feature/outside-companion-tracking`
 
-El trabajo de mapa lo coordina el cuidador, pero los frames los captura el
-teléfono publisher emparejado. Flujo esperado:
+La pestaña `Map` de esta rama ya no carga mapas de habitaciones. El flujo local
+es:
 
-1. El cuidador abre Map tools y pulsa `Start camera walkthrough`.
-2. El publisher recibe el trabajo en estado `collecting`. Con el consentimiento
-   de room scan activo, solicita permiso de cámara y abre automáticamente el
-   escáner. Si está publicando LiveKit, primero debe detener la publicación.
-3. CameraX muestra una vista en horizontal y captura como máximo 20 frames RGB
-   (640×480, cada ~700 ms, durante unos 14 s). La interfaz enseña `n/20`,
-   porcentaje y guía por etapas: paredes/esquina, paredes opuestas, puerta y
-   muebles. Los frames son transitorios y no se guardan en la galería.
-4. Al terminar, el publisher envía el lote al endpoint existente. El backend
-   pasa a `processing` y después a `ready`, `needs_rescan`, `failed` o
-   `unavailable`. El cuidador debe refrescar el estado y revisar el resultado.
+1. Seleccionar la persona cuidada; en demo offline aparece un perfil local y
+   con backend se usan los care recipients existentes, sin escribir ubicación
+   en el backend.
+2. Configurar `Home` y lugares seguros tocando el mapa o usando la última
+   posición fiable del teléfono. Los radios se mantienen como mínimo en 100 m
+   (`Home` parte de 150 m).
+3. Activar `Location sharing on this phone`. Android usa un foreground service
+   de ubicación con actualizaciones espaciadas (aprox. cada 120 s y/o 50 m) y
+   geofences para avisos de entrada/salida. El sistema puede retrasar puntos
+   para ahorrar batería.
+4. Revisar la ruta local, los últimos siete días, el resumen recordado y las
+   alertas. El simulador permite probar salida, llegada a un lugar seguro y
+   vuelta a casa sin moverse.
+5. `Resident message preview` solo crea una notificación en el propio teléfono;
+   todavía no existe sincronización entre teléfonos/familia. Para eso hará
+   falta acordar el contrato y almacenamiento compartido con backend.
 
-Android no promete convertir este recorrido RGB en un modelo 3D métrico. Un
-mapa solo se presenta como activo si tiene estado `ready`, procedencia de
-geometría soportada, `rescan_required=false` y polígonos, paredes, muebles o
-aperturas renderizables. Revisiones legacy, provisionales, vacías o rechazadas
-se conservan solo como historial y no habilitan calibración ni observaciones.
+La precisión de cada punto se conserva y la app no clasifica zonas cuando el
+radio de error supera 120 m. El historial, radios, alertas y mensajes de esta
+primera entrega son locales a Android; no deben interpretarse como un servicio
+de emergencia ni como una coordenada exacta.
 
 ### Conectividad LAN para probar en un teléfono físico
 
@@ -469,11 +484,12 @@ backend sin autorización.
 
 ### Privacidad Android
 
-El caché puede contener eventos, cámaras, mapas y recordatorios. Mantenerlo
-acotado, limpiar al cerrar sesión y revisar las reglas de backup. No activar
-copias de seguridad de datos sensibles por defecto. El vídeo debe permanecer
-transitorio según el diseño y los avisos de la UI deben reflejar si la cámara
-es local o una vista LiveKit remota.
+El caché puede contener eventos, cámaras, recordatorios y, en la rama del
+tracker, hasta siete días de ubicación local. Mantenerlo acotado, apagar el
+servicio al cerrar sesión y revisar las reglas de backup. No activar copias de
+seguridad de datos sensibles por defecto. El vídeo debe permanecer transitorio
+según el diseño y los avisos de la UI deben reflejar si la cámara es local o
+una vista LiveKit remota.
 
 ---
 

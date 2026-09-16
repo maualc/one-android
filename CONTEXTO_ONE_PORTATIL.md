@@ -4,15 +4,17 @@
 > Leerlo completo antes de modificar código. Este archivo es un contexto de
 > trabajo, no sustituye a los README ni al contrato OpenAPI versionado.
 
-Fecha de actualización: 2026-09-15
+Fecha de actualización: 2026-09-16
 Proyecto local de Codex: Hackathon
-Carpeta contenedora actual en este PC: C:\Users\Mauro\Desktop\develop\ONE
+Carpeta contenedora de referencia en este PC: C:\Users\alcar\Desktop\Development\ONE
 Producto: ONE Cognitive Companion
 Estado general: MVP multi-cliente local-first, con backend FastAPI, cliente
 iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
-Estado de esta sesión: se ha completado una primera equiparación de la interfaz
-Android con iOS; los cambios de código Android y esta actualización de contexto
-deben revisarse y publicarse antes de continuar en otra máquina.
+Estado de esta sesión: Android está alineado con la interfaz principal de iOS,
+la captura de recorridos 2D del publisher tiene flujo guiado y el mapa solo se
+considera activo cuando contiene geometría validada. Los cambios están
+publicados en `origin/main` de `one-android`; este contexto debe actualizarse
+con cada traspaso entre máquinas.
 
 ---
 
@@ -21,19 +23,17 @@ deben revisarse y publicarse antes de continuar en otra máquina.
 Estas reglas son obligatorias salvo que el usuario las cambie expresamente:
 
 1. NO modificar el código de las APIs del repositorio backend. En este
-   checkout el repositorio está en la carpeta `one` (en conversaciones antiguas
-   puede aparecer como `one-backend`). Ese repositorio lo mantiene otro
-   compañero. Puede inspeccionarse, ejecutarse y llamarse desde los clientes,
-   pero no se deben editar sus archivos desde este flujo de trabajo salvo
-   autorización expresa y coordinación.
-2. one-android/app/src/main/java/com/one/cognitivecompanion/OneApi.kt es el
-   adaptador Android del contrato. Se puede modificar si hace falta para
-   adaptar Android, corregir el mapeo cliente o añadir soporte a endpoints ya
-   existentes, pero no se deben cambiar los endpoints ni sus contratos sin
-   coordinarlo con la persona responsable del backend.
-3. No inventar endpoints nuevos ni cambiar nombres, cuerpos o semántica de
-   endpoints desde Android. Si el contrato no permite una funcionalidad, se
-   debe explicar y pedir autorización antes de ampliar el backend.
+   checkout el repositorio se llama `one-backend`; lo mantiene otro compañero.
+   Puede inspeccionarse, ejecutarse y llamarse desde los clientes, pero no se
+   deben editar sus archivos desde este flujo de trabajo salvo autorización
+   expresa y coordinación.
+2. No modificar las llamadas, rutas, cuerpos ni contratos de `OneApi.kt` para
+   resolver problemas de interfaz o estado. Solo adaptar código Android fuera
+   del contrato cuando el usuario lo pida expresamente y exista un endpoint ya
+   documentado.
+3. No inventar endpoints nuevos ni cambiar la semántica del backend desde
+   Android. Si el contrato no permite una funcionalidad, explicarlo y pedir
+   coordinación antes de ampliar el alcance.
 4. No mostrar nunca tokens, contraseñas, claves API, códigos de pairing,
    certificados ni valores reales de .env en respuestas, commits o archivos
    de contexto.
@@ -56,12 +56,11 @@ funcional y visual.
 
 La carpeta ONE es una carpeta contenedora y no es un repositorio Git. No se debe
 ejecutar git pull en ONE. Cada subcarpeta principal es un repo independiente.
-En este checkout, el repositorio backend se llama `one` (en otros equipos puede
-haberse elegido otro nombre local):
+En este checkout, el repositorio backend se llama `one-backend`:
 
 - one-android: app Android Kotlin/Compose
   Remoto: https://github.com/maualc/one-android
-- one: API FastAPI y servicios locales
+- one-backend: API FastAPI y servicios locales
   Remoto: https://github.com/0xbiel/one.git
 - one-frontend: dashboard/publisher React + Vite
   Remoto: https://github.com/0xbiel/one-frontend.git
@@ -75,32 +74,36 @@ análisis del hackathon. tmp no es necesario para compilar la aplicación y
 contiene archivos grandes; no incluirlo en un repo ni subirlo salvo que una
 tarea concreta lo necesite.
 
-### Estado observado en este PC
+### Estado observado el 16-09-2026
 
-Todos los repositorios están en `main` y alineados con `origin/main`. El único
-repositorio con cambios locales es `one-android`, donde la equiparación de UI
-descrita más abajo todavía no tiene commit ni push.
+Todos los repositorios están en `main`, limpios y alineados con `origin/main`.
+`one-android` es el repositorio de trabajo principal. Tiene además la rama
+experimental `feature/exterior-companion-map`, publicada por separado, que
+contiene la prueba de mapa exterior/MapLibre y no forma parte de `main`.
 
 Commits relevantes observados:
 
-- one-android — `2cf4629 feat(android): add 2D room mapping from camera walkthroughs`
-  (HEAD y origin/main antes de los cambios de UI).
-- one — `9cac758 Add guided person camera calibration` (backend, limpio).
-- one-frontend — `9118b9b Add guided standing-point calibration` (limpio).
-- one-ios — `2c67c37 Fix care-recipient medication UUID encoding` (limpio).
-- one-docs — `61f5d0d Document care-recipient medication flow` (limpio).
+- one-android — `cc7221f fix: hide unusable room maps` (HEAD y
+  `origin/main`, limpio).
+- one-backend — `fe5e131 Keep calibration targets on clear floor` (limpio).
+- one-frontend — `7a6220b Support iPhone-guided camera calibration` (limpio).
+- one-ios — `f7f8ae2 Show calibration targets in room geometry` (limpio).
+- one-docs — `7bf54b2 Document clear-floor calibration guidance` (limpio).
 
-Cambios locales pendientes en `one-android`:
+Commits Android recientes publicados:
 
-- `app/src/main/java/com/one/cognitivecompanion/OneApp.kt`: equiparación de
-  navegación, Home, Family, Assistant, Map y Account con la disposición de iOS.
-- `CONTEXTO_ONE_PORTATIL.md`: este documento de traspaso.
+- `73e74c3 fix: allow local backend in debug builds`: permite HTTP solo en
+  builds debug mediante `network_security_config`; release sigue requiriendo
+  HTTPS.
+- `12e512a fix: guide publisher room capture`: el publisher abre la captura al
+  recibir un trabajo y muestra progreso/indicaciones para los 20 frames.
+- `cc7221f fix: hide unusable room maps`: oculta revisiones legacy, fallidas,
+  rechazadas o sin geometría; añade desplazamiento/zoom del mapa y evita que
+  el refresco muestre “Loading…” indefinidamente cuando falla la API.
 
-Este archivo está dentro de `one-android` y está versionado por ese repositorio;
-después de hacer commit y push se podrá recuperar con el pull de Android. Si se
-trabaja antes de publicar, copiarlo manualmente al otro PC. La carpeta ONE
-contenedora sigue sin ser un repositorio y nunca se debe hacer `git add .` desde
-ella.
+El archivo está dentro de `one-android` y versionado por ese repositorio. La
+carpeta ONE contenedora sigue sin ser un repositorio y nunca se debe hacer
+`git add .` desde ella.
 
 ---
 
@@ -113,7 +116,7 @@ por separado. Usar --ff-only para no crear merges automáticos inesperados:
 
     cd C:\ruta\al\ONE
     git -C one-android pull --ff-only origin main
-    git -C one pull --ff-only origin main
+    git -C one-backend pull --ff-only origin main
     git -C one-frontend pull --ff-only origin main
     git -C one-ios pull --ff-only origin main
     git -C one-docs pull --ff-only origin main
@@ -129,7 +132,7 @@ No sobrescribir cambios locales sin confirmar con el usuario.
     mkdir C:\ruta\al\ONE
     cd C:\ruta\al\ONE
     git clone https://github.com/maualc/one-android.git one-android
-    git clone https://github.com/0xbiel/one.git one
+    git clone https://github.com/0xbiel/one.git one-backend
     git clone https://github.com/0xbiel/one-frontend.git one-frontend
     git clone https://github.com/0xbiel/one-ios.git one-ios
     git clone https://github.com/0xbiel/one-docs.git one-docs
@@ -210,9 +213,9 @@ consejo clínico ni decidir automáticamente una dosis.
   textos y componentes visuales. Es grande; localizar símbolos antes de editar.
 - OneAppState.kt: estado y coordinación de sesión, hogar, familia,
   medicación, mapas, eventos, notificaciones, logout y caché.
-- OneApi.kt: modelos, sesiones y cliente HTTP del contrato. Puede editarse
-  cuando la tarea sea específica del cliente Android; preservar siempre la
-  compatibilidad con el backend.
+- OneApi.kt: modelos, sesiones y cliente HTTP del contrato. Debe conservarse
+  sin cambios de rutas, cuerpos ni semántica; no tocarlo para arreglar una
+  incidencia puramente visual o de conectividad local.
 - OneModels.kt: modelos auxiliares de la app.
 - OneHomeRepository.kt: carga de hogar y datos relacionados.
 - OneFamilyRepository.kt: flujos de familia/care circle.
@@ -225,6 +228,9 @@ consejo clínico ni decidir automáticamente una dosis.
 - OneLiveKitPublisher.kt: conexión LiveKit del publisher.
 - OneEventStream.kt: consumo de eventos.
 - OneMapImport.kt: importación de JSON de mapas/zones.
+- OneMapUsability.kt: criterio cliente para aceptar únicamente mapas con
+  geometría validada y procedencia soportada.
+- OneRoomSweepCapture.kt: captura CameraX acotada a 20 frames en memoria.
 - OneSpeechRecognizer.kt: reconocimiento de voz.
 - OneFormatting.kt: formato de fechas, etiquetas y valores.
 - ui/theme/Color.kt, Theme.kt, Type.kt: sistema visual.
@@ -302,7 +308,9 @@ patrones de SwiftUI:
   limitaciones visibles y compositor inferior que respeta el teclado. El envío
   solo se habilita con sesión backend, sujeto seleccionado y consentimiento
   `family_assistant` activo.
-- Map: el canvas 2D y la calidad del mapa aparecen antes que las herramientas.
+- Map: el canvas 2D y la calidad del mapa aparecen antes que las herramientas;
+  solo una revisión `ready` con geometría real se presenta como activa. El
+  canvas válido admite arrastre y zoom con gesto de pinza.
   Room scan, ARCore, configuración, calibración, evidencias, importación,
   mapas manuales, objetos y observaciones quedan agrupados en “Map tools and
   evidence” y se despliegan bajo demanda.
@@ -316,37 +324,20 @@ Se conservaron los estados de carga, error, stale/offline y demo, además de las
 acciones existentes de cámaras, pairing, clips, medicación, familia y mapas.
 No se modificó `OneApi.kt` ni el backend para esta equiparación.
 
-### Correcciones ya realizadas en Android
+### Correcciones recientes ya publicadas en Android
 
-Los siguientes commits forman parte de origin/main si el portátil actualiza
-one-android:
+Además de la equiparación visual histórica (`50ed0da` y anteriores), `main`
+contiene actualmente:
 
-- 3dce0d1: barra inferior blanca y selección azul ONE.
-- a0fd43d: estado correcto del panel grande de notificaciones y eliminación
-  del texto inferior redundante.
-- a17f6ce: separación entre Today del residente y Assistant; Today muestra
-  próxima medicación, lista de recordatorios, estados de carga/error y ausencia
-  de recordatorios.
-- 24dc67d: acciones de Household status y This week's plan, con accesibilidad
-  y feedback táctil.
-- 416bacc: estilo ONE del diálogo de creación/edición del plan de medicación.
-- 17e3430: estilo unificado para todos los popup/dialogs.
-- 7cefee4: aclaración del rol de la cuenta actual en familia.
-- 6be3791: alineación de identidad: YOU al lado del nombre grande y email
-  oculto.
-- 50ed0da: revisión general de UI y fiabilidad Android.
-- 2cf4629: mapeado 2D de habitaciones a partir de recorridos de cámara,
-  incluyendo generación, calibración, evidencias, importación y mapas manuales.
+- `2cf4629`: mapeado 2D de habitaciones a partir de recorridos de cámara,
+  generación, calibración, evidencias, importación y mapas manuales.
+- `73e74c3`: HTTP permitido únicamente en debug para el backend LAN local.
+- `12e512a`: el publisher recibe el trabajo, solicita cámara automáticamente y
+  guía la captura de hasta 20 frames.
+- `cc7221f`: validación de mapas utilizables, ocultación de revisiones inválidas,
+  gestos de movimiento/zoom y polling que no machaca los errores de API.
 
-### Cambios de UI pendientes de commit
-
-Después de `2cf4629`, se modificó `app/src/main/java/com/one/cognitivecompanion/OneApp.kt`
-para completar la equiparación Android/iOS descrita arriba. La modificación aún
-está en el working tree de `main`; no hacer `pull` en otro equipo hasta haber
-hecho commit y push, o copiar explícitamente el archivo si se necesita seguir
-sin publicar.
-
-La revisión final comunicada para 50ed0da indicó:
+La revisión final comunicada para `50ed0da` indicó:
 
 - testDebugUnitTest, assembleDebug, lintDebug y assembleRelease OK.
 - Tests instrumentados en Pixel 9 API 36 OK.
@@ -355,12 +346,58 @@ La revisión final comunicada para 50ed0da indicó:
 - Se añadieron/ajustaron vuelta atrás, logout de publisher, reconciliación de
   alarmas, protección de caché/backup, splash, tarjetas, pestañas, demo y
   textos.
-- OneApi.kt quedó intacto en esa revisión, pero no es una prohibición
-  permanente: puede adaptarse en tareas Android sin modificar el backend.
+- `OneApi.kt` y `one-backend` siguen sin cambios en estas correcciones.
 
 No asumir que build correcta significa que todos los flujos físicos estén
 verificados: permisos, cámara/WebRTC, LiveKit, notificaciones y dispositivos
 reales siguen dependiendo del entorno.
+
+### Recorrido de cámara y mapa 2D
+
+El trabajo de mapa lo coordina el cuidador, pero los frames los captura el
+teléfono publisher emparejado. Flujo esperado:
+
+1. El cuidador abre Map tools y pulsa `Start camera walkthrough`.
+2. El publisher recibe el trabajo en estado `collecting`. Con el consentimiento
+   de room scan activo, solicita permiso de cámara y abre automáticamente el
+   escáner. Si está publicando LiveKit, primero debe detener la publicación.
+3. CameraX muestra una vista en horizontal y captura como máximo 20 frames RGB
+   (640×480, cada ~700 ms, durante unos 14 s). La interfaz enseña `n/20`,
+   porcentaje y guía por etapas: paredes/esquina, paredes opuestas, puerta y
+   muebles. Los frames son transitorios y no se guardan en la galería.
+4. Al terminar, el publisher envía el lote al endpoint existente. El backend
+   pasa a `processing` y después a `ready`, `needs_rescan`, `failed` o
+   `unavailable`. El cuidador debe refrescar el estado y revisar el resultado.
+
+Android no promete convertir este recorrido RGB en un modelo 3D métrico. Un
+mapa solo se presenta como activo si tiene estado `ready`, procedencia de
+geometría soportada, `rescan_required=false` y polígonos, paredes, muebles o
+aperturas renderizables. Revisiones legacy, provisionales, vacías o rechazadas
+se conservan solo como historial y no habilitan calibración ni observaciones.
+
+### Conectividad LAN para probar en un teléfono físico
+
+El APK de debug normal usa `10.0.2.2` para el emulador. En este PC se generó un
+APK de prueba con el endpoint LAN `http://192.168.1.134:8000/api/v1`:
+
+    .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
+      -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
+
+Artefacto actual (no se versiona en Git):
+
+    app/build/outputs/apk/debug/one-debug-lan-192.168.1.134.apk
+
+El backend Compose debe estar expuesto a la LAN para ese test. La configuración
+local `.env` y cualquier override de Compose son específicos del PC y están
+ignorados; no copiarlos ni añadirlos al contexto. El teléfono y el PC deben
+estar en la misma Wi‑Fi. Comprobar desde el navegador del teléfono:
+
+    http://192.168.1.134:8000/api/v1/health
+
+Si no responde, revisar que Docker esté arrancado y el firewall de Windows
+permita la red privada. Un error `Could not reach the ONE API` es de conexión,
+no significa que exista un mapa válido. LiveKit también necesita anunciar una
+URL accesible por el teléfono; `localhost` solo sirve dentro del propio PC.
 
 ---
 
@@ -392,15 +429,16 @@ Desde one-android:
     .\gradlew.bat assembleDebug
     .\gradlew.bat assembleRelease -PoneApiBaseUrl=https://configure-me.invalid/api/v1
 
-Última verificación realizada en este PC (15-09-2026):
+Última verificación realizada en este PC (16-09-2026):
 
     $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio1\jbr'
-    .\gradlew.bat :app:compileDebugKotlin
-    .\gradlew.bat :app:testDebugUnitTest
-    .\gradlew.bat :app:assembleDebug
+    .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
+      -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
 
-Las tres tareas terminaron con `BUILD SUCCESSFUL`. El APK se generó en
-`app/build/outputs/apk/debug/app-debug.apk`. Si Android Studio muestra “Project
+Las tareas terminaron con `BUILD SUCCESSFUL`. El APK se generó en
+`app/build/outputs/apk/debug/app-debug.apk` y se copió también como
+`one-debug-lan-192.168.1.134.apk`. El test instrumentado no se ejecutó en esta
+sesión por no haber un dispositivo conectado. Si Android Studio muestra “Project
 JDK is not defined”, abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime`
 incluido, o usar `Add JDK from disk` apuntando a la carpeta `jbr` de la
 instalación de Android Studio. La ruta exacta cambia según el PC.
@@ -439,7 +477,7 @@ es local o una vista LiveKit remota.
 
 ---
 
-## 7. Backend (carpeta local `one`): referencia de solo lectura
+## 7. Backend (carpeta local `one-backend`): referencia de solo lectura
 
 El backend es un monolito modular FastAPI para el MVP local-first. Usa
 PostgreSQL como base autoritativa en Compose y SQLite como fallback de cero
@@ -494,6 +532,10 @@ Rutas especialmente relevantes para Android:
     GET    /api/v1/homes/{home_id}/medication-reminders
     POST   /api/v1/homes/{home_id}/medication-plans/{plan_id}/check-ins
     POST   /api/v1/homes/{home_id}/family-assistant
+    GET    /api/v1/homes/{home_id}/maps/current
+    POST   /api/v1/homes/{home_id}/cameras/{camera_id}/map-generation
+    GET    /api/v1/homes/{home_id}/cameras/{camera_id}/map-generation
+    POST   /api/v1/homes/{home_id}/cameras/{camera_id}/map-generation/{job_id}/frames
     POST   /api/v1/homes/{home_id}/livekit/token
 
 El backend exige consentimientos específicos como audio_capture, video_capture,
@@ -503,7 +545,7 @@ por hogar, sujeto, rol y consentimiento. Las dosis son estados administrativos
 
 ### Ejecutar backend en Windows sin Docker
 
-Desde la carpeta local `one`:
+Desde la carpeta local `one-backend`:
 
     py -3.12 -m venv .venv
     .\.venv\Scripts\Activate.ps1
@@ -513,7 +555,7 @@ Desde la carpeta local `one`:
 
 En otra terminal, para tests:
 
-    cd C:\ruta\al\ONE\one
+    cd C:\ruta\al\ONE\one-backend
     .\.venv\Scripts\Activate.ps1
     $env:ONE_DATABASE_URL = "sqlite:///./one.db"
     pytest
@@ -524,7 +566,7 @@ chat.
 
 ### Ejecutar con Docker
 
-    cd C:\ruta\al\ONE\one
+    cd C:\ruta\al\ONE\one-backend
     docker compose up --build
 
 Compose incluye API, PostgreSQL, Redis, MinIO, LiveKit de desarrollo y Caddy.
@@ -726,9 +768,9 @@ Se puede pegar el siguiente texto junto con este archivo:
 
 Lee CONTEXTO_ONE_PORTATIL.md completo antes de trabajar. Estoy continuando ONE
 Cognitive Companion desde one-android. Respeta estrictamente que el backend
-es solo lectura porque lo mantiene otro compañero. Puedes modificar el
-adaptador Android OneApi.kt y sus llamadas si la tarea lo requiere, pero no
-cambies los contratos del backend sin coordinación. Primero
+`one-backend` es solo lectura porque lo mantiene otro compañero. No modifiques
+las llamadas ni los contratos de `OneApi.kt` salvo autorización expresa.
+Primero
 comprueba git status, inspecciona el código relevante, implementa solo lo
 solicitado y verifica con Gradle/lint/tests. No expongas secretos ni valores de
 .env. Si hay una discrepancia entre el contexto, el README y el código, trata
@@ -743,7 +785,7 @@ antes de ampliar el alcance.
       nuevo ONE; si ya se publicó dentro de `one-android`, recuperarlo con el
       pull de ese repo.
 - [ ] Confirmar que los cinco repos están clonados con los remotos indicados:
-      `one-android`, `one`, `one-frontend`, `one-ios` y `one-docs`.
+      `one-android`, `one-backend`, `one-frontend`, `one-ios` y `one-docs`.
 - [ ] Ejecutar git pull --ff-only origin main dentro de cada repo.
 - [ ] Abrir one-android en Android Studio y sincronizar Gradle.
 - [ ] Configurar un emulador/dispositivo y permisos necesarios.

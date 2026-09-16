@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Use the same heart mark shown throughout the ONE UI. The explicit
-         bounds keep the transparent source inside the adaptive icon safe zone. -->
+    <!-- Use the supplied ONE app mark, including its blue tile and glow. Keep
+         the transparent source inside the adaptive icon safe zone. -->
     <item
-        android:width="80dp"
-        android:height="86dp"
+        android:width="88dp"
+        android:height="88dp"
         android:gravity="center">
         <bitmap
-            android:src="@drawable/one_logo"
+            android:src="@drawable/one_launcher_logo"
             android:gravity="fill" />
     </item>
 </layer-list>

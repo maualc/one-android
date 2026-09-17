@@ -10,6 +10,25 @@ enum class OneRole {
     PUBLISHER
 }
 
+/** Presentation lenses exposed only by the release-preview branch. */
+enum class OneReleasePreviewAudience(
+    val label: String,
+    val description: String
+) {
+    HOUSEHOLD_LEAD(
+        label = "Household lead",
+        description = "Manage the care space, people and household settings."
+    ),
+    FAMILY_AND_CAREGIVERS(
+        label = "Family & caregivers",
+        description = "Review the care circle and support the people at home."
+    ),
+    PEOPLE_CARED_FOR(
+        label = "People cared for",
+        description = "Use the simpler view designed for the person receiving care."
+    )
+}
+
 enum class AuthStage {
     SIGNED_OUT,
     ONBOARDING,

@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
@@ -241,8 +243,9 @@ private fun OneDropdownMenu(
 
 @Composable
 fun OneApp() {
-    // Demo mode starts inside the app so the shell is immediately usable. The
-    // Account screen exposes a signed-out preview for demo and backend auth.
+    // The release-preview branch always starts from the real backend flow. Its
+    // audience switcher changes presentation only; backend permissions remain
+    // authoritative for every action.
     val appContext = LocalContext.current.applicationContext
     val secureStore = remember(appContext) { OneSecureStore(appContext) }
     val offlineCache = remember(appContext) { OneOfflineCache(appContext) }
@@ -264,6 +267,9 @@ fun OneApp() {
     var onboardingConsentMedication by appState::onboardingConsentMedication
     var onboardingConsentFamily by appState::onboardingConsentFamily
     var onboardingConsentFamilyAssistant by appState::onboardingConsentFamilyAssistant
+    var releaseAudienceName by rememberSaveable {
+        mutableStateOf(OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS.name)
+    }
     var selectedCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var captureCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var liveKitPublishing by rememberSaveable { mutableStateOf(false) }
@@ -280,7 +286,30 @@ fun OneApp() {
         coroutineScope.launch { appState.signOut() }
     }
     val authStage = AuthStage.valueOf(authStageName)
-    val role = OneRole.valueOf(roleName)
+    val releaseAudience = runCatching { OneReleasePreviewAudience.valueOf(releaseAudienceName) }
+        .getOrDefault(OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS)
+    val role = if (
+        BuildConfig.ONE_RELEASE_PREVIEW &&
+        authStage == AuthStage.AUTHENTICATED &&
+        roleName != OneRole.PUBLISHER.name
+    ) {
+        when (releaseAudience) {
+            OneReleasePreviewAudience.PEOPLE_CARED_FOR -> OneRole.RESIDENT
+            else -> OneRole.CAREGIVER
+        }
+    } else {
+        OneRole.valueOf(roleName)
+    }
+    val canManageFamilyForView = if (BuildConfig.ONE_RELEASE_PREVIEW) {
+        releaseAudience == OneReleasePreviewAudience.HOUSEHOLD_LEAD && appState.canManageFamily
+    } else {
+        appState.canManageFamily
+    }
+    val isAdminForView = if (BuildConfig.ONE_RELEASE_PREVIEW) {
+        releaseAudience == OneReleasePreviewAudience.HOUSEHOLD_LEAD && appState.isAdmin
+    } else {
+        appState.isAdmin
+    }
     val tabs = when (role) {
         OneRole.CAREGIVER -> caregiverTabs
         OneRole.RESIDENT -> residentTabs
@@ -300,6 +329,29 @@ fun OneApp() {
     }
 
     LaunchedEffect(appState) { appState.restoreSession() }
+    LaunchedEffect(appState.authStageName, appState.session?.role) {
+        if (
+            BuildConfig.ONE_RELEASE_PREVIEW &&
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.session?.role == OneRole.PUBLISHER
+        ) {
+            // Publisher devices belong to the camera/developer flow and are
+            // intentionally not part of this household release application.
+            appState.signOut()
+        }
+    }
+    LaunchedEffect(appState.authStageName, appState.session?.userId, appState.session?.backendRole) {
+        if (BuildConfig.ONE_RELEASE_PREVIEW &&
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            appState.session != null
+        ) {
+            releaseAudienceName = when {
+                appState.session?.role == OneRole.RESIDENT -> OneReleasePreviewAudience.PEOPLE_CARED_FOR.name
+                appState.isAdmin -> OneReleasePreviewAudience.HOUSEHOLD_LEAD.name
+                else -> OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS.name
+            }
+        }
+    }
     LaunchedEffect(appState, appState.authStageName, appState.session) {
         if (appState.authStageName == AuthStage.AUTHENTICATED.name && appState.roleName != OneRole.PUBLISHER.name) {
             appState.loadConsents()
@@ -340,6 +392,15 @@ fun OneApp() {
             appState.loadCareRecipients()
         }
     }
+    LaunchedEffect(appState, appState.authStageName, appState.session, releaseAudience) {
+        if (
+            BuildConfig.ONE_RELEASE_PREVIEW &&
+            appState.authStageName == AuthStage.AUTHENTICATED.name &&
+            releaseAudience == OneReleasePreviewAudience.PEOPLE_CARED_FOR
+        ) {
+            appState.loadMedicationReminders()
+        }
+    }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab) {
         if (
             appState.authStageName == AuthStage.AUTHENTICATED.name &&
@@ -373,6 +434,33 @@ fun OneApp() {
     if (authStage == AuthStage.AUTHENTICATED && tabs.none { it.key == selectedTab }) selectedTab = tabs.first().key
 
     Scaffold(
+        topBar = if (
+            BuildConfig.ONE_RELEASE_PREVIEW &&
+            authStage == AuthStage.AUTHENTICATED &&
+            role != OneRole.PUBLISHER &&
+            selectedCamera == null &&
+            selectedEvent == null &&
+            !showEvents
+        ) {
+            {
+                OneReleaseAudienceSwitcher(
+                    selected = releaseAudience,
+                    onSelected = { audience ->
+                        releaseAudienceName = audience.name
+                        selectedCameraId = null
+                        selectedEvent = null
+                        showEvents = false
+                        selectedTab = when (audience) {
+                            OneReleasePreviewAudience.PEOPLE_CARED_FOR -> "today"
+                            OneReleasePreviewAudience.HOUSEHOLD_LEAD -> "home"
+                            OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS -> "family"
+                        }
+                    }
+                )
+            }
+        } else {
+            {}
+        },
         bottomBar = if (authStage == AuthStage.AUTHENTICATED && selectedCamera == null && selectedEvent == null && !showEvents) {
             {
                 OneBottomBar(
@@ -492,7 +580,7 @@ fun OneApp() {
                             loadState = appState.familyLoadState,
                             loadError = appState.familyLoadError,
                             onRetry = { coroutineScope.launch { appState.loadFamily() } },
-                            canInvite = appState.canManageFamily && appState.consentStates?.get("family_mode") == true,
+                            canInvite = canManageFamilyForView && appState.consentStates?.get("family_mode") == true,
                             familyInviteLoadState = appState.familyInviteLoadState,
                             familyInvite = appState.familyInvite,
                             familyInviteLoadError = appState.familyInviteLoadError,
@@ -502,7 +590,7 @@ fun OneApp() {
                             careRecipientsLoadError = appState.careRecipientsLoadError,
                             careRecipientActionState = appState.careRecipientActionState,
                             careRecipientActionError = appState.careRecipientActionError,
-                            canManageRecipients = appState.canManageFamily,
+                            canManageRecipients = canManageFamilyForView,
                             onCareRecipientsRetry = { coroutineScope.launch { appState.loadCareRecipients() } },
                             onCreateCareRecipient = { name, relationship, roomLabel ->
                                 coroutineScope.launch { appState.createCareRecipient(name, relationship, roomLabel) }
@@ -516,7 +604,7 @@ fun OneApp() {
                             familyMemberActionState = appState.familyMemberActionState,
                             familyMemberActionError = appState.familyMemberActionError,
                             familyMemberActionId = appState.familyMemberActionId,
-                            isAdmin = appState.isAdmin,
+                            isAdmin = isAdminForView,
                             onUpdateFamilyMember = { member, memberRole ->
                                 coroutineScope.launch { appState.updateFamilyMember(member, memberRole) }
                             },
@@ -594,7 +682,7 @@ fun OneApp() {
                             dataExport = appState.dataExport,
                             exportLoadError = appState.exportLoadError,
                             onExport = { coroutineScope.launch { appState.requestDataExport() } },
-                            isAdmin = appState.isAdmin,
+                            isAdmin = isAdminForView,
                             deletionLoadState = appState.deletionLoadState,
                             dataDeletion = appState.dataDeletion,
                             deletionLoadError = appState.deletionLoadError,
@@ -604,13 +692,21 @@ fun OneApp() {
                             careSpacesLoadError = appState.careSpacesLoadError,
                             careSpaceActionState = appState.careSpaceActionState,
                             careSpaceActionError = appState.careSpaceActionError,
-                            canCreateCareSpace = appState.canManageFamily,
+                            canCreateCareSpace = canManageFamilyForView,
                             onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
                             onCreateCareSpace = { name, setting, focus ->
                                 coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
                             },
                             onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
-                            onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
+                            releaseAudience = releaseAudience,
+                            onReleaseAudienceChange = { audience ->
+                                releaseAudienceName = audience.name
+                                selectedTab = when (audience) {
+                                    OneReleasePreviewAudience.PEOPLE_CARED_FOR -> "today"
+                                    OneReleasePreviewAudience.HOUSEHOLD_LEAD -> "home"
+                                    OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS -> "family"
+                                }
+                            },
                             onSignOut = signOut
                         )
                         else -> CaregiverHomeScreen(
@@ -627,7 +723,8 @@ fun OneApp() {
                             careSpacesLoadError = appState.careSpacesLoadError,
                             careSpaceActionState = appState.careSpaceActionState,
                             careSpaceActionError = appState.careSpaceActionError,
-                            canCreateCareSpace = appState.canManageFamily,
+                            canCreateCareSpace = canManageFamilyForView,
+                            canManageCameras = canManageFamilyForView,
                             onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
                             onCreateCareSpace = { name, setting, focus ->
                                 coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
@@ -723,7 +820,7 @@ fun OneApp() {
                             dataExport = appState.dataExport,
                             exportLoadError = appState.exportLoadError,
                             onExport = { coroutineScope.launch { appState.requestDataExport() } },
-                            isAdmin = appState.isAdmin,
+                            isAdmin = isAdminForView,
                             deletionLoadState = appState.deletionLoadState,
                             dataDeletion = appState.dataDeletion,
                             deletionLoadError = appState.deletionLoadError,
@@ -733,13 +830,21 @@ fun OneApp() {
                             careSpacesLoadError = appState.careSpacesLoadError,
                             careSpaceActionState = appState.careSpaceActionState,
                             careSpaceActionError = appState.careSpaceActionError,
-                            canCreateCareSpace = appState.canManageFamily,
+                            canCreateCareSpace = canManageFamilyForView,
                             onCareSpacesRetry = { coroutineScope.launch { appState.loadCareSpaces() } },
                             onCreateCareSpace = { name, setting, focus ->
                                 coroutineScope.launch { appState.createCareSpace(name, setting, focus) }
                             },
                             onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
-                            onRoleChange = { roleName = it.name; selectedTab = if (it == OneRole.RESIDENT) "today" else "home" },
+                            releaseAudience = releaseAudience,
+                            onReleaseAudienceChange = { audience ->
+                                releaseAudienceName = audience.name
+                                selectedTab = when (audience) {
+                                    OneReleasePreviewAudience.PEOPLE_CARED_FOR -> "today"
+                                    OneReleasePreviewAudience.HOUSEHOLD_LEAD -> "home"
+                                    OneReleasePreviewAudience.FAMILY_AND_CAREGIVERS -> "family"
+                                }
+                            },
                             onSignOut = signOut
                         )
                         else -> ResidentTodayScreen(
@@ -893,6 +998,95 @@ private fun OneBottomBar(
 }
 
 @Composable
+private fun OneReleaseAudienceSwitcher(
+    selected: OneReleasePreviewAudience,
+    onSelected: (OneReleasePreviewAudience) -> Unit
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding(),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+        shadowElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(
+                    "VIEW AS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = OneCyan,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(selected.label, style = MaterialTheme.typography.titleSmall)
+            }
+            Box {
+                OutlinedButton(onClick = { expanded = true }) {
+                    Text("Change view")
+                    Icon(Icons.Default.ExpandMore, contentDescription = null)
+                }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier.widthIn(min = 250.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    containerColor = MaterialTheme.colorScheme.surface
+                ) {
+                    OneReleasePreviewAudience.entries.forEach { audience ->
+                        DropdownMenuItem(
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(audience.label)
+                                    Text(
+                                        audience.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            onClick = {
+                                expanded = false
+                                onSelected(audience)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OneReleaseAudienceOptions(
+    selected: OneReleasePreviewAudience,
+    onSelected: (OneReleasePreviewAudience) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OneReleasePreviewAudience.entries.forEach { audience ->
+            OutlinedButton(
+                onClick = { onSelected(audience) },
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(
+                    width = if (audience == selected) 2.dp else 1.dp,
+                    color = if (audience == selected) OneBlue else MaterialTheme.colorScheme.outline
+                )
+            ) {
+                Text(audience.label, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+                if (audience == selected) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = "Selected")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SectionHeading(eyebrow: String, title: String) {
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(
@@ -919,37 +1113,36 @@ private fun LoginScreen(
     var careSetting by rememberSaveable { mutableStateOf("home") }
     var supportFocus by rememberSaveable { mutableStateOf("general") }
     var accountConsent by rememberSaveable { mutableStateOf(false) }
-    var useBackend by rememberSaveable { mutableStateOf(true) }
     var backendStatus by rememberSaveable { mutableStateOf<String?>(null) }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var isSubmitting by rememberSaveable { mutableStateOf(false) }
     var emailChallenge by remember { mutableStateOf<EmailAuthChallenge?>(null) }
     val coroutineScope = rememberCoroutineScope()
-    val isCreateMode = mode == 1
-    val isEmailMode = mode == 0 || mode == 1
+    val loginMode = if (BuildConfig.ONE_RELEASE_PREVIEW) mode.coerceIn(0, 2) else mode
+    LaunchedEffect(Unit) {
+        if (mode != loginMode) mode = loginMode
+    }
+    val isCreateMode = loginMode == 1
+    val isEmailMode = loginMode == 0 || loginMode == 1
     val emailIsValid = email.trim().length >= 3 && email.trim().contains("@")
     val verificationCodeIsValid = emailCode.length == 6 && emailCode.all(Char::isDigit)
     val pairingCodeIsValid = pairingCode.length == 6 && pairingCode.all(Char::isDigit)
     val canRequestEmail = emailIsValid && (!isCreateMode || (name.isNotBlank() && homeName.isNotBlank() && accountConsent))
-    val canContinue = when {
-        !useBackend -> !isCreateMode || (name.isNotBlank() && homeName.isNotBlank() && accountConsent)
-        isEmailMode -> if (emailChallenge == null) canRequestEmail else verificationCodeIsValid
-        else -> pairingCodeIsValid
+    val canContinue = if (isEmailMode) {
+        if (emailChallenge == null) canRequestEmail else verificationCodeIsValid
+    } else {
+        pairingCodeIsValid
     }
 
-    LaunchedEffect(useBackend) {
+    LaunchedEffect(Unit) {
         errorMessage = null
         emailChallenge = null
         emailCode = ""
-        if (!useBackend) {
-            backendStatus = null
-        } else {
-            backendStatus = "Checking backend…"
-            backendStatus = runCatching {
-                val health = apiClient.health()
-                if (health.status == "ok") "Backend connected" else "Backend unavailable"
-            }.getOrElse { "Backend unavailable" }
-        }
+        backendStatus = "Checking backend…"
+        backendStatus = runCatching {
+            val health = apiClient.health()
+            if (health.status == "ok") "Backend connected" else "Backend unavailable"
+        }.getOrElse { "Backend unavailable" }
     }
 
     ScreenScroll {
@@ -959,19 +1152,19 @@ private fun LoginScreen(
             title = "Sign in to your home.",
             subtitle = "Use the one-time code from your ONE backend. Your session will be stored securely on this device."
         )
-        PrimaryTabRow(selectedTabIndex = mode) {
-            Tab(selected = mode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
-            Tab(selected = mode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create") })
-            Tab(selected = mode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join") })
-            Tab(selected = mode == 3, onClick = { mode = 3; emailChallenge = null; emailCode = "" }, text = { Text("Pair") })
-        }
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Use ONE backend", style = MaterialTheme.typography.titleMedium)
-                Text("Connect this device to a running FastAPI home.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        PrimaryTabRow(selectedTabIndex = loginMode) {
+            Tab(selected = loginMode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
+            Tab(selected = loginMode == 1, onClick = { mode = 1; emailChallenge = null; emailCode = "" }, text = { Text("Create") })
+            Tab(selected = loginMode == 2, onClick = { mode = 2; emailChallenge = null; emailCode = "" }, text = { Text("Join") })
+            if (!BuildConfig.ONE_RELEASE_PREVIEW) {
+                Tab(selected = loginMode == 3, onClick = { mode = 3; emailChallenge = null; emailCode = "" }, text = { Text("Pair") })
             }
-            Switch(checked = useBackend, onCheckedChange = { useBackend = it })
         }
+        Text(
+            "Connect this device to your ONE household. Your session is stored securely on this phone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         backendStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it == "Backend connected") OneMint else MaterialTheme.colorScheme.onSurfaceVariant) }
         if (isCreateMode && emailChallenge == null) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1011,11 +1204,6 @@ private fun LoginScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (!BuildConfig.ONE_PRODUCTION_BUILD) {
-                    challenge.devCode?.let { code ->
-                        Text("Development code: $code", style = MaterialTheme.typography.bodySmall, color = OneAmber)
-                    }
-                }
                 TextButton(
                     onClick = { emailChallenge = null; emailCode = ""; errorMessage = null },
                     enabled = !isSubmitting,
@@ -1026,57 +1214,53 @@ private fun LoginScreen(
             OutlinedTextField(
                 value = pairingCode,
                 onValueChange = { pairingCode = it.uppercase() },
-                label = { Text(if (mode == 2) "Invitation code" else "Publisher pairing code") },
+                label = { Text(if (loginMode == 2) "Invitation code" else "Publisher pairing code") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-            if (mode == 2) {
+            if (loginMode == 2) {
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
         errorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = OneAmber) }
         Text(
-            if (useBackend && isEmailMode) "Email codes are six digits and are used only once." else if (useBackend && mode == 2) "Invitation codes are six digits and are used only once." else if (useBackend) "Publisher pairing codes are six digits and are used only once." else "Demo mode is active. Continue without a server.",
+            if (isEmailMode) "Email codes are six digits and are used only once."
+            else if (loginMode == 2) "Invitation codes are six digits and are used only once."
+            else "Publisher pairing is unavailable in this app.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Button(
             onClick = {
-                if (!useBackend) {
-                    onAuthenticated(null, false)
-                } else {
-                    coroutineScope.launch {
-                        isSubmitting = true
-                        errorMessage = null
-                        try {
-                            if (isEmailMode) {
-                                if (emailChallenge == null) {
-                                    emailChallenge = apiClient.requestEmailCode(
-                                        EmailAuthRequest(
-                                            email = email.trim(),
-                                            purpose = if (isCreateMode) "create" else "login",
-                                            displayName = name.trim().ifBlank { null },
-                                            homeName = homeName.trim().ifBlank { "ONE Home" },
-                                            careSetting = careSetting,
-                                            supportFocus = supportFocus
-                                        )
+                coroutineScope.launch {
+                    isSubmitting = true
+                    errorMessage = null
+                    try {
+                        if (isEmailMode) {
+                            if (emailChallenge == null) {
+                                emailChallenge = apiClient.requestEmailCode(
+                                    EmailAuthRequest(
+                                        email = email.trim(),
+                                        purpose = if (isCreateMode) "create" else "login",
+                                        displayName = name.trim().ifBlank { null },
+                                        homeName = homeName.trim().ifBlank { "ONE Home" },
+                                        careSetting = careSetting,
+                                        supportFocus = supportFocus
                                     )
-                                } else {
-                                    onAuthenticated(apiClient.verifyEmailCode(EmailAuthVerifyRequest(email.trim(), emailCode)), true)
-                                }
+                                )
                             } else {
-                                val authenticated = if (mode == 2) {
-                                    apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(pairingCode, name.trim().ifBlank { null }))
-                                } else {
-                                    apiClient.completePairing(pairingCode)
-                                }
-                                onAuthenticated(authenticated, true)
+                                onAuthenticated(apiClient.verifyEmailCode(EmailAuthVerifyRequest(email.trim(), emailCode)), true)
                             }
-                        } catch (error: Exception) {
-                            errorMessage = error.message ?: "Could not connect to the ONE backend."
-                        } finally {
-                            isSubmitting = false
+                        } else {
+                            val authenticated = apiClient.acceptFamilyInvite(
+                                FamilyInviteAcceptRequest(pairingCode, name.trim().ifBlank { null })
+                            )
+                            onAuthenticated(authenticated, true)
                         }
+                    } catch (error: Exception) {
+                        errorMessage = error.message ?: "Could not connect to the ONE backend."
+                    } finally {
+                        isSubmitting = false
                     }
                 }
             },
@@ -1088,10 +1272,9 @@ private fun LoginScreen(
                 if (isSubmitting) "Working…"
                 else if (emailChallenge != null) "Verify code"
                 else if (isEmailMode) "Send code"
-                else if (mode == 0) "Sign in"
-                else if (mode == 1) "Create account"
-                else if (mode == 2) "Join household"
-                else "Pair device",
+                else if (loginMode == 0) "Sign in"
+                else if (loginMode == 1) "Create account"
+                else "Join household",
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(Modifier.width(9.dp))
@@ -1210,6 +1393,7 @@ private fun CaregiverHomeScreen(
     careSpaceActionState: OneCareSpaceActionState,
     careSpaceActionError: String?,
     canCreateCareSpace: Boolean,
+    canManageCameras: Boolean,
     onCareSpacesRetry: () -> Unit,
     onCreateCareSpace: (String, String, String) -> Unit,
     onActivateCareSpace: (OneCareSpace) -> Unit,
@@ -1367,7 +1551,7 @@ private fun CaregiverHomeScreen(
             onOpenEvent = onOpenEvent
         )
 
-        if (isBackendHome) {
+        if (isBackendHome && !BuildConfig.ONE_RELEASE_PREVIEW) {
             PublisherPairingCard(
                 pairing = publisherPairing,
                 loadState = publisherPairingLoadState,
@@ -1429,6 +1613,7 @@ private fun CaregiverHomeScreen(
                     loadError = cameraLoadError,
                     actionState = cameraActionState,
                     actionError = cameraActionError,
+                    canManageCameras = canManageCameras,
                     onRetry = onCameraRetry,
                     onRegisterCamera = onRegisterCamera,
                     onUpdateCamera = onUpdateCamera,
@@ -1668,6 +1853,7 @@ private fun HomeCameraStatusCard(
     loadError: String?,
     actionState: OneCameraActionState,
     actionError: String?,
+    canManageCameras: Boolean,
     onRetry: () -> Unit,
     onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
@@ -1743,16 +1929,18 @@ private fun HomeCameraStatusCard(
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Camera and room setup", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = {
-                        editingCameraId = null
-                        cameraName = ""
-                        cameraRoomId = null
-                        cameraEnabled = true
-                        showCameraDialog = true
-                    },
-                    enabled = actionState != OneCameraActionState.SUBMITTING
-                ) { Text("Register") }
+                if (canManageCameras) {
+                    OutlinedButton(
+                        onClick = {
+                            editingCameraId = null
+                            cameraName = ""
+                            cameraRoomId = null
+                            cameraEnabled = true
+                            showCameraDialog = true
+                        },
+                        enabled = actionState != OneCameraActionState.SUBMITTING
+                    ) { Text("Register") }
+                }
             }
             if (camerasAreStale) {
                 AssistChip(onClick = onRetry, label = { Text("Offline · showing last known cameras") })
@@ -1783,33 +1971,43 @@ private fun HomeCameraStatusCard(
                         camera = camera,
                         paused = paused,
                         onOpenCamera = onOpenCamera,
-                        onEditCamera = {
-                            editingCameraId = camera.id.toString()
-                            cameraName = camera.name
-                            cameraRoomId = camera.roomId?.toString()
-                            cameraEnabled = camera.enabled
-                            showCameraDialog = true
-                        }
+                        onEditCamera = if (canManageCameras) {
+                            {
+                                editingCameraId = camera.id.toString()
+                                cameraName = camera.name
+                                cameraRoomId = camera.roomId?.toString()
+                                cameraEnabled = camera.enabled
+                                showCameraDialog = true
+                            }
+                        } else null
                     )
                 }
             }
             cameras.orEmpty().firstOrNull()?.let { primaryCamera ->
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                Text("Capture controls", style = MaterialTheme.typography.titleSmall)
-                Text("Sampling sends compressed frames to the consented vision endpoint. A paired publisher device supplies the optional real-time LiveKit feed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button(
-                    onClick = { if (captureCameraId == primaryCamera.id.toString()) onStopCapture() else requestMediaPermissions("capture", primaryCamera) },
-                    enabled = primaryCamera.enabled && !paused && (captureCameraId == primaryCamera.id.toString() || videoConsentGranted) && !liveKitPublishing,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(if (captureCameraId == primaryCamera.id.toString()) "Stop sampling" else "Start sampling") }
-                if (liveKitPublishing) {
-                    OutlinedButton(onClick = onStopLiveKit, modifier = Modifier.fillMaxWidth()) { Text("Stop LiveKit") }
+                if (canManageCameras) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text("Capture controls", style = MaterialTheme.typography.titleSmall)
+                    Text("Sampling sends compressed frames to the consented vision endpoint. A paired publisher device supplies the optional real-time LiveKit feed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(
+                        onClick = { if (captureCameraId == primaryCamera.id.toString()) onStopCapture() else requestMediaPermissions("capture", primaryCamera) },
+                        enabled = primaryCamera.enabled && !paused && (captureCameraId == primaryCamera.id.toString() || videoConsentGranted) && !liveKitPublishing,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (captureCameraId == primaryCamera.id.toString()) "Stop sampling" else "Start sampling") }
+                    if (liveKitPublishing) {
+                        OutlinedButton(onClick = onStopLiveKit, modifier = Modifier.fillMaxWidth()) { Text("Stop LiveKit") }
+                    }
+                    if (captureCameraId != null) Text("Camera sampling is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                    if (liveKitPublishing) Text("LiveKit publishing is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
+                    permissionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                } else {
+                    Text(
+                        "Camera controls are available to the household lead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                if (captureCameraId != null) Text("Camera sampling is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
-                if (liveKitPublishing) Text("LiveKit publishing is active in the foreground.", style = MaterialTheme.typography.bodySmall, color = OneMint)
-                permissionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             }
-            if (actionState == OneCameraActionState.LOADED) {
+            if (canManageCameras && actionState == OneCameraActionState.LOADED) {
                 Text("Camera saved. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
             }
             actionError?.let { error ->
@@ -1817,7 +2015,7 @@ private fun HomeCameraStatusCard(
             }
         }
     }
-    if (showCameraDialog) {
+    if (showCameraDialog && canManageCameras) {
         OneAlertDialog(
             onDismissRequest = {
                 if (actionState != OneCameraActionState.SUBMITTING) showCameraDialog = false
@@ -4183,7 +4381,8 @@ private fun AccountScreen(
     onCareSpacesRetry: () -> Unit,
     onCreateCareSpace: (String, String, String) -> Unit,
     onActivateCareSpace: (OneCareSpace) -> Unit,
-    onRoleChange: (OneRole) -> Unit,
+    releaseAudience: OneReleasePreviewAudience,
+    onReleaseAudienceChange: (OneReleasePreviewAudience) -> Unit,
     onSignOut: () -> Unit
 ) {
     val accountContext = LocalContext.current
@@ -4206,20 +4405,13 @@ private fun AccountScreen(
     val systemNotificationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(accountContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     val notificationsEnabled = systemNotificationsEnabled || notificationPermissionRequestGranted == true
-    var demoRoomConsent by rememberSaveable { mutableStateOf(true) }
-    var demoMicrophoneConsent by rememberSaveable { mutableStateOf(true) }
-    var demoMedicationConsent by rememberSaveable { mutableStateOf(true) }
-    var demoFamilyConsent by rememberSaveable { mutableStateOf(false) }
-    var demoFamilyAssistantConsent by rememberSaveable { mutableStateOf(false) }
     var showCareSpaces by rememberSaveable { mutableStateOf(false) }
     var showDeletionConfirmation by rememberSaveable { mutableStateOf(false) }
-    val canEditConsents = !isBackend || consentLoadState == OneConsentLoadState.LOADED
+    val canEditConsents = isBackend && consentLoadState == OneConsentLoadState.LOADED
     val canRequestDeletion = isBackend && isAdmin && deletionLoadState != OneDeletionLoadState.SUBMITTING && dataDeletion == null
-    val consentValue: (String, Boolean) -> Boolean = { purpose, demoValue ->
-        if (isBackend) consentStates?.get(purpose) ?: false else demoValue
-    }
+    val consentValue: (String) -> Boolean = { purpose -> consentStates?.get(purpose) ?: false }
     val updateEnabled: (String) -> Boolean = { purpose ->
-        canEditConsents && consentUpdatePurpose == null && (isBackend || purpose.isNotBlank())
+        canEditConsents && consentUpdatePurpose == null && purpose.isNotBlank()
     }
 
     ScreenScroll {
@@ -4257,37 +4449,37 @@ private fun AccountScreen(
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 ConsentRow(
                     label = "Room and camera data",
-                    enabled = consentValue("video_capture", demoRoomConsent),
+                    enabled = consentValue("video_capture"),
                     interactive = updateEnabled("video_capture"),
-                    onChanged = { granted -> if (isBackend) onConsentChange("video_capture", granted) else demoRoomConsent = granted }
+                    onChanged = { granted -> onConsentChange("video_capture", granted) }
                 )
                 HorizontalDivider()
                 ConsentRow(
                     label = "Microphone for push-to-talk",
-                    enabled = consentValue("audio_capture", demoMicrophoneConsent),
+                    enabled = consentValue("audio_capture"),
                     interactive = updateEnabled("audio_capture"),
-                    onChanged = { granted -> if (isBackend) onConsentChange("audio_capture", granted) else demoMicrophoneConsent = granted }
+                    onChanged = { granted -> onConsentChange("audio_capture", granted) }
                 )
                 HorizontalDivider()
                 ConsentRow(
                     label = "Medication reminders",
-                    enabled = consentValue("medication_management", demoMedicationConsent),
+                    enabled = consentValue("medication_management"),
                     interactive = updateEnabled("medication_management"),
-                    onChanged = { granted -> if (isBackend) onConsentChange("medication_management", granted) else demoMedicationConsent = granted }
+                    onChanged = { granted -> onConsentChange("medication_management", granted) }
                 )
                 HorizontalDivider()
                 ConsentRow(
                     label = "Family sharing",
-                    enabled = consentValue("family_mode", demoFamilyConsent),
+                    enabled = consentValue("family_mode"),
                     interactive = updateEnabled("family_mode"),
-                    onChanged = { granted -> if (isBackend) onConsentChange("family_mode", granted) else demoFamilyConsent = granted }
+                    onChanged = { granted -> onConsentChange("family_mode", granted) }
                 )
                 HorizontalDivider()
                 ConsentRow(
                     label = "Family assistant summary",
-                    enabled = consentValue("family_assistant", demoFamilyAssistantConsent),
+                    enabled = consentValue("family_assistant"),
                     interactive = updateEnabled("family_assistant"),
-                    onChanged = { granted -> if (isBackend) onConsentChange("family_assistant", granted) else demoFamilyAssistantConsent = granted }
+                    onChanged = { granted -> onConsentChange("family_assistant", granted) }
                 )
             }
         }
@@ -4361,14 +4553,18 @@ private fun AccountScreen(
             )
         }
         TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
-            Text(if (dataDeletion != null) "Finish and sign out" else "Preview signed-out flow")
+            Text(if (dataDeletion != null) "Finish and sign out" else "Sign out")
         }
-        SectionHeading("DEMO", "Preview another experience")
-        OutlinedButton(onClick = { onRoleChange(if (role == OneRole.CAREGIVER) OneRole.RESIDENT else OneRole.CAREGIVER) }, modifier = Modifier.fillMaxWidth()) {
-            Icon(if (role == OneRole.CAREGIVER) Icons.Default.Person else Icons.Default.People, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (role == OneRole.CAREGIVER) "Preview resident experience" else "Preview caregiver experience")
-        }
+        SectionHeading("VIEW AS", "Household perspectives")
+        Text(
+            "Switching the view only changes what this app shows. Your signed-in account and backend permissions remain unchanged.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OneReleaseAudienceOptions(
+            selected = releaseAudience,
+            onSelected = onReleaseAudienceChange
+        )
         Text("Observations support human attention. They are not medical advice or a diagnosis.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
     }
     if (showCareSpaces) {

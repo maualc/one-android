@@ -702,7 +702,7 @@ fun OneOutsideTrackingScreen(
                         }
                     }
                     Text(
-                        if (isBackend) "Only this Android phone is linked in this prototype. Nothing is sent to the backend."
+                        if (isBackend) "This Android phone records the GPS history locally; household sharing is controlled by account permissions."
                         else "Demo profile: location data stays on this phone.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -943,7 +943,7 @@ fun OneOutsideTrackingScreen(
                 }
             }
         }
-        if (!isBackend) {
+        if (!isBackend && !BuildConfig.ONE_RELEASE_PREVIEW) {
             item {
                 Card(
                 modifier = Modifier.fillMaxWidth(),

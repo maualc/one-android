@@ -24,6 +24,10 @@ android {
             "ONE_API_BASE_URL",
             "\"${configuredApiBaseUrl ?: "http://10.0.2.2:8000/api/v1"}\""
         )
+        // This branch is the release-preview shell: it always requires a
+        // backend session and keeps the audience switcher available for UX
+        // review. It must not expose the offline demo or developer tools.
+        buildConfigField("Boolean", "ONE_RELEASE_PREVIEW", "true")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -37,7 +41,7 @@ android {
             buildConfigField("String", "ONE_API_BASE_URL", "\"${configuredApiBaseUrl ?: "https://configure-me.invalid/api/v1"}\"")
         }
         debug {
-            buildConfigField("Boolean", "ONE_PRODUCTION_BUILD", "false")
+            buildConfigField("Boolean", "ONE_PRODUCTION_BUILD", "true")
         }
     }
     compileOptions {

@@ -32,7 +32,7 @@ class OneAppState(
     private val clipRepository: OneClipRepository,
     private val offlineCache: OneOfflineCache
 ) {
-    var authStageName by mutableStateOf(AuthStage.AUTHENTICATED.name)
+    var authStageName by mutableStateOf(AuthStage.SIGNED_OUT.name)
     var roleName by mutableStateOf(OneRole.CAREGIVER.name)
     var selectedTab by mutableStateOf("home")
     var onboardingStep by mutableIntStateOf(0)

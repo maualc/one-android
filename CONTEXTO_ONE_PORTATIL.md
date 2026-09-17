@@ -230,12 +230,15 @@ consejo clínico ni decidir automáticamente una dosis.
 - OneCaptureService.kt: servicio de captura/publicación.
 - OneLiveKitPublisher.kt: conexión LiveKit del publisher.
 - OneEventStream.kt: consumo de eventos.
-- OneOutsideTrackingUi.kt: mapa exterior, zonas, historial, alertas,
-  simulación de rutas y mensajes locales de prueba.
-- OneOutsideTrackingStore.kt: SQLite local con perfiles, lugares, puntos y
-  alertas; conserva como máximo siete días de historial.
+- OneOutsideTrackingUi.kt: resumen cuadrado con avatar, mapa detallado,
+  selección de rango, zonas, historial, alertas, demo de rutas y mensajes
+  locales de prueba.
+- OneOutsideTrackingStore.kt: SQLite local con perfiles/fotos, lugares, puntos
+  con calle y duración de estancia, y alertas; conserva como máximo siete días.
 - OneOutsideLocationService.kt: servicio foreground de ubicación, geofences y
-  notificaciones Android.
+  notificaciones Android; inicia la muestra GPS y resuelve calles para puntos
+  fuera de zonas o estancias largas.
+- OneOutsideLocationSearch.kt: búsqueda y reverse geocoding con Nominatim/OSM.
 - OneExteriorMap.kt y OneExteriorCompanionModels.kt: MapLibre/OSM y geometría
   geográfica de soporte.
 - OneSpeechRecognizer.kt: reconocimiento de voz.
@@ -371,17 +374,26 @@ es:
 1. Seleccionar la persona cuidada; en demo offline aparece un perfil local y
    con backend se usan los care recipients existentes, sin escribir ubicación
    en el backend.
-2. Configurar `Home` y lugares seguros tocando el mapa o usando la última
-   posición fiable del teléfono. Los radios se mantienen como mínimo en 100 m
-   (`Home` parte de 150 m).
-3. Activar `Location sharing on this phone`. Android usa un foreground service
-   de ubicación con actualizaciones espaciadas (aprox. cada 120 s y/o 50 m) y
-   geofences para avisos de entrada/salida. El sistema puede retrasar puntos
-   para ahorrar batería.
-4. Revisar la ruta local, los últimos siete días, el resumen recordado y las
-   alertas. El simulador permite probar salida, llegada a un lugar seguro y
-   vuelta a casa sin moverse.
-5. `Resident message preview` solo crea una notificación en el propio teléfono;
+2. La vista inicial es un cuadrado local con la foto del perfil (o iniciales) y
+   círculos por cada punto reciente. La foto se puede elegir desde el perfil
+   local; si el API entrega `profile_photo_url` o `photo_url`, se usa como
+   fallback. El mapa cartográfico detallado se abre desde `History` o
+   `Configure map`.
+3. Configurar `Home` y lugares seguros tocando el mapa detallado o usando la
+   última posición fiable del teléfono. Ambos radios parten de 20 m y se pueden
+   adaptar desde la interfaz, con un mínimo configurable de 20 m.
+4. Activar `Location sharing on this phone`. Android usa un foreground service
+   de GPS de alta precisión, con una muestra inicial de la última ubicación y
+   actualizaciones periódicas para poder detectar estancias aunque la persona
+   permanezca quieta. También registra geofences para avisos de entrada/salida.
+5. Cuando un punto fiable queda fuera de las zonas o acumula una estancia de al
+   menos cinco minutos, el servicio intenta resolver y guardar el nombre de la
+   calle. La estancia se conserva con su duración y se muestra en el historial,
+   sin usar `Outside configured zones` como ubicación del historial.
+6. En el historial se puede elegir 1 hora, 6 horas, 24 horas, 3 días o 7 días;
+   siete días es el máximo local. `Test a route` solo aparece en demo mode y
+   permite probar salida, llegada a un lugar seguro y vuelta a casa sin moverse.
+7. `Resident message preview` solo crea una notificación en el propio teléfono;
    todavía no existe sincronización entre teléfonos/familia. Para eso hará
    falta acordar el contrato y almacenamiento compartido con backend.
 

@@ -26,4 +26,22 @@ class OneOutsideLocationSearchInstrumentedTest {
         assertEquals(-3.7038, results.first().point.longitude, 0.000001)
         assertTrue(results.last().displayName.contains("Barcelona"))
     }
+
+    @Test
+    fun extractsStreetNameFromReverseGeocodePayload() {
+        val street = parseOneOutsideReverseGeocode(
+            """
+            {
+              "display_name":"Carrer de la Prova 12, Valencia, España",
+              "address":{
+                "road":"Carrer de la Prova",
+                "house_number":"12",
+                "city":"Valencia"
+              }
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("Carrer de la Prova 12, Valencia", street)
+    }
 }

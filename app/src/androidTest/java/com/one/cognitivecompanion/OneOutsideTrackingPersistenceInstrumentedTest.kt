@@ -21,7 +21,7 @@ class OneOutsideTrackingPersistenceInstrumentedTest {
         val outsidePoint = homePoint.offsetMeters(eastMeters = 400.0, northMeters = 0.0)
 
         try {
-            store.saveHome(personId, homePoint, radiusMeters = 50.0)
+            store.saveHome(personId, homePoint, radiusMeters = 10.0)
             val homeSnapshot = store.read(personId)
             assertEquals(ONE_OUTSIDE_MIN_ZONE_RADIUS_METERS, homeSnapshot.home?.radiusMeters ?: 0.0, 0.0)
 
@@ -55,10 +55,40 @@ class OneOutsideTrackingPersistenceInstrumentedTest {
             )
             assertEquals(listOf(OneOutsideAlertType.EXIT_HOME), reliableOutside.alerts.map { it.type })
 
+            val stationaryPoint = outsidePoint.offsetMeters(eastMeters = 220.0, northMeters = 0.0)
+            store.appendLocation(
+                personId = personId,
+                point = stationaryPoint,
+                accuracyMeters = 8f,
+                capturedAtMillis = 10_000L,
+                source = OneOutsideLocationSource.GPS
+            )
+            val stayed = store.appendLocation(
+                personId = personId,
+                point = stationaryPoint,
+                accuracyMeters = 8f,
+                capturedAtMillis = 10_000L + ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS,
+                source = OneOutsideLocationSource.GPS
+            )
+            assertTrue(stayed.point.dwellDurationMillis >= ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS)
+            store.updateLocationStreetName(
+                personId = personId,
+                pointId = stayed.point.id,
+                point = stayed.point.point,
+                capturedAtMillis = stayed.point.capturedAtMillis,
+                dwellDurationMillis = stayed.point.dwellDurationMillis,
+                streetName = "Carrer de prova"
+            )
+
             val persisted = store.read(personId)
-            assertEquals(3, persisted.points.size)
+            assertEquals(5, persisted.points.size)
             assertEquals(1, persisted.alerts.size)
             assertEquals("outside", persisted.lastZoneKey)
+            assertTrue(
+                persisted.points
+                    .filter { it.point == stationaryPoint }
+                    .all { it.streetName == "Carrer de prova" }
+            )
         } finally {
             store.deletePerson(personId)
         }

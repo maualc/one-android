@@ -2,15 +2,19 @@ package com.one.cognitivecompanion
 
 import java.util.UUID
 
-const val ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS = 150.0
-const val ONE_OUTSIDE_DEFAULT_SAFE_RADIUS_METERS = 100.0
-const val ONE_OUTSIDE_MIN_ZONE_RADIUS_METERS = 100.0
+const val ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS = 20.0
+const val ONE_OUTSIDE_DEFAULT_SAFE_RADIUS_METERS = 20.0
+const val ONE_OUTSIDE_MIN_ZONE_RADIUS_METERS = 20.0
 const val ONE_OUTSIDE_MAX_HISTORY_DAYS = 7L
 const val ONE_OUTSIDE_MAX_HISTORY_POINTS = 10_000
 const val ONE_OUTSIDE_LOCATION_INTERVAL_MILLIS = 120_000L
 const val ONE_OUTSIDE_MIN_LOCATION_INTERVAL_MILLIS = 60_000L
-const val ONE_OUTSIDE_MIN_LOCATION_DISTANCE_METERS = 50f
+// Keep the interval callback active while stationary so a five-minute stay
+// can be detected even when the person does not move 50 metres.
+const val ONE_OUTSIDE_MIN_LOCATION_DISTANCE_METERS = 0f
 const val ONE_OUTSIDE_MAX_CLASSIFICATION_ACCURACY_METERS = 120f
+const val ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS = 5L * 60L * 1_000L
+const val ONE_OUTSIDE_STATIONARY_DISTANCE_METERS = 50.0
 
 enum class OneOutsideLocationSource(val wireValue: String) {
     GPS("gps"),
@@ -51,7 +55,9 @@ data class OneOutsideLocationPoint(
     val accuracyMeters: Float?,
     val capturedAtMillis: Long,
     val source: OneOutsideLocationSource,
-    val zoneKey: String?
+    val zoneKey: String?,
+    val streetName: String? = null,
+    val dwellDurationMillis: Long = 0L
 )
 
 data class OneOutsideAlert(
@@ -80,7 +86,8 @@ data class OneOutsideTrackingSnapshot(
     val points: List<OneOutsideLocationPoint> = emptyList(),
     val alerts: List<OneOutsideAlert> = emptyList(),
     val lastZoneKey: String? = null,
-    val residentMessage: String = ""
+    val residentMessage: String = "",
+    val profilePhotoUri: String? = null
 ) {
     val lastPoint: OneOutsideLocationPoint?
         get() = points.lastOrNull()
@@ -117,13 +124,13 @@ fun oneOutsideAlert(
 ): OneOutsideAlert {
     val (title, detail) = when (type) {
         OneOutsideAlertType.EXIT_HOME ->
-            "Left home" to "The location service detected that the person left the home zone."
+            "Left home" to "Home zone exited."
         OneOutsideAlertType.RETURN_HOME ->
-            "Returned home" to "The location service detected a return to the home zone."
+            "Returned home" to "Back in the home zone."
         OneOutsideAlertType.ENTER_SAFE_PLACE ->
-            "Entered ${zone.label}" to "The person entered the configured safe place."
+            "Entered ${zone.label}" to "Safe place reached."
         OneOutsideAlertType.OUTSIDE_ALL_ZONES ->
-            "Outside configured zones" to "The latest reliable location is outside home and every safe place."
+            "Outside configured zones" to "No configured zone nearby."
     }
     return OneOutsideAlert(
         personId = personId,
@@ -161,8 +168,30 @@ fun oneOutsideTransitions(
 fun oneOutsideRoutePoints(
     routeId: String,
     home: OneExteriorHomeZone,
-    safePlaces: List<OneExteriorSafePlace>
-): List<OneExteriorPoint> = routePointsForOneExteriorDemo(routeId, home, safePlaces)
+    safePlaces: List<OneExteriorSafePlace>,
+    originPoint: OneExteriorPoint = home.center,
+    destinationPoint: OneExteriorPoint? = null
+): List<OneExteriorPoint> = routePointsForOneExteriorDemo(
+    routeId = routeId,
+    home = home,
+    safePlaces = safePlaces,
+    originPoint = originPoint,
+    destinationPoint = destinationPoint
+)
 
 fun oneOutsideLocationIsAccurate(accuracyMeters: Float?): Boolean =
     accuracyMeters == null || accuracyMeters <= ONE_OUTSIDE_MAX_CLASSIFICATION_ACCURACY_METERS
+
+fun oneOutsideLocationLabel(
+    point: OneOutsideLocationPoint,
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>
+): String {
+    point.streetName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+    val zone = point.zoneKey?.let { outsideZoneForKey(it, home, safePlaces) }
+    return when {
+        zone?.kind == OneExteriorZoneKind.OUTSIDE -> "Street not available yet"
+        zone != null -> zone.label
+        else -> "Location saved; accuracy too low to classify"
+    }
+}

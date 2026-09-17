@@ -1,6 +1,8 @@
 package com.one.cognitivecompanion
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -16,15 +18,24 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -41,6 +52,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -76,6 +88,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -84,6 +97,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -99,11 +114,15 @@ import com.one.cognitivecompanion.ui.theme.OneBlue
 import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneMint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 import java.util.UUID
 
@@ -113,6 +132,27 @@ private enum class OutsideMapEditMode {
     ADD_SAFE_PLACE,
     MOVE_SAFE_PLACE
 }
+
+private enum class OutsideDetailedMapMode {
+    CONFIGURATION,
+    HISTORY
+}
+
+private data class OutsideHistoryRange(
+    val id: String,
+    val label: String,
+    val durationMillis: Long
+)
+
+private val outsideHistoryRanges = listOf(
+    OutsideHistoryRange("1h", "1 hour", 60L * 60L * 1_000L),
+    OutsideHistoryRange("6h", "6 hours", 6L * 60L * 60L * 1_000L),
+    OutsideHistoryRange("24h", "24 hours", 24L * 60L * 60L * 1_000L),
+    OutsideHistoryRange("3d", "3 days", 3L * 24L * 60L * 60L * 1_000L),
+    OutsideHistoryRange("7d", "7 days", ONE_OUTSIDE_MAX_HISTORY_DAYS * 24L * 60L * 60L * 1_000L)
+)
+
+private const val OUTSIDE_DEFAULT_HISTORY_RANGE_ID = "24h"
 
 private val outsideDemoRecipient = OneCareRecipient(
     id = UUID.nameUUIDFromBytes("one-outside-demo-recipient".toByteArray()),
@@ -154,9 +194,15 @@ fun OneOutsideTrackingScreen(
     var routeIndex by rememberSaveable { mutableIntStateOf(0) }
     var simulationRunning by rememberSaveable { mutableStateOf(false) }
     var routeMenuExpanded by remember { mutableStateOf(false) }
+    var routeOriginKey by rememberSaveable { mutableStateOf(ONE_EXTERIOR_ROUTE_ORIGIN_HOME) }
+    var routeDestinationId by rememberSaveable { mutableStateOf("") }
+    var routeOriginMenuExpanded by remember { mutableStateOf(false) }
+    var routeDestinationMenuExpanded by remember { mutableStateOf(false) }
     var messageDraft by rememberSaveable { mutableStateOf("") }
     var showClearHistoryDialog by remember { mutableStateOf(false) }
     var showFullScreenMap by rememberSaveable { mutableStateOf(false) }
+    var detailedMapModeName by rememberSaveable { mutableStateOf(OutsideDetailedMapMode.CONFIGURATION.name) }
+    var historyRangeId by rememberSaveable { mutableStateOf(OUTSIDE_DEFAULT_HISTORY_RANGE_ID) }
     var mapSearchQuery by rememberSaveable { mutableStateOf("") }
     var submittedMapSearchQuery by remember { mutableStateOf("") }
     var mapSearchRequestId by remember { mutableIntStateOf(0) }
@@ -168,9 +214,12 @@ fun OneOutsideTrackingScreen(
     var mapCameraCommand by remember { mutableStateOf<OneExteriorMapCameraCommand?>(null) }
     val mapEditMode = runCatching { OutsideMapEditMode.valueOf(mapEditModeName) }
         .getOrDefault(OutsideMapEditMode.NONE)
+    val detailedMapMode = runCatching { OutsideDetailedMapMode.valueOf(detailedMapModeName) }
+        .getOrDefault(OutsideDetailedMapMode.CONFIGURATION)
     val recipientIds = availableRecipients.map { it.id }
     val selectedRecipient = availableRecipients.firstOrNull { it.id == selectedPersonId }
     val selectedName = selectedRecipient?.displayName ?: "Person cared for"
+    val selectedPhotoUri = snapshot?.profilePhotoUri ?: selectedRecipient?.profilePhotoUrl
 
     fun issueMapCameraCommand(action: OneExteriorMapCameraAction, target: OneExteriorPoint? = null) {
         mapCameraCommandId += 1L
@@ -291,6 +340,21 @@ fun OneOutsideTrackingScreen(
         if (!granted) serviceError = "Notifications are disabled; in-app alerts will still be kept in the local history."
     }
 
+    val profilePhotoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val personId = selectedPersonId ?: return@rememberLauncherForActivityResult
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        store.saveProfilePhotoUri(personId, uri.toString())
+        reload()
+    }
+
     fun requestGps(personId: UUID) {
         if (!hasOutsideLocationPermission(context)) {
             pendingTrackingPersonId = personId
@@ -367,18 +431,83 @@ fun OneOutsideTrackingScreen(
         messageDraft = snapshot?.residentMessage.orEmpty()
     }
 
-    val routePoints = snapshot?.home?.let { home ->
-        oneOutsideRoutePoints(routeId, home, snapshot?.safePlaces.orEmpty())
-    }.orEmpty()
     val currentPoint = snapshot?.lastPoint?.point
+    val latestReliablePoint = snapshot?.points.orEmpty().lastOrNull { it.zoneKey != null }
+    val selectedHistoryRange = outsideHistoryRanges.firstOrNull { it.id == historyRangeId }
+        ?: outsideHistoryRanges.last()
+    val historyCutoffMillis = System.currentTimeMillis() - selectedHistoryRange.durationMillis
+    val historyPoints = snapshot?.points.orEmpty().filter { it.capturedAtMillis >= historyCutoffMillis }
+    val historyPointsForMap = historyPoints.takeLast(250).map { it.point }
+    val routeOriginOptions = oneExteriorRouteOriginOptions(
+        home = snapshot?.home,
+        currentPoint = latestReliablePoint?.point ?: currentPoint,
+        safePlaces = snapshot?.safePlaces.orEmpty()
+    )
+    val selectedRouteOrigin = routeOriginOptions.firstOrNull { it.key == routeOriginKey }
+        ?: routeOriginOptions.firstOrNull()
+    val routeDestinationOptions = snapshot?.safePlaces.orEmpty().filter { place ->
+        place.id != selectedRouteOrigin?.safePlaceId
+    }
+    val selectedRouteDestination = routeDestinationOptions.firstOrNull { it.id == routeDestinationId }
+        ?: routeDestinationOptions.firstOrNull()
+    val routePoints = snapshot?.home?.let { home ->
+        if (routeId == ONE_EXTERIOR_ROUTE_SAFE_PLACE && selectedRouteDestination == null) {
+            emptyList()
+        } else {
+            oneOutsideRoutePoints(
+                routeId = routeId,
+                home = home,
+                safePlaces = snapshot?.safePlaces.orEmpty(),
+                originPoint = if (routeId == ONE_EXTERIOR_ROUTE_SAFE_PLACE) {
+                    selectedRouteOrigin?.point ?: home.center
+                } else {
+                    home.center
+                },
+                destinationPoint = if (routeId == ONE_EXTERIOR_ROUTE_SAFE_PLACE) {
+                    selectedRouteDestination?.center
+                } else {
+                    null
+                }
+            )
+        }
+    }.orEmpty()
     val plannedPoints = if (simulationRunning) routePoints else emptyList()
     val mapPoints = snapshot?.points.orEmpty().map { it.point }.takeLast(150) + plannedPoints
+    val detailedMapPoints = if (detailedMapMode == OutsideDetailedMapMode.HISTORY) {
+        historyPointsForMap
+    } else {
+        mapPoints
+    }
+    val detailedMapCurrentPoint = if (detailedMapMode == OutsideDetailedMapMode.HISTORY) {
+        historyPoints.lastOrNull()?.point
+    } else {
+        currentPoint
+    }
     val canAdvance = simulationRunning && routePoints.isNotEmpty() && routeIndex < routePoints.lastIndex
     val currentZone = snapshot?.currentZone
     val locationEnabled = isSystemLocationEnabled(context)
     val hasBackgroundPermission = hasOutsideBackgroundLocationPermission(context)
-    val latestReliablePoint = snapshot?.points.orEmpty().lastOrNull { it.zoneKey != null }
-    val history = snapshot?.points.orEmpty().asReversed()
+    val history = historyPoints.asReversed()
+
+    fun resetRouteProgress() {
+        simulationRunning = false
+        routeIndex = 0
+    }
+
+    fun selectRouteOrigin(endpoint: OneExteriorRouteEndpoint) {
+        routeOriginKey = endpoint.key
+        routeDestinationId = snapshot?.safePlaces.orEmpty().firstOrNull { place ->
+            place.id != endpoint.safePlaceId
+        }?.id.orEmpty()
+        resetRouteProgress()
+        routeOriginMenuExpanded = false
+    }
+
+    fun selectRouteDestination(place: OneExteriorSafePlace) {
+        routeDestinationId = place.id
+        resetRouteProgress()
+        routeDestinationMenuExpanded = false
+    }
 
     fun recenterMap() {
         val target = latestReliablePoint?.point ?: currentPoint ?: snapshot?.home?.center
@@ -392,17 +521,31 @@ fun OneOutsideTrackingScreen(
         issueMapCameraCommand(OneExteriorMapCameraAction.RECENTER, target)
     }
 
-    fun openFullScreenMap() {
+    fun openFullScreenMap(mode: OutsideDetailedMapMode = OutsideDetailedMapMode.CONFIGURATION) {
         // A new MapView is created for the dialog. The current focus point is
         // enough to restore the useful camera target without replaying an old
         // zoom command on the new instance.
         mapCameraCommand = null
+        detailedMapModeName = mode.name
         showFullScreenMap = true
+    }
+
+    fun openHistoryMap() {
+        openFullScreenMap(OutsideDetailedMapMode.HISTORY)
     }
 
     fun closeFullScreenMap() {
         mapCameraCommand = null
         showFullScreenMap = false
+        if (detailedMapMode == OutsideDetailedMapMode.CONFIGURATION && mapEditMode != OutsideMapEditMode.NONE) {
+            clearMapEditMode()
+        }
+    }
+
+    fun openMapEditor(mode: OutsideMapEditMode, safePlaceId: String? = null) {
+        mapEditModeName = mode.name
+        movingSafePlaceId = safePlaceId
+        openFullScreenMap(OutsideDetailedMapMode.CONFIGURATION)
     }
 
     fun handleMapTap(point: OneExteriorPoint) {
@@ -451,7 +594,7 @@ fun OneOutsideTrackingScreen(
     }
 
     fun startSimulation() {
-        if (snapshot?.home == null) return
+        if (snapshot?.home == null || routePoints.isEmpty()) return
         val personId = selectedPersonId ?: return
         store.setTrackingEnabled(personId, false, OneOutsideTrackingMode.SIMULATED)
         OneOutsideLocationService.stop(context)
@@ -512,7 +655,11 @@ fun OneOutsideTrackingScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Person, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
+                        OutsideProfileAvatar(
+                            name = selectedName,
+                            photoUri = selectedPhotoUri,
+                            modifier = Modifier.size(58.dp)
+                        )
                         Spacer(Modifier.width(9.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("LOCAL PROFILE", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
@@ -522,6 +669,9 @@ fun OneOutsideTrackingScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                        IconButton(onClick = { profilePhotoLauncher.launch(arrayOf("image/*")) }) {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = "Choose profile photo", tint = OneBlue)
                         }
                         BoxWithContent(
                             expanded = showRecipientMenu,
@@ -565,7 +715,8 @@ fun OneOutsideTrackingScreen(
                                 when {
                                     snapshot?.trackingEnabled == true && !locationEnabled -> "Tracking is enabled, but Android location services are off."
                                     snapshot?.trackingEnabled == true -> "Active · updates are saved locally at a battery-aware pace."
-                                    else -> "Paused · use a simulated route to test the map and alerts."
+                                    !isBackend -> "Paused · use Test a route to preview the map and alerts."
+                                    else -> "Paused · enable tracking to record this phone's GPS history."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (snapshot?.trackingEnabled == true) OneMint else MaterialTheme.colorScheme.onSurfaceVariant
@@ -581,15 +732,21 @@ fun OneOutsideTrackingScreen(
                     }
                     if (snapshot?.trackingEnabled == true && latestReliablePoint != null) {
                         Text(
-                            "Last reliable point · " + formatOutsideTime(latestReliablePoint.capturedAtMillis),
+                            "Last reliable point · " +
+                                oneOutsideLocationLabel(
+                                    latestReliablePoint,
+                                    snapshot?.home,
+                                    snapshot?.safePlaces.orEmpty()
+                                ) +
+                                " · " + formatOutsideTime(latestReliablePoint.capturedAtMillis),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     if (!locationEnabled) {
                         OutsideNotice(
-                            title = "Location services are off",
-                            detail = "Turn on Android location services before starting a real local trace.",
+                            title = "Location is off",
+                            detail = "Enable Android location to record GPS.",
                             tint = OneAmber,
                             icon = Icons.Default.Warning,
                             action = {
@@ -606,8 +763,8 @@ fun OneOutsideTrackingScreen(
                         !hasBackgroundPermission
                     ) {
                         OutsideNotice(
-                            title = "Allow background location for zone alerts",
-                            detail = "Android can keep the visible tracking service running, but geofence alerts work best after choosing “Allow all the time” in app settings.",
+                            title = "Background access",
+                            detail = "Choose “Allow all the time” for zone alerts.",
                             tint = OneAmber,
                             icon = Icons.Default.LocationOn,
                             action = { OutlinedButton(onClick = ::openAppSettings) { Text("Open app settings") } }
@@ -631,41 +788,18 @@ fun OneOutsideTrackingScreen(
                 }
             }
         }
-        if (!showFullScreenMap) {
-            item {
-                OutsideMapSection(
-                    home = snapshot?.home,
-                    safePlaces = snapshot?.safePlaces.orEmpty(),
-                    routePoints = mapPoints,
-                    currentPoint = currentPoint,
-                    focusPoint = mapSearchPoint ?: currentPoint,
-                    searchPoint = mapSearchPoint,
-                    cameraCommand = mapCameraCommand,
-                    onMapTap = ::handleMapTap,
-                    searchQuery = mapSearchQuery,
-                    searchResults = mapSearchResults,
-                    searchLoading = mapSearchLoading,
-                    searchError = mapSearchError,
-                    onSearchQueryChange = {
-                        mapSearchQuery = it
-                        mapSearchResults = emptyList()
-                        mapSearchError = null
-                    },
-                    onSearch = ::submitMapSearch,
-                    onSelectSearchResult = ::selectMapSearchResult,
-                    onZoomIn = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_IN) },
-                    onZoomOut = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_OUT) },
-                    onRecenter = ::recenterMap,
-                    onOpenFullScreen = ::openFullScreenMap
-                )
-            }
-            item {
-                Text(
-                    "© OpenStreetMap contributors · Map data is used under the OSM Tile Usage Policy.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        item {
+            OutsideLocationOverviewCard(
+                personName = selectedName,
+                profilePhotoUri = selectedPhotoUri,
+                points = snapshot?.points.orEmpty().takeLast(80),
+                currentPoint = currentPoint,
+                latestLabel = snapshot?.lastPoint?.let {
+                    oneOutsideLocationLabel(it, snapshot?.home, snapshot?.safePlaces.orEmpty())
+                },
+                onOpenHistory = ::openHistoryMap,
+                onConfigureMap = { openFullScreenMap(OutsideDetailedMapMode.CONFIGURATION) }
+            )
         }
         if (mapEditMode != OutsideMapEditMode.NONE) {
             item {
@@ -676,7 +810,7 @@ fun OneOutsideTrackingScreen(
                         OutsideMapEditMode.MOVE_SAFE_PLACE -> "Tap the map to move the safe place."
                         OutsideMapEditMode.NONE -> ""
                     },
-                    detail = "The circle is the configured area. It is not a promise of exact GPS accuracy.",
+                    detail = "Tap the map to choose the point.",
                     tint = OneBlue,
                     icon = Icons.Default.Map,
                     action = { TextButton(onClick = ::clearMapEditMode) { Text("Cancel") } }
@@ -702,24 +836,14 @@ fun OneOutsideTrackingScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = {
-                                mapEditModeName = OutsideMapEditMode.SET_HOME.name
+                                openMapEditor(OutsideMapEditMode.SET_HOME)
                                 showHomeRadiusDialog = false
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Icon(Icons.Default.Home, contentDescription = null)
                             Spacer(Modifier.width(5.dp))
                             Text(if (snapshot?.home == null) "Set home" else "Move home")
-                        }
-                        if (snapshot?.home != null) {
-                            OutlinedButton(
-                                onClick = {
-                                    homeRadius = snapshot?.home?.radiusMeters?.toDisplayRadius()
-                                        ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS.toDisplayRadius()
-                                    showHomeRadiusDialog = true
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Home radius") }
                         }
                     }
                     latestReliablePoint?.let { point ->
@@ -747,10 +871,13 @@ fun OneOutsideTrackingScreen(
                             icon = Icons.Default.Home,
                             name = "Home",
                             detail = "Radius · " + home.radiusMeters.toDisplayRadius() + " m",
-                            onEdit = null,
-                            onMove = {
-                                mapEditModeName = OutsideMapEditMode.SET_HOME.name
+                            onEdit = {
+                                homeRadius = home.radiusMeters.toDisplayRadius()
+                                showHomeRadiusDialog = true
                             },
+                                onMove = {
+                                    openMapEditor(OutsideMapEditMode.SET_HOME)
+                                },
                             onDelete = {
                                 selectedPersonId?.let { personId ->
                                     store.removeHome(personId)
@@ -759,17 +886,6 @@ fun OneOutsideTrackingScreen(
                                 }
                             }
                         )
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            mapEditModeName = OutsideMapEditMode.ADD_SAFE_PLACE.name
-                            movingSafePlaceId = null
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("Add safe place")
                     }
                     if (snapshot?.safePlaces.orEmpty().isEmpty()) {
                         Text("No safe places configured yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -787,8 +903,7 @@ fun OneOutsideTrackingScreen(
                                     showPlaceDialog = true
                                 },
                                 onMove = {
-                                    mapEditModeName = OutsideMapEditMode.MOVE_SAFE_PLACE.name
-                                    movingSafePlaceId = place.id
+                                    openMapEditor(OutsideMapEditMode.MOVE_SAFE_PLACE, place.id)
                                 },
                                 onDelete = {
                                     selectedPersonId?.let { personId ->
@@ -800,11 +915,22 @@ fun OneOutsideTrackingScreen(
                             )
                         }
                     }
+                    OutlinedButton(
+                        onClick = {
+                            openMapEditor(OutsideMapEditMode.ADD_SAFE_PLACE)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Add safe place")
+                    }
                 }
             }
         }
-        item {
-            Card(
+        if (!isBackend) {
+            item {
+                Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -838,23 +964,94 @@ fun OneOutsideTrackingScreen(
                                     text = { Text(template.label) },
                                     onClick = {
                                         routeId = template.id
-                                        routeIndex = 0
-                                        simulationRunning = false
+                                        resetRouteProgress()
                                         routeMenuExpanded = false
                                     }
                                 )
                             }
                         }
                     }
+                    if (routeId == ONE_EXTERIOR_ROUTE_SAFE_PLACE) {
+                        Text("Start from", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                        Box {
+                            OutlinedButton(
+                                onClick = { routeOriginMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = routeOriginOptions.isNotEmpty()
+                            ) {
+                                Text(selectedRouteOrigin?.label ?: "Choose a start point")
+                            }
+                            DropdownMenu(
+                                expanded = routeOriginMenuExpanded,
+                                onDismissRequest = { routeOriginMenuExpanded = false },
+                                modifier = Modifier.width(260.dp),
+                                shape = RoundedCornerShape(18.dp),
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ) {
+                                routeOriginOptions.forEach { endpoint ->
+                                    DropdownMenuItem(
+                                        text = { Text(endpoint.label) },
+                                        onClick = { selectRouteOrigin(endpoint) }
+                                    )
+                                }
+                            }
+                        }
+                        Text("Arrive at", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                        Box {
+                            OutlinedButton(
+                                onClick = { routeDestinationMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = routeDestinationOptions.isNotEmpty()
+                            ) {
+                                Text(selectedRouteDestination?.name ?: "Choose a safe place")
+                            }
+                            DropdownMenu(
+                                expanded = routeDestinationMenuExpanded,
+                                onDismissRequest = { routeDestinationMenuExpanded = false },
+                                modifier = Modifier.width(260.dp),
+                                shape = RoundedCornerShape(18.dp),
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ) {
+                                routeDestinationOptions.forEach { place ->
+                                    DropdownMenuItem(
+                                        text = { Text(place.name) },
+                                        onClick = { selectRouteDestination(place) }
+                                    )
+                                }
+                            }
+                        }
+                        if (routeDestinationOptions.isEmpty()) {
+                            Text(
+                                "Add at least one safe place different from the selected start point.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            Text(
+                                (selectedRouteOrigin?.label ?: "Start") + " → " +
+                                    (selectedRouteDestination?.name ?: "safe place"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                     if (snapshot?.home == null) {
                         Text("Set home before starting a route.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     } else {
-                        Text(
-                            (currentZone?.label ?: "Ready") + " · step " +
-                                (routeIndex + 1).coerceAtMost(routePoints.size) + "/" + routePoints.size,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (routePoints.isNotEmpty()) {
+                            Text(
+                                (currentZone?.label ?: "Ready") + " · step " +
+                                    (routeIndex + 1).coerceAtMost(routePoints.size) + "/" + routePoints.size,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (routeId == ONE_EXTERIOR_ROUTE_SAFE_PLACE) {
+                            Text(
+                                "Choose a different safe place as destination to build this route.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = ::startSimulation,
@@ -890,11 +1087,14 @@ fun OneOutsideTrackingScreen(
                 }
             }
         }
+        }
         item {
             OutsideStatusCard(
                 zone = currentZone,
                 lastPoint = snapshot?.lastPoint,
-                homeConfigured = snapshot?.home != null
+                homeConfigured = snapshot?.home != null,
+                home = snapshot?.home,
+                safePlaces = snapshot?.safePlaces.orEmpty()
             )
         }
         item {
@@ -905,20 +1105,52 @@ fun OneOutsideTrackingScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Remembered route", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text("Location history", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                         Icon(Icons.Default.History, contentDescription = null, tint = OneBlue)
                     }
                     Text(
-                        outsideRecallSummary(snapshot, selectedName),
-                        style = MaterialTheme.typography.bodyMedium,
+                        "Last seen · ${selectedHistoryRange.label}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (history.isEmpty()) {
-                        Text("No points recorded in the last 7 days.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("No location recorded in this period.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        history.take(12).forEach { point ->
-                            OutsideHistoryRow(point, snapshot?.home, snapshot?.safePlaces.orEmpty())
+                        val latestHistoryPoint = history.first()
+                        Text(
+                            oneOutsideLocationLabel(
+                                latestHistoryPoint,
+                                snapshot?.home,
+                                snapshot?.safePlaces.orEmpty()
+                            ),
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "${formatOutsideTime(latestHistoryPoint.capturedAtMillis)} · ${latestHistoryPoint.source.wireValue.uppercase(Locale.US)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        history.drop(1).take(2).forEach { point ->
+                            OutsideHistoryRow(
+                                point = point,
+                                home = snapshot?.home,
+                                safePlaces = snapshot?.safePlaces.orEmpty()
+                            )
                         }
+                        if (history.size > 3) {
+                            Text(
+                                "+${history.size - 3} more locations",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = ::openHistoryMap, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Map, contentDescription = null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Open full history")
                     }
                     HorizontalDivider()
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -1014,7 +1246,7 @@ fun OneOutsideTrackingScreen(
         }
         item {
             Text(
-                "Location history is approximate. Android may delay background updates to save battery, and a zone alert does not prove an exact position.",
+                "GPS is approximate; zone circles are not exact coordinates.",
                 style = MaterialTheme.typography.bodySmall,
                 color = OneAmber
             )
@@ -1025,12 +1257,17 @@ fun OneOutsideTrackingScreen(
         OutsideFullScreenMapDialog(
             home = snapshot?.home,
             safePlaces = snapshot?.safePlaces.orEmpty(),
-            routePoints = mapPoints,
-            currentPoint = currentPoint,
-            focusPoint = mapSearchPoint ?: currentPoint,
+            routePoints = detailedMapPoints,
+            currentPoint = detailedMapCurrentPoint,
+            historyPoints = historyPoints,
+            focusPoint = mapSearchPoint ?: detailedMapCurrentPoint,
             searchPoint = mapSearchPoint,
             cameraCommand = mapCameraCommand,
             onMapTap = ::handleMapTap,
+            historyMode = detailedMapMode == OutsideDetailedMapMode.HISTORY,
+            historyRanges = outsideHistoryRanges,
+            selectedHistoryRangeId = selectedHistoryRange.id,
+            onHistoryRangeSelected = { historyRangeId = it },
             searchQuery = mapSearchQuery,
             searchResults = mapSearchResults,
             searchLoading = mapSearchLoading,
@@ -1094,7 +1331,7 @@ fun OneOutsideTrackingScreen(
                     OutlinedTextField(
                         value = placeRadius,
                         onValueChange = { placeRadius = it.filter { c -> c.isDigit() || c == '.' }.take(7) },
-                        label = { Text("Radius in metres (100 minimum)") },
+                        label = { Text("Radius in metres (20 minimum)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1124,7 +1361,7 @@ fun OneOutsideTrackingScreen(
                 OutlinedTextField(
                     value = homeRadius,
                     onValueChange = { homeRadius = it.filter { c -> c.isDigit() || c == '.' }.take(7) },
-                    label = { Text("Radius in metres (100 minimum)") },
+                    label = { Text("Radius in metres (20 minimum)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1145,6 +1382,175 @@ fun OneOutsideTrackingScreen(
                 Text("This removes the last 7 days of points and outside alerts for " + selectedName + " from this phone.")
             }
         )
+    }
+}
+
+@Composable
+private fun OutsideProfileAvatar(
+    name: String,
+    photoUri: String?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val bitmap by produceState<Bitmap?>(initialValue = null, photoUri) {
+        value = photoUri?.let { value ->
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (value.startsWith("http://") || value.startsWith("https://")) {
+                        val connection = (URL(value).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 10_000
+                            readTimeout = 10_000
+                            useCaches = true
+                        }
+                        try {
+                            if (connection.responseCode in 200..299) {
+                                connection.inputStream.use(BitmapFactory::decodeStream)
+                            } else {
+                                null
+                            }
+                        } finally {
+                            connection.disconnect()
+                        }
+                    } else {
+                        context.contentResolver.openInputStream(value.toUri())?.use(BitmapFactory::decodeStream)
+                    }
+                }.getOrNull()
+            }
+        }
+    }
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(OneBlue.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap!!.asImageBitmap(),
+                contentDescription = "$name profile photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                outsideInitials(name),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = OneBlue
+            )
+        }
+    }
+}
+
+@Composable
+private fun OutsideLocationOverviewCard(
+    personName: String,
+    profilePhotoUri: String?,
+    points: List<OneOutsideLocationPoint>,
+    currentPoint: OneExteriorPoint?,
+    latestLabel: String?,
+    onOpenHistory: () -> Unit,
+    onConfigureMap: () -> Unit
+) {
+    val pointsToPlot = buildList {
+        addAll(points.map { it.point })
+        currentPoint?.takeIf { it !in this }?.let(::add)
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("LOCATION OVERVIEW", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                    Text("Current trace", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        latestLabel?.let { "Latest point · $it" } ?: "Waiting for the first GPS point",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    pointsToPlot.size.toString(),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = OneBlue,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    if (pointsToPlot.isNotEmpty()) {
+                        val minLatitude = pointsToPlot.minOf { it.latitude }
+                        val maxLatitude = pointsToPlot.maxOf { it.latitude }
+                        val minLongitude = pointsToPlot.minOf { it.longitude }
+                        val maxLongitude = pointsToPlot.maxOf { it.longitude }
+                        val latitudeRange = (maxLatitude - minLatitude).takeIf { it > 0.000001 } ?: 0.001
+                        val longitudeRange = (maxLongitude - minLongitude).takeIf { it > 0.000001 } ?: 0.001
+                        pointsToPlot.forEachIndexed { index, point ->
+                            val x = ((point.longitude - minLongitude) / longitudeRange)
+                                .toFloat()
+                                .coerceIn(0.12f, 0.88f)
+                            val y = (1.0 - ((point.latitude - minLatitude) / latitudeRange))
+                                .toFloat()
+                                .coerceIn(0.12f, 0.88f)
+                            val center = androidx.compose.ui.geometry.Offset(size.width * x, size.height * y)
+                            drawCircle(
+                                color = if (index == pointsToPlot.lastIndex) OneBlue.copy(alpha = 0.28f) else OneCyan.copy(alpha = 0.20f),
+                                radius = if (index == pointsToPlot.lastIndex) 18f else 12f,
+                                center = center
+                            )
+                            drawCircle(
+                                color = if (index == pointsToPlot.lastIndex) OneBlue else OneCyan,
+                                radius = if (index == pointsToPlot.lastIndex) 6f else 4f,
+                                center = center
+                            )
+                        }
+                    }
+                }
+                OutsideProfileAvatar(
+                    name = personName,
+                    photoUri = profilePhotoUri,
+                    modifier = Modifier
+                        .size(74.dp)
+                        .align(Alignment.Center)
+                )
+                if (pointsToPlot.isEmpty()) {
+                    Text(
+                        "Circles will appear as GPS history is recorded",
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Text(
+                "The square is a calm overview. Open history to see the geographic map and choose a time range.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = onOpenHistory, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.History, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("History")
+                }
+                OutlinedButton(onClick = onConfigureMap, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Map, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Configure map")
+                }
+            }
+        }
     }
 }
 
@@ -1224,10 +1630,15 @@ private fun OutsideFullScreenMapDialog(
     safePlaces: List<OneExteriorSafePlace>,
     routePoints: List<OneExteriorPoint>,
     currentPoint: OneExteriorPoint?,
+    historyPoints: List<OneOutsideLocationPoint>,
     focusPoint: OneExteriorPoint?,
     searchPoint: OneExteriorPoint?,
     cameraCommand: OneExteriorMapCameraCommand?,
     onMapTap: (OneExteriorPoint) -> Unit,
+    historyMode: Boolean,
+    historyRanges: List<OutsideHistoryRange>,
+    selectedHistoryRangeId: String,
+    onHistoryRangeSelected: (String) -> Unit,
     searchQuery: String,
     searchResults: List<OneOutsideLocationSearchResult>,
     searchLoading: Boolean,
@@ -1274,26 +1685,54 @@ private fun OutsideFullScreenMapDialog(
                     tonalElevation = 6.dp,
                     shadowElevation = 6.dp
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.Top
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutsideMapSearchBar(
-                            query = searchQuery,
-                            results = searchResults,
-                            loading = searchLoading,
-                            error = searchError,
-                            onQueryChange = onSearchQueryChange,
-                            onSearch = onSearch,
-                            onSelectResult = onSelectSearchResult,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        OutsideMapControlButton(
-                            icon = Icons.Default.Close,
-                            contentDescription = "Close fullscreen map",
-                            onClick = onDismiss
-                        )
+                        Row(verticalAlignment = Alignment.Top) {
+                            OutsideMapSearchBar(
+                                query = searchQuery,
+                                results = searchResults,
+                                loading = searchLoading,
+                                error = searchError,
+                                onQueryChange = onSearchQueryChange,
+                                onSearch = onSearch,
+                                onSelectResult = onSelectSearchResult,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            OutsideMapControlButton(
+                                icon = Icons.Default.Close,
+                                contentDescription = "Close fullscreen map",
+                                onClick = onDismiss
+                            )
+                        }
+                        if (historyMode) {
+                            Text(
+                                "History map · choose the period to display",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = OneCyan,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                historyRanges.forEach { range ->
+                                    AssistChip(
+                                        onClick = { onHistoryRangeSelected(range.id) },
+                                        label = { Text(range.label) },
+                                        leadingIcon = if (range.id == selectedHistoryRangeId) {
+                                            { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 OutsideMapControls(
@@ -1305,6 +1744,17 @@ private fun OutsideFullScreenMapDialog(
                     onZoomOut = onZoomOut,
                     onRecenter = onRecenter
                 )
+                if (historyMode) {
+                    OutsideHistoryDetailsPanel(
+                        points = historyPoints,
+                        home = home,
+                        safePlaces = safePlaces,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(start = 16.dp, end = 76.dp, bottom = 16.dp)
+                    )
+                }
                 Text(
                     "© OpenStreetMap contributors",
                     modifier = Modifier
@@ -1315,6 +1765,65 @@ private fun OutsideFullScreenMapDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OutsideHistoryDetailsPanel(
+    points: List<OneOutsideLocationPoint>,
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 6.dp,
+        shadowElevation = 6.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 230.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Location details", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Text(
+                    "${points.size} points",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            val displayedPoints = points.asReversed().take(8)
+            if (displayedPoints.isEmpty()) {
+                Text(
+                    "No location in this period.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                displayedPoints.forEachIndexed { index, point ->
+                    OutsideHistoryRow(
+                        point = point,
+                        home = home,
+                        safePlaces = safePlaces,
+                        detailed = true
+                    )
+                    if (index < displayedPoints.lastIndex) HorizontalDivider()
+                }
+                if (points.size > displayedPoints.size) {
+                    Text(
+                        "Showing the latest ${displayedPoints.size} points",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -1521,7 +2030,9 @@ private fun OutsidePlaceRow(
 private fun OutsideStatusCard(
     zone: OneExteriorZoneMatch?,
     lastPoint: OneOutsideLocationPoint?,
-    homeConfigured: Boolean
+    homeConfigured: Boolean,
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1538,14 +2049,18 @@ private fun OutsideStatusCard(
                 )
             }
             Text(
-                zone?.label ?: if (homeConfigured) "Waiting for a reliable location" else "Set home to classify locations",
+                lastPoint?.let { oneOutsideLocationLabel(it, home, safePlaces) }
+                    ?: zone?.label
+                    ?: if (homeConfigured) "Waiting for a reliable location" else "Set home to classify locations",
                 style = MaterialTheme.typography.titleSmall
             )
             lastPoint?.let { point ->
                 Text(
                     "Last point · " + formatOutsideTime(point.capturedAtMillis) +
                         " · " + (point.source.wireValue.uppercase(Locale.US)) +
-                        (point.accuracyMeters?.let { " · ±" + it.toInt() + " m" } ?: ""),
+                        (point.accuracyMeters?.let { " · ±" + it.toInt() + " m" } ?: "") +
+                        (point.dwellDurationMillis.takeIf { it >= ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS }
+                            ?.let { " · stayed " + formatOutsideDuration(it) } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1558,13 +2073,21 @@ private fun OutsideStatusCard(
 private fun OutsideHistoryRow(
     point: OneOutsideLocationPoint,
     home: OneExteriorHomeZone?,
-    safePlaces: List<OneExteriorSafePlace>
+    safePlaces: List<OneExteriorSafePlace>,
+    detailed: Boolean = false
 ) {
-    val zone = point.zoneKey?.let { outsideZoneForKey(it, home, safePlaces) }
+    val label = oneOutsideLocationLabel(point, home, safePlaces)
+    val pointDetails = listOfNotNull(
+        formatOutsideTime(point.capturedAtMillis),
+        point.source.wireValue.uppercase(Locale.US),
+        point.accuracyMeters?.let { "±${it.toInt()} m" },
+        point.dwellDurationMillis.takeIf { it >= ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS }
+            ?.let { "stayed ${formatOutsideDuration(it)}" }
+    ).joinToString(" · ")
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "Location " + (zone?.label ?: "unclassified") + " at " + formatOutsideTime(point.capturedAtMillis) },
+            .semantics { contentDescription = "Location " + label + " at " + formatOutsideTime(point.capturedAtMillis) },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -1575,25 +2098,21 @@ private fun OutsideHistoryRow(
         )
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(zone?.label ?: "Location saved; accuracy too low to classify", style = MaterialTheme.typography.bodySmall)
-            Text(formatOutsideTime(point.capturedAtMillis), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        point.accuracyMeters?.let {
-            Text("±" + it.toInt() + " m", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text(
+                if (detailed) pointDetails else formatOutsideTime(point.capturedAtMillis),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (detailed) {
+                Text(
+                    String.format(Locale.US, "%.5f, %.5f", point.point.latitude, point.point.longitude),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
-}
-
-private fun outsideRecallSummary(snapshot: OneOutsideTrackingSnapshot?, personName: String): String {
-    val points = snapshot?.points.orEmpty()
-    if (points.isEmpty()) return "I have no reliable location history for " + personName + " yet."
-    val places = points.mapNotNull { point ->
-        point.zoneKey?.let { outsideZoneForKey(it, snapshot?.home, snapshot?.safePlaces.orEmpty()).label }
-    }.distinct()
-    val last = points.lastOrNull { it.zoneKey != null }
-    val visited = places.joinToString(", ").ifBlank { "unclassified places" }
-    return "I remember " + visited + ". Last reliable record: " +
-        (last?.let { formatOutsideTime(it.capturedAtMillis) } ?: "not available") + "."
 }
 
 private fun formatOutsideTime(timestamp: Long): String =
@@ -1602,6 +2121,25 @@ private fun formatOutsideTime(timestamp: Long): String =
         .format(DateTimeFormatter.ofPattern("dd MMM · HH:mm", Locale.ENGLISH))
 
 private fun Double.toDisplayRadius(): String = String.format(Locale.US, "%.0f", this)
+
+private fun formatOutsideDuration(durationMillis: Long): String {
+    val totalMinutes = (durationMillis / 60_000L).coerceAtLeast(1L)
+    val hours = totalMinutes / 60L
+    val minutes = totalMinutes % 60L
+    return when {
+        hours > 0L && minutes > 0L -> "${hours}h ${minutes}m"
+        hours > 0L -> "${hours}h"
+        else -> "${minutes}m"
+    }
+}
+
+private fun outsideInitials(name: String): String = name
+    .trim()
+    .split(Regex("\\s+"))
+    .filter { it.isNotBlank() }
+    .take(2)
+    .joinToString("") { it.first().uppercaseChar().toString() }
+    .ifBlank { "?" }
 
 private fun hasOutsideLocationPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||

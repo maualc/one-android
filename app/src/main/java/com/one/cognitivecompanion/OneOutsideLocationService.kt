@@ -1,6 +1,7 @@
 package com.one.cognitivecompanion
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -25,6 +26,12 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import java.util.Locale
 import java.util.UUID
 
 class OneOutsideLocationService : Service() {
@@ -32,6 +39,9 @@ class OneOutsideLocationService : Service() {
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
     private var activePersonId: UUID? = null
+    private var lastRecordedCapturedAtMillis = 0L
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val reverseLookupAttempts = mutableMapOf<String, Long>()
 
     override fun onCreate() {
         super.onCreate()
@@ -68,6 +78,7 @@ class OneOutsideLocationService : Service() {
             return START_NOT_STICKY
         }
         requestLocationUpdates(personId)
+        requestLastKnownLocation(personId)
         if (intent?.action == ACTION_SYNC_GEOFENCES || intent?.action == null) {
             registerGeofences(personId)
         }
@@ -94,7 +105,7 @@ class OneOutsideLocationService : Service() {
     private fun requestLocationUpdates(personId: UUID) {
         if (locationCallback != null) return
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            Priority.PRIORITY_HIGH_ACCURACY,
             ONE_OUTSIDE_LOCATION_INTERVAL_MILLIS
         )
             .setMinUpdateIntervalMillis(ONE_OUTSIDE_MIN_LOCATION_INTERVAL_MILLIS)
@@ -103,26 +114,7 @@ class OneOutsideLocationService : Service() {
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val location = result.lastLocation ?: return
-                val update = runCatching {
-                    store.appendLocation(
-                        personId = personId,
-                        point = OneExteriorPoint(location.latitude, location.longitude),
-                        accuracyMeters = location.accuracy.takeIf { it >= 0f },
-                        capturedAtMillis = location.time.takeIf { it > 0L } ?: System.currentTimeMillis(),
-                        source = OneOutsideLocationSource.GPS
-                    )
-                }.getOrNull() ?: return
-                update.alerts.forEach { alert ->
-                    OneOutsideNotificationHelper.notifyAlert(this@OneOutsideLocationService, alert)
-                }
-                updateNotification(
-                    if (update.classified) {
-                        "Last update: ${update.zone.label}"
-                    } else {
-                        "Last update saved · accuracy too low for zone alerts"
-                    }
-                )
-                sendTrackingBroadcast(personId)
+                recordGpsLocation(personId, location)
             }
         }
         locationCallback = callback
@@ -137,6 +129,91 @@ class OneOutsideLocationService : Service() {
             updateNotification("Allow location access to continue tracking")
             sendTrackingBroadcast(personId, error = error.message ?: "Location permission is required.")
             stopSelf()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestLastKnownLocation(personId: UUID) {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted && !coarseGranted) return
+        runCatching {
+            locationClient.lastLocation
+                .addOnSuccessListener { location ->
+                    if (location != null) recordGpsLocation(personId, location)
+                }
+        }
+    }
+
+    private fun recordGpsLocation(personId: UUID, location: android.location.Location) {
+        val capturedAtMillis = location.time.takeIf { it > 0L } ?: System.currentTimeMillis()
+        if (capturedAtMillis <= lastRecordedCapturedAtMillis) return
+        val update = runCatching {
+            store.appendLocation(
+                personId = personId,
+                point = OneExteriorPoint(location.latitude, location.longitude),
+                accuracyMeters = location.accuracy.takeIf { it >= 0f },
+                capturedAtMillis = capturedAtMillis,
+                source = OneOutsideLocationSource.GPS
+            )
+        }.getOrNull() ?: return
+        lastRecordedCapturedAtMillis = capturedAtMillis
+        update.alerts.forEach { alert ->
+            OneOutsideNotificationHelper.notifyAlert(this, alert)
+        }
+        updateNotification(
+            if (update.classified) {
+                "Last update: ${update.zone.label}"
+            } else {
+                "Last update saved · accuracy too low for zone alerts"
+            }
+        )
+        sendTrackingBroadcast(personId)
+        scheduleStreetLookupIfNeeded(update)
+    }
+
+    private fun scheduleStreetLookupIfNeeded(update: OneOutsideLocationResult) {
+        val point = update.point
+        if (point.source != OneOutsideLocationSource.GPS ||
+            point.streetName != null ||
+            (point.zoneKey != "outside" && point.dwellDurationMillis < ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS)
+        ) {
+            return
+        }
+        val key = String.format(
+            Locale.US,
+            "%.4f:%.4f",
+            point.point.latitude,
+            point.point.longitude
+        )
+        synchronized(reverseLookupAttempts) {
+            val lastAttempt = reverseLookupAttempts[key]
+            if (lastAttempt != null &&
+                System.currentTimeMillis() - lastAttempt < STREET_LOOKUP_RETRY_INTERVAL_MILLIS
+            ) {
+                return
+            }
+            reverseLookupAttempts[key] = System.currentTimeMillis()
+        }
+        serviceScope.launch {
+            val streetName = runCatching { reverseGeocodeOneOutsideLocation(point.point) }.getOrNull()
+            if (!streetName.isNullOrBlank()) {
+                store.updateLocationStreetName(
+                    personId = point.personId,
+                    pointId = point.id,
+                    point = point.point,
+                    capturedAtMillis = point.capturedAtMillis,
+                    dwellDurationMillis = point.dwellDurationMillis,
+                    streetName = streetName
+                )
+                sendTrackingBroadcast(point.personId)
+            }
         }
     }
 
@@ -241,6 +318,7 @@ class OneOutsideLocationService : Service() {
         locationCallback = null
         runCatching { LocationServices.getGeofencingClient(this).removeGeofences(geofencePendingIntent()) }
         activePersonId?.let { sendTrackingBroadcast(it) }
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -257,6 +335,7 @@ class OneOutsideLocationService : Service() {
         const val HOME_PLACE_ID = "home"
         private const val GEOFENCE_REQUEST_CODE = 9_431
         private const val GEOFENCE_RESPONSIVENESS_MILLIS = 300_000
+        private const val STREET_LOOKUP_RETRY_INTERVAL_MILLIS = 300_000L
 
         fun start(context: Context, personId: UUID) {
             val intent = Intent(context, OneOutsideLocationService::class.java)

@@ -141,6 +141,22 @@ class OneOutsideTrackingStore(context: Context) {
     }
 
     @Synchronized
+    fun saveProfilePhotoUri(personId: UUID, photoUri: String?) {
+        val db = helper.writableDatabase
+        ensureProfile(db, personId)
+        db.update(
+            TABLE_PROFILES,
+            ContentValues().apply {
+                photoUri?.trim()?.takeIf { it.isNotEmpty() }?.let { put("profile_photo_uri", it) }
+                    ?: putNull("profile_photo_uri")
+                put("updated_at", System.currentTimeMillis())
+            },
+            "person_id = ?",
+            arrayOf(personId.toString())
+        )
+    }
+
+    @Synchronized
     fun clearHistory(personId: UUID) {
         val db = helper.writableDatabase
         db.delete(TABLE_POINTS, "person_id = ?", arrayOf(personId.toString()))
@@ -182,15 +198,28 @@ class OneOutsideTrackingStore(context: Context) {
             val home = readHome(db, personId)
             val safePlaces = readSafePlaces(db, personId)
             val previousZoneKey = readLastZoneKey(db, personId)
+            val previousPoint = readLatestPoint(db, personId)
             val zone = classifyOneExteriorPoint(point, home, safePlaces)
             val classified = oneOutsideLocationIsAccurate(accuracyMeters)
+            val sameLocation = previousPoint != null &&
+                previousPoint.source == source &&
+                capturedAtMillis >= previousPoint.capturedAtMillis &&
+                point.distanceTo(previousPoint.point) <= ONE_OUTSIDE_STATIONARY_DISTANCE_METERS
+            val dwellDurationMillis = if (sameLocation) {
+                previousPoint.dwellDurationMillis +
+                    (capturedAtMillis - previousPoint.capturedAtMillis).coerceAtLeast(0L)
+            } else {
+                0L
+            }
             val pointRow = OneOutsideLocationPoint(
                 personId = personId,
                 point = point,
                 accuracyMeters = accuracyMeters,
                 capturedAtMillis = capturedAtMillis,
                 source = source,
-                zoneKey = zone.key.takeIf { classified }
+                zoneKey = zone.key.takeIf { classified },
+                streetName = previousPoint?.streetName.takeIf { sameLocation },
+                dwellDurationMillis = dwellDurationMillis
             )
             db.insertOrThrow(
                 TABLE_POINTS,
@@ -204,6 +233,8 @@ class OneOutsideTrackingStore(context: Context) {
                     put("captured_at", capturedAtMillis)
                     put("source", source.wireValue)
                     pointRow.zoneKey?.let { put("zone_key", it) } ?: putNull("zone_key")
+                    pointRow.streetName?.let { put("street_name", it) } ?: putNull("street_name")
+                    put("dwell_duration_millis", pointRow.dwellDurationMillis)
                 }
             )
             val newAlerts = if (classified) {
@@ -225,6 +256,45 @@ class OneOutsideTrackingStore(context: Context) {
             result = OneOutsideLocationResult(pointRow, zone, classified, newAlerts)
         }
         return checkNotNull(result)
+    }
+
+    @Synchronized
+    fun updateLocationStreetName(
+        personId: UUID,
+        pointId: String,
+        point: OneExteriorPoint,
+        capturedAtMillis: Long,
+        dwellDurationMillis: Long,
+        streetName: String
+    ) {
+        val normalizedStreet = streetName.trim().take(160)
+        if (normalizedStreet.isEmpty()) return
+        val db = helper.writableDatabase
+        val values = ContentValues().apply { put("street_name", normalizedStreet) }
+        db.update(
+            TABLE_POINTS,
+            values,
+            "person_id = ? AND id = ?",
+            arrayOf(personId.toString(), pointId)
+        )
+        if (dwellDurationMillis >= ONE_OUTSIDE_DWELL_THRESHOLD_MILLIS) {
+            val coordinateDelta = 0.001
+            db.update(
+                TABLE_POINTS,
+                values,
+                "person_id = ? AND captured_at BETWEEN ? AND ? " +
+                    "AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?",
+                arrayOf(
+                    personId.toString(),
+                    (capturedAtMillis - dwellDurationMillis).toString(),
+                    capturedAtMillis.toString(),
+                    (point.latitude - coordinateDelta).toString(),
+                    (point.latitude + coordinateDelta).toString(),
+                    (point.longitude - coordinateDelta).toString(),
+                    (point.longitude + coordinateDelta).toString()
+                )
+            )
+        }
     }
 
     /**
@@ -303,14 +373,15 @@ class OneOutsideTrackingStore(context: Context) {
             points = points,
             alerts = alerts,
             lastZoneKey = profile.lastZoneKey,
-            residentMessage = profile.residentMessage
+            residentMessage = profile.residentMessage,
+            profilePhotoUri = profile.profilePhotoUri
         )
     }
 
     private fun readProfile(db: SQLiteDatabase, personId: UUID): ProfileRow {
         val cursor = db.query(
             TABLE_PROFILES,
-            arrayOf("tracking_enabled", "mode", "last_zone_key", "resident_message"),
+            arrayOf("tracking_enabled", "mode", "last_zone_key", "resident_message", "profile_photo_uri"),
             "person_id = ?",
             arrayOf(personId.toString()),
             null,
@@ -324,7 +395,8 @@ class OneOutsideTrackingStore(context: Context) {
                 trackingEnabled = it.getInt(0) != 0,
                 mode = it.getString(1),
                 lastZoneKey = it.getString(2),
-                residentMessage = it.getString(3).orEmpty()
+                residentMessage = it.getString(3).orEmpty(),
+                profilePhotoUri = it.getString(4)
             )
         }
     }
@@ -377,7 +449,17 @@ class OneOutsideTrackingStore(context: Context) {
     private fun readPoints(db: SQLiteDatabase, personId: UUID): List<OneOutsideLocationPoint> {
         val cursor = db.query(
             TABLE_POINTS,
-            arrayOf("id", "latitude", "longitude", "accuracy_m", "captured_at", "source", "zone_key"),
+            arrayOf(
+                "id",
+                "latitude",
+                "longitude",
+                "accuracy_m",
+                "captured_at",
+                "source",
+                "zone_key",
+                "street_name",
+                "dwell_duration_millis"
+            ),
             "person_id = ?",
             arrayOf(personId.toString()),
             null,
@@ -396,11 +478,50 @@ class OneOutsideTrackingStore(context: Context) {
                             accuracyMeters = if (it.isNull(3)) null else it.getFloat(3),
                             capturedAtMillis = it.getLong(4),
                             source = OneOutsideLocationSource.fromWire(it.getString(5)),
-                            zoneKey = it.getString(6)
+                            zoneKey = it.getString(6),
+                            streetName = it.getString(7),
+                            dwellDurationMillis = it.getLong(8)
                         )
                     )
                 }
             }.asReversed()
+        }
+    }
+
+    private fun readLatestPoint(db: SQLiteDatabase, personId: UUID): OneOutsideLocationPoint? {
+        val cursor = db.query(
+            TABLE_POINTS,
+            arrayOf(
+                "id",
+                "latitude",
+                "longitude",
+                "accuracy_m",
+                "captured_at",
+                "source",
+                "zone_key",
+                "street_name",
+                "dwell_duration_millis"
+            ),
+            "person_id = ?",
+            arrayOf(personId.toString()),
+            null,
+            null,
+            "captured_at DESC",
+            "1"
+        )
+        return cursor.use {
+            if (!it.moveToFirst()) null
+            else OneOutsideLocationPoint(
+                id = it.getString(0),
+                personId = personId,
+                point = OneExteriorPoint(it.getDouble(1), it.getDouble(2)),
+                accuracyMeters = if (it.isNull(3)) null else it.getFloat(3),
+                capturedAtMillis = it.getLong(4),
+                source = OneOutsideLocationSource.fromWire(it.getString(5)),
+                zoneKey = it.getString(6),
+                streetName = it.getString(7),
+                dwellDurationMillis = it.getLong(8)
+            )
         }
     }
 
@@ -525,7 +646,8 @@ class OneOutsideTrackingStore(context: Context) {
         val trackingEnabled: Boolean = false,
         val mode: String = OneOutsideTrackingMode.GPS.wireValue,
         val lastZoneKey: String? = null,
-        val residentMessage: String = ""
+        val residentMessage: String = "",
+        val profilePhotoUri: String? = null
     )
 
     private data class PlaceRow(
@@ -554,6 +676,7 @@ class OneOutsideTrackingStore(context: Context) {
                     mode TEXT NOT NULL DEFAULT '${OneOutsideTrackingMode.GPS.wireValue}',
                     last_zone_key TEXT,
                     resident_message TEXT NOT NULL DEFAULT '',
+                    profile_photo_uri TEXT,
                     updated_at INTEGER NOT NULL
                 )
                 """.trimIndent()
@@ -583,7 +706,9 @@ class OneOutsideTrackingStore(context: Context) {
                     accuracy_m REAL,
                     captured_at INTEGER NOT NULL,
                     source TEXT NOT NULL,
-                    zone_key TEXT
+                    zone_key TEXT,
+                    street_name TEXT,
+                    dwell_duration_millis INTEGER NOT NULL DEFAULT 0
                 )
                 """.trimIndent()
             )
@@ -606,13 +731,21 @@ class OneOutsideTrackingStore(context: Context) {
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            if (oldVersion < 1) onCreate(db)
+            if (oldVersion < 1) {
+                onCreate(db)
+                return
+            }
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE $TABLE_PROFILES ADD COLUMN profile_photo_uri TEXT")
+                db.execSQL("ALTER TABLE $TABLE_POINTS ADD COLUMN street_name TEXT")
+                db.execSQL("ALTER TABLE $TABLE_POINTS ADD COLUMN dwell_duration_millis INTEGER NOT NULL DEFAULT 0")
+            }
         }
     }
 
     private companion object {
         const val DATABASE_NAME = "one_outside_tracking.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
         const val TABLE_METADATA = "metadata"
         const val TABLE_PROFILES = "profiles"
         const val TABLE_PLACES = "places"

@@ -115,7 +115,10 @@ fun OneExteriorMap(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val currentOnMapTap by rememberUpdatedState(onMapTap)
+    // Keep the native MapLibre listener alive while Compose updates the
+    // editing mode. Reading the State inside the listener prevents it from
+    // retaining the initial NONE callback after "Set home" is selected.
+    val currentOnMapTap = rememberUpdatedState(onMapTap)
     val mapView = remember(context) { createOneExteriorMapView(context) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleReady by remember { mutableStateOf(false) }
@@ -162,7 +165,7 @@ fun OneExteriorMap(
         mapView.getMapAsync { loadedMap ->
             if (!disposed) {
                 loadedMap.addOnMapClickListener { point ->
-                    currentOnMapTap(OneExteriorPoint(point.latitude, point.longitude))
+                    currentOnMapTap.value(OneExteriorPoint(point.latitude, point.longitude))
                     true
                 }
                 loadedMap.setStyle(Style.Builder().fromJson(OSM_STYLE_JSON)) {

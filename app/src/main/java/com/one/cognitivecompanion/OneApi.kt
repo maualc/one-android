@@ -97,7 +97,8 @@ data class OneCareRecipient(
     val displayName: String,
     val relationship: String?,
     val roomLabel: String?,
-    val createdAt: Instant?
+    val createdAt: Instant?,
+    val profilePhotoUrl: String? = null
 )
 
 data class CareRecipientCreateRequest(
@@ -1744,7 +1745,9 @@ class OneHttpApiClient(
         displayName = body.requiredString("display_name"),
         relationship = body.optNullableString("relationship"),
         roomLabel = body.optNullableString("room_label"),
-        createdAt = body.optNullableString("created_at")?.toInstantOrNull()
+        createdAt = body.optNullableString("created_at")?.toInstantOrNull(),
+        profilePhotoUrl = body.optNullableString("profile_photo_url")
+            ?: body.optNullableString("photo_url")
     )
 
     private fun parseFamilyMemberMutation(body: JSONObject): OneFamilyMemberMutation {

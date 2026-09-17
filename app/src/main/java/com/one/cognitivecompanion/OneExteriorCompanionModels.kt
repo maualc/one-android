@@ -46,6 +46,20 @@ data class OneExteriorRouteTemplate(
     val description: String
 )
 
+enum class OneExteriorRouteEndpointKind {
+    HOME,
+    CURRENT_LOCATION,
+    SAFE_PLACE
+}
+
+data class OneExteriorRouteEndpoint(
+    val key: String,
+    val label: String,
+    val point: OneExteriorPoint,
+    val kind: OneExteriorRouteEndpointKind,
+    val safePlaceId: String? = null
+)
+
 val oneExteriorRouteTemplates = listOf(
     OneExteriorRouteTemplate(
         id = ONE_EXTERIOR_ROUTE_NEIGHBORHOOD,
@@ -55,7 +69,7 @@ val oneExteriorRouteTemplates = listOf(
     OneExteriorRouteTemplate(
         id = ONE_EXTERIOR_ROUTE_SAFE_PLACE,
         label = "Walk to a safe place",
-        description = "Leaves home, reaches a configured safe place, then returns."
+        description = "Choose a start point and reach a configured safe place."
     ),
     OneExteriorRouteTemplate(
         id = ONE_EXTERIOR_ROUTE_LONG,
@@ -67,8 +81,10 @@ val oneExteriorRouteTemplates = listOf(
 const val ONE_EXTERIOR_ROUTE_NEIGHBORHOOD = "neighbourhood"
 const val ONE_EXTERIOR_ROUTE_SAFE_PLACE = "safe_place"
 const val ONE_EXTERIOR_ROUTE_LONG = "long_outing"
-const val ONE_EXTERIOR_DEFAULT_HOME_RADIUS_METERS = 150.0
-const val ONE_EXTERIOR_DEFAULT_SAFE_RADIUS_METERS = 100.0
+const val ONE_EXTERIOR_ROUTE_ORIGIN_HOME = "home"
+const val ONE_EXTERIOR_ROUTE_ORIGIN_CURRENT = "current"
+const val ONE_EXTERIOR_DEFAULT_HOME_RADIUS_METERS = 20.0
+const val ONE_EXTERIOR_DEFAULT_SAFE_RADIUS_METERS = 20.0
 
 private const val EARTH_RADIUS_METERS = 6_371_000.0
 
@@ -115,20 +131,61 @@ fun classifyOneExteriorPoint(
 }
 
 
+fun oneExteriorRouteOriginOptions(
+    home: OneExteriorHomeZone?,
+    currentPoint: OneExteriorPoint?,
+    safePlaces: List<OneExteriorSafePlace>
+): List<OneExteriorRouteEndpoint> = buildList {
+    home?.let {
+        add(
+            OneExteriorRouteEndpoint(
+                key = ONE_EXTERIOR_ROUTE_ORIGIN_HOME,
+                label = "Home",
+                point = it.center,
+                kind = OneExteriorRouteEndpointKind.HOME
+            )
+        )
+    }
+    currentPoint?.let {
+        add(
+            OneExteriorRouteEndpoint(
+                key = ONE_EXTERIOR_ROUTE_ORIGIN_CURRENT,
+                label = "Current location",
+                point = it,
+                kind = OneExteriorRouteEndpointKind.CURRENT_LOCATION
+            )
+        )
+    }
+    safePlaces.forEach { place ->
+        add(
+            OneExteriorRouteEndpoint(
+                key = "safe:${place.id}",
+                label = place.name,
+                point = place.center,
+                kind = OneExteriorRouteEndpointKind.SAFE_PLACE,
+                safePlaceId = place.id
+            )
+        )
+    }
+}
+
 fun routePointsForOneExteriorDemo(
     routeId: String,
     home: OneExteriorHomeZone,
-    safePlaces: List<OneExteriorSafePlace>
+    safePlaces: List<OneExteriorSafePlace>,
+    originPoint: OneExteriorPoint = home.center,
+    destinationPoint: OneExteriorPoint? = null
 ): List<OneExteriorPoint> {
-    val origin = home.center
+    val origin = originPoint
     val firstSafePlace = safePlaces.firstOrNull()
     return when (routeId) {
         ONE_EXTERIOR_ROUTE_SAFE_PLACE -> buildList {
             add(origin)
-            add(origin.offsetMeters(eastMeters = 125.0, northMeters = 20.0))
-            add(firstSafePlace?.center ?: origin.offsetMeters(eastMeters = 240.0, northMeters = 80.0))
-            add(origin.offsetMeters(eastMeters = 120.0, northMeters = -40.0))
-            add(origin)
+            val destination = destinationPoint ?: firstSafePlace?.center
+                ?: origin.offsetMeters(eastMeters = 240.0, northMeters = 80.0)
+            add(interpolateOneExteriorPoint(origin, destination, 0.33))
+            add(interpolateOneExteriorPoint(origin, destination, 0.66))
+            add(destination)
         }
         ONE_EXTERIOR_ROUTE_LONG -> listOf(
             origin,
@@ -147,3 +204,12 @@ fun routePointsForOneExteriorDemo(
         )
     }
 }
+
+private fun interpolateOneExteriorPoint(
+    start: OneExteriorPoint,
+    end: OneExteriorPoint,
+    fraction: Double
+): OneExteriorPoint = OneExteriorPoint(
+    latitude = start.latitude + ((end.latitude - start.latitude) * fraction),
+    longitude = start.longitude + ((end.longitude - start.longitude) * fraction)
+)

@@ -13,8 +13,10 @@ iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
 Estado de esta sesión: `main` conserva la experiencia Android alineada con iOS.
 La rama `feature/outside-companion-tracking` sustituye en Android el antiguo
 mapa interior 2D/3D por un tracker exterior local, con GPS, zonas, historial,
-alertas y simulación de rutas. Este contexto debe actualizarse con cada
-traspaso entre máquinas.
+alertas y simulación de rutas. La rama `feature/demo-release` parte de ella y
+prepara una variante de la app normal para validar un release sin demo mode ni
+developer mode. Este contexto debe actualizarse con cada traspaso entre
+máquinas.
 
 ---
 
@@ -271,9 +273,11 @@ pantalla secundaria.
 
 Todas las pestañas usan una transición Compose direccional con fade y
 desplazamiento horizontal. La transición se calcula con el orden visible de
-cada rol, por lo que también funciona para Resident y Publisher. El cambio de
-rol debe seguir siendo una acción de demo/vista y no alterar accidentalmente
-los permisos reales de la cuenta.
+cada rol, por lo que también funciona para Resident y Publisher. En las ramas
+que exponen una vista de prueba, cambiar de rol debe ser solo una acción de
+presentación y no alterar accidentalmente los permisos reales de la cuenta.
+En `feature/demo-release`, esa misma idea se presenta como `VIEW AS` y no
+habilita ningún permiso adicional.
 
 La Home activa tiene acciones reales: el contexto de care space abre el
 selector, el plan de hoy abre Family, Map abre el mapa, Cameras abre la gestión
@@ -418,6 +422,30 @@ seguimiento real en un teléfono físico y la concesión del permiso de segundo
 plano en cada versión de Android. El mapa y la resolución del nombre de calle
 requieren red; la consulta de calle puede enviar coordenadas al geocodificador.
 
+### Variante normal de release en `feature/demo-release`
+
+Esta rama mantiene la funcionalidad de hogar, familia, cuidador, residente,
+asistente, medicación, cámaras y tracker exterior, pero el flujo visible es el
+de la app normal conectada al backend. La autenticación siempre usa sesión
+real: no hay acceso offline de demostración, códigos de email expuestos,
+perfiles sintéticos, pestaña `Pair`, `Test a route`, publisher pairing ni
+controles de desarrollador. El publisher queda fuera de esta variante de app
+doméstica.
+
+El selector global `VIEW AS` permite revisar tres perspectivas de producto:
+`Household lead`, `Family & caregivers` y `People cared for`. Solo cambia la
+presentación y la navegación para probar la experiencia; no suplanta la
+sesión ni concede permisos. Las acciones de administración continúan
+dependiendo de los permisos reales entregados por el backend.
+
+En esta rama `ONE_RELEASE_PREVIEW=true` y también los builds debug usan
+`ONE_PRODUCTION_BUILD=true`, por lo que la UI no muestra caminos de demo ni
+de desarrollo. El endpoint de debug sigue siendo el del emulador
+(`http://10.0.2.2:8000/api/v1`) y puede sustituirse con
+`-PoneApiBaseUrl=https://<backend>/api/v1`. Para una publicación real todavía
+hay que proporcionar el endpoint HTTPS definitivo, la configuración de firma
+y las credenciales de producción fuera del repositorio.
+
 ### Conectividad LAN para probar en un teléfono físico
 
 El APK de debug normal usa `10.0.2.2` para el emulador. En este PC se generó un
@@ -472,19 +500,21 @@ Desde one-android:
     .\gradlew.bat assembleDebug
     .\gradlew.bat assembleRelease -PoneApiBaseUrl=https://configure-me.invalid/api/v1
 
-Última verificación realizada en este PC (16-09-2026):
+Última verificación realizada en este PC (17-09-2026, `feature/demo-release`):
 
     $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio1\jbr'
-    .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
-      -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
+    .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest `
+      :app:lintDebug :app:assembleDebug --no-daemon
+    .\gradlew.bat :app:assembleRelease `
+      -PoneApiBaseUrl=https://configure-me.invalid/api/v1 --no-daemon
 
 Las tareas terminaron con `BUILD SUCCESSFUL`. El APK se generó en
-`app/build/outputs/apk/debug/app-debug.apk` y se copió también como
-`one-debug-lan-192.168.1.134.apk`. El test instrumentado no se ejecutó en esta
-sesión por no haber un dispositivo conectado. Si Android Studio muestra “Project
-JDK is not defined”, abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime`
-incluido, o usar `Add JDK from disk` apuntando a la carpeta `jbr` de la
-instalación de Android Studio. La ruta exacta cambia según el PC.
+`app/build/outputs/apk/debug/app-debug.apk`; se instaló y arrancó en el emulador
+Pixel 9 API 36 sin errores fatales. También pasó `assembleRelease` con el
+placeholder HTTPS. Si Android Studio muestra “Project JDK is not defined”,
+abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime` incluido, o usar `Add
+JDK from disk` apuntando a la carpeta `jbr` de la instalación de Android
+Studio. La ruta exacta cambia según el PC.
 
 El test instrumentado requiere un emulador/dispositivo conectado:
 

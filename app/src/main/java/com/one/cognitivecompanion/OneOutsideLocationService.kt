@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
@@ -38,8 +39,12 @@ class OneOutsideLocationService : Service() {
     private lateinit var store: OneOutsideTrackingStore
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
+    private var subscribedPersonId: UUID? = null
     private var activePersonId: UUID? = null
     private var lastRecordedCapturedAtMillis = 0L
+    private var lastObservedLocation: Location? = null
+    private var stationaryObservations = 0
+    private var samplingWhileMoving = true
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val reverseLookupAttempts = mutableMapOf<String, Long>()
 
@@ -102,13 +107,23 @@ class OneOutsideLocationService : Service() {
         }
     }
 
-    private fun requestLocationUpdates(personId: UUID) {
-        if (locationCallback != null) return
+    private fun requestLocationUpdates(personId: UUID, moving: Boolean = true) {
+        if (locationCallback != null && samplingWhileMoving == moving && subscribedPersonId == personId) return
+        locationCallback?.let(locationClient::removeLocationUpdates)
+        if (subscribedPersonId != personId) {
+            lastObservedLocation = null
+            stationaryObservations = 0
+            lastRecordedCapturedAtMillis = 0L
+        }
+        subscribedPersonId = personId
+        samplingWhileMoving = moving
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY,
-            ONE_OUTSIDE_LOCATION_INTERVAL_MILLIS
+            if (moving) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            if (moving) ONE_OUTSIDE_LOCATION_INTERVAL_MILLIS else ONE_OUTSIDE_STATIONARY_INTERVAL_MILLIS
         )
-            .setMinUpdateIntervalMillis(ONE_OUTSIDE_MIN_LOCATION_INTERVAL_MILLIS)
+            .setMinUpdateIntervalMillis(
+                if (moving) ONE_OUTSIDE_MIN_LOCATION_INTERVAL_MILLIS else ONE_OUTSIDE_STATIONARY_INTERVAL_MILLIS
+            )
             .setMinUpdateDistanceMeters(ONE_OUTSIDE_MIN_LOCATION_DISTANCE_METERS)
             .build()
         val callback = object : LocationCallback() {
@@ -146,14 +161,23 @@ class OneOutsideLocationService : Service() {
         runCatching {
             locationClient.lastLocation
                 .addOnSuccessListener { location ->
-                    if (location != null) recordGpsLocation(personId, location)
+                    if (location != null && System.currentTimeMillis() - location.time <= 5 * 60_000L) {
+                        recordGpsLocation(personId, location)
+                    }
                 }
         }
     }
 
-    private fun recordGpsLocation(personId: UUID, location: android.location.Location) {
+    private fun recordGpsLocation(personId: UUID, location: Location) {
         val capturedAtMillis = location.time.takeIf { it > 0L } ?: System.currentTimeMillis()
         if (capturedAtMillis <= lastRecordedCapturedAtMillis) return
+        if (capturedAtMillis > System.currentTimeMillis() + 60_000L) return
+        val previous = lastObservedLocation
+        val moved = previous != null &&
+            location.distanceTo(previous) > maxOf(25f, location.accuracy, previous.accuracy)
+        val moving = moved || (location.hasSpeed() && location.speed >= 1.5f)
+        stationaryObservations = if (moving) 0 else stationaryObservations + 1
+        lastObservedLocation = location
         val update = runCatching {
             store.appendLocation(
                 personId = personId,
@@ -176,6 +200,11 @@ class OneOutsideLocationService : Service() {
         )
         sendTrackingBroadcast(personId)
         scheduleStreetLookupIfNeeded(update)
+        if (stationaryObservations >= 3 && samplingWhileMoving) {
+            requestLocationUpdates(personId, moving = false)
+        } else if (moving && !samplingWhileMoving) {
+            requestLocationUpdates(personId, moving = true)
+        }
     }
 
     private fun scheduleStreetLookupIfNeeded(update: OneOutsideLocationResult) {
@@ -316,6 +345,7 @@ class OneOutsideLocationService : Service() {
             locationClient.removeLocationUpdates(callback)
         }
         locationCallback = null
+        subscribedPersonId = null
         runCatching { LocationServices.getGeofencingClient(this).removeGeofences(geofencePendingIntent()) }
         activePersonId?.let { sendTrackingBroadcast(it) }
         serviceScope.cancel()

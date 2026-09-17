@@ -374,24 +374,32 @@ es:
 1. Seleccionar la persona cuidada; en demo offline aparece un perfil local y
    con backend se usan los care recipients existentes, sin escribir ubicación
    en el backend.
-2. La vista inicial es un cuadrado local con la foto del perfil (o iniciales) y
-   círculos por cada punto reciente. La foto se puede elegir desde el perfil
-   local; si el API entrega `profile_photo_url` o `photo_url`, se usa como
-   fallback. El mapa cartográfico detallado se abre desde `History` o
-   `Configure map`.
+2. La vista inicial es un mapa cartográfico cuadrado con la foto del perfil (o
+   iniciales) anclada a la coordenada del punto actual, no al centro de la pantalla,
+   y círculos por cada punto reciente. El usuario puede desplazar el mapa y
+   volver a centrarlo con el botón de ubicación. La foto se puede
+   elegir desde el perfil local; si el API entrega `profile_photo_url` o
+   `photo_url`, se usa como fallback. El mapa cartográfico detallado se abre
+   desde `History` o `Configure map`.
 3. Configurar `Home` y lugares seguros tocando el mapa detallado o usando la
    última posición fiable del teléfono. Ambos radios parten de 20 m y se pueden
    adaptar desde la interfaz, con un mínimo configurable de 20 m.
 4. Activar `Location sharing on this phone`. Android usa un foreground service
-   de GPS de alta precisión, con una muestra inicial de la última ubicación y
-   actualizaciones periódicas para poder detectar estancias aunque la persona
-   permanezca quieta. También registra geofences para avisos de entrada/salida.
+   de GPS con muestras cada 20 s mientras hay movimiento y cada 90 s en reposo,
+   una última ubicación solo si es reciente y geofences para avisos de
+   entrada/salida. Tras el permiso de uso de la app, la interfaz explica y pide
+   por separado el acceso en segundo plano; en Android 11+ se abre Ajustes para
+   seleccionar `Allow all the time`. Si se deniega, queda el seguimiento en
+   primer plano con un aviso y una vía para volver a habilitarlo.
 5. Cuando un punto fiable queda fuera de las zonas o acumula una estancia de al
    menos cinco minutos, el servicio intenta resolver y guardar el nombre de la
    calle. La estancia se conserva con su duración y se muestra en el historial,
    sin usar `Outside configured zones` como ubicación del historial.
 6. En el historial se puede elegir 1 hora, 6 horas, 24 horas, 3 días o 7 días;
-   siete días es el máximo local. `Test a route` solo aparece en demo mode y
+   siete días es el máximo local. Los puntos GPS se muestran como observaciones,
+   sin unirlos con rectas que aparenten un trayecto por calles no comprobado.
+   La reconstrucción vial requiere un motor de map matching y una política de
+   privacidad antes de enviar trazas a un proveedor. `Test a route` solo aparece en demo mode y
    permite probar salida, llegada a un lugar seguro y vuelta a casa sin moverse.
 7. `Resident message preview` solo crea una notificación en el propio teléfono;
    todavía no existe sincronización entre teléfonos/familia. Para eso hará
@@ -401,6 +409,14 @@ La precisión de cada punto se conserva y la app no clasifica zonas cuando el
 radio de error supera 120 m. El historial, radios, alertas y mensajes de esta
 primera entrega son locales a Android; no deben interpretarse como un servicio
 de emergencia ni como una coordenada exacta.
+
+El APK de debug local para esta rama se genera con
+`./gradlew :app:assembleDebug` en `app/build/outputs/apk/debug/app-debug.apk`.
+Se verificó con tests unitarios, cuatro tests instrumentados en emulador API 36,
+instalación y arranque de la actividad principal. Queda pendiente validar el
+seguimiento real en un teléfono físico y la concesión del permiso de segundo
+plano en cada versión de Android. El mapa y la resolución del nombre de calle
+requieren red; la consulta de calle puede enviar coordenadas al geocodificador.
 
 ### Conectividad LAN para probar en un teléfono físico
 

@@ -1,12 +1,20 @@
 package com.one.cognitivecompanion
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -14,9 +22,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -24,9 +35,11 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.gestures.MoveGestureDetector
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
@@ -35,6 +48,9 @@ import org.maplibre.android.style.layers.PropertyFactory.fillColor
 import org.maplibre.android.style.layers.PropertyFactory.fillOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.layers.PropertyFactory.iconAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.iconImage
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -43,6 +59,8 @@ import org.maplibre.geojson.Point
 import org.maplibre.geojson.Polygon
 import okhttp3.OkHttpClient
 import org.maplibre.android.module.http.HttpRequestUtil
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -51,8 +69,10 @@ private const val ONE_SAFE_ZONES_SOURCE = "one-safe-zones"
 private const val ONE_ROUTE_SOURCE = "one-route"
 private const val ONE_HOME_POINT_SOURCE = "one-home-point"
 private const val ONE_SAFE_POINTS_SOURCE = "one-safe-points"
+private const val ONE_HISTORY_POINTS_SOURCE = "one-history-points"
 private const val ONE_CURRENT_POINT_SOURCE = "one-current-point"
 private const val ONE_SEARCH_POINT_SOURCE = "one-search-point"
+private const val ONE_PERSON_AVATAR_IMAGE = "one-person-avatar-image"
 
 private const val OSM_STYLE_JSON = """
 {
@@ -111,7 +131,12 @@ fun OneExteriorMap(
     modifier: Modifier = Modifier,
     focusPoint: OneExteriorPoint? = null,
     searchPoint: OneExteriorPoint? = null,
-    cameraCommand: OneExteriorMapCameraCommand? = null
+    cameraCommand: OneExteriorMapCameraCommand? = null,
+    historyPoints: List<OneExteriorPoint> = emptyList(),
+    personName: String? = null,
+    personPhotoUri: String? = null,
+    followCurrentLocation: Boolean = false,
+    onUserMapMove: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -119,10 +144,18 @@ fun OneExteriorMap(
     // editing mode. Reading the State inside the listener prevents it from
     // retaining the initial NONE callback after "Set home" is selected.
     val currentOnMapTap = rememberUpdatedState(onMapTap)
+    val currentOnUserMapMove = rememberUpdatedState(onUserMapMove)
     val mapView = remember(context) { createOneExteriorMapView(context) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleReady by remember { mutableStateOf(false) }
     var lastCameraCenter by remember { mutableStateOf<OneExteriorPoint?>(null) }
+    val markerBitmap by produceState<Bitmap?>(null, context, personName, personPhotoUri) {
+        value = personName?.let { name ->
+            withContext(Dispatchers.IO) {
+                createOneExteriorAvatarBitmap(context, name, personPhotoUri)
+            }
+        }
+    }
 
     DisposableEffect(mapView, lifecycleOwner) {
         var mapViewStarted = false
@@ -164,6 +197,13 @@ fun OneExteriorMap(
         var disposed = false
         mapView.getMapAsync { loadedMap ->
             if (!disposed) {
+                loadedMap.addOnMoveListener(object : MapLibreMap.OnMoveListener {
+                    override fun onMoveBegin(detector: MoveGestureDetector) {
+                        currentOnUserMapMove.value()
+                    }
+                    override fun onMove(detector: MoveGestureDetector) = Unit
+                    override fun onMoveEnd(detector: MoveGestureDetector) = Unit
+                })
                 loadedMap.addOnMapClickListener { point ->
                     currentOnMapTap.value(OneExteriorPoint(point.latitude, point.longitude))
                     true
@@ -195,16 +235,21 @@ fun OneExteriorMap(
         modifier = modifier
     )
 
-    LaunchedEffect(styleReady, home, safePlaces, routePoints, currentPoint, searchPoint) {
+    LaunchedEffect(styleReady, home, safePlaces, routePoints, historyPoints, currentPoint, searchPoint) {
         val loadedMap = map ?: return@LaunchedEffect
         val style = loadedMap.style ?: return@LaunchedEffect
-        updateOneExteriorSources(style, home, safePlaces, routePoints, currentPoint, searchPoint)
+        updateOneExteriorSources(style, home, safePlaces, routePoints, historyPoints, currentPoint, searchPoint)
     }
 
-    LaunchedEffect(styleReady, home?.center, focusPoint) {
+    LaunchedEffect(styleReady, markerBitmap) {
+        val style = map?.style ?: return@LaunchedEffect
+        markerBitmap?.let { style.addImage(ONE_PERSON_AVATAR_IMAGE, it) }
+    }
+
+    LaunchedEffect(styleReady, home?.center, focusPoint, followCurrentLocation) {
         val loadedMap = map ?: return@LaunchedEffect
+        if (!followCurrentLocation && lastCameraCenter != null) return@LaunchedEffect
         val center = focusPoint ?: home?.center ?: OneExteriorPoint(DEFAULT_MAP_LATITUDE, DEFAULT_MAP_LONGITUDE)
-        if (center == lastCameraCenter) return@LaunchedEffect
         lastCameraCenter = center
         loadedMap.animateCamera(
             CameraUpdateFactory.newCameraPosition(
@@ -283,6 +328,7 @@ private fun addOneExteriorLayers(map: MapLibreMap) {
     style.addSource(GeoJsonSource(ONE_ROUTE_SOURCE))
     style.addSource(GeoJsonSource(ONE_HOME_POINT_SOURCE))
     style.addSource(GeoJsonSource(ONE_SAFE_POINTS_SOURCE))
+    style.addSource(GeoJsonSource(ONE_HISTORY_POINTS_SOURCE))
     style.addSource(GeoJsonSource(ONE_CURRENT_POINT_SOURCE))
     style.addSource(GeoJsonSource(ONE_SEARCH_POINT_SOURCE))
 
@@ -318,7 +364,15 @@ private fun addOneExteriorLayers(map: MapLibreMap) {
     )
     addPointLayer(style, "one-home-center", ONE_HOME_POINT_SOURCE, "#1769E8")
     addPointLayer(style, "one-safe-center", ONE_SAFE_POINTS_SOURCE, "#0F9D7A")
+    addPointLayer(style, "one-history-center", ONE_HISTORY_POINTS_SOURCE, "#00A6A6", radius = 4.5f)
     addPointLayer(style, "one-current-center", ONE_CURRENT_POINT_SOURCE, "#C43D5C", radius = 7.0f)
+    style.addLayer(
+        SymbolLayer("one-person-avatar", ONE_CURRENT_POINT_SOURCE).withProperties(
+            iconImage(ONE_PERSON_AVATAR_IMAGE),
+            iconAllowOverlap(true),
+            iconIgnorePlacement(true)
+        )
+    )
     addPointLayer(style, "one-search-center", ONE_SEARCH_POINT_SOURCE, "#7B1FA2", radius = 8.0f)
 }
 
@@ -338,6 +392,7 @@ private fun updateOneExteriorSources(
     home: OneExteriorHomeZone?,
     safePlaces: List<OneExteriorSafePlace>,
     routePoints: List<OneExteriorPoint>,
+    historyPoints: List<OneExteriorPoint>,
     currentPoint: OneExteriorPoint?,
     searchPoint: OneExteriorPoint?
 ) {
@@ -364,6 +419,9 @@ private fun updateOneExteriorSources(
     style.getSourceAs<GeoJsonSource>(ONE_SAFE_POINTS_SOURCE)?.setGeoJson(
         FeatureCollection.fromFeatures(safePlaces.map { Feature.fromGeometry(mapPoint(it.center)) }.toTypedArray())
     )
+    style.getSourceAs<GeoJsonSource>(ONE_HISTORY_POINTS_SOURCE)?.setGeoJson(
+        FeatureCollection.fromFeatures(historyPoints.map { Feature.fromGeometry(mapPoint(it)) }.toTypedArray())
+    )
     style.getSourceAs<GeoJsonSource>(ONE_CURRENT_POINT_SOURCE)?.setGeoJson(
         pointCollection(currentPoint)
     )
@@ -378,6 +436,62 @@ private fun pointCollection(point: OneExteriorPoint?): FeatureCollection =
     )
 
 private fun mapPoint(point: OneExteriorPoint): Point = Point.fromLngLat(point.longitude, point.latitude)
+
+private fun createOneExteriorAvatarBitmap(context: Context, name: String, photoUri: String?): Bitmap {
+    val size = 120
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val center = size / 2f
+    val radius = 49f
+    paint.color = AndroidColor.WHITE
+    canvas.drawCircle(center, center, 56f, paint)
+    paint.color = AndroidColor.rgb(23, 105, 232)
+    canvas.drawCircle(center, center, radius, paint)
+
+    val photo = runCatching {
+        photoUri?.let { uri ->
+            if (uri.startsWith("https://") || uri.startsWith("http://")) {
+                val connection = URL(uri).openConnection() as HttpURLConnection
+                connection.connectTimeout = 8_000
+                connection.readTimeout = 8_000
+                try {
+                    if (connection.responseCode in 200..299) {
+                        connection.inputStream.use { BitmapFactory.decodeStream(it) }
+                    } else null
+                } finally {
+                    connection.disconnect()
+                }
+            } else {
+                context.contentResolver.openInputStream(uri.toUri())?.use { BitmapFactory.decodeStream(it) }
+            }
+        }
+    }.getOrNull()
+    if (photo != null) {
+        val clip = Path().apply { addCircle(center, center, radius, Path.Direction.CW) }
+        canvas.save()
+        canvas.clipPath(clip)
+        val scale = maxOf(size.toFloat() / photo.width, size.toFloat() / photo.height)
+        val width = photo.width * scale
+        val height = photo.height * scale
+        canvas.drawBitmap(
+            photo,
+            null,
+            RectF(center - width / 2f, center - height / 2f, center + width / 2f, center + height / 2f),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        )
+        canvas.restore()
+    } else {
+        val initials = name.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+            .take(2).joinToString("") { it.first().uppercaseChar().toString() }.ifBlank { "?" }
+        paint.color = AndroidColor.WHITE
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = 40f
+        paint.isFakeBoldText = true
+        canvas.drawText(initials, center, center - (paint.ascent() + paint.descent()) / 2f, paint)
+    }
+    return bitmap
+}
 
 private fun circleFeature(center: OneExteriorPoint, radiusMeters: Double): Feature {
     val coordinates = (0..48).map { index ->

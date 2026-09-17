@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -180,6 +179,8 @@ fun OneOutsideTrackingScreen(
     var snapshot by remember { mutableStateOf<OneOutsideTrackingSnapshot?>(null) }
     var serviceError by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingTrackingPersonId by remember { mutableStateOf<UUID?>(null) }
+    var showBackgroundPermissionDialog by remember { mutableStateOf(false) }
+    var hasBackgroundPermission by remember { mutableStateOf(hasOutsideBackgroundLocationPermission(context)) }
     var showRecipientMenu by remember { mutableStateOf(false) }
     var mapEditModeName by rememberSaveable { mutableStateOf(OutsideMapEditMode.NONE.name) }
     var movingSafePlaceId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -269,6 +270,7 @@ fun OneOutsideTrackingScreen(
 
     fun reload() {
         selectedPersonId?.let { snapshot = store.read(it) }
+        hasBackgroundPermission = hasOutsideBackgroundLocationPermission(context)
     }
 
     fun syncZonesIfTracking(personId: UUID) {
@@ -313,6 +315,11 @@ fun OneOutsideTrackingScreen(
         OneOutsideLocationService.start(context, personId)
         serviceError = null
         reload()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            !hasOutsideBackgroundLocationPermission(context)
+        ) {
+            showBackgroundPermissionDialog = true
+        }
     }
 
     val foregroundLocationLauncher = rememberLauncherForActivityResult(
@@ -324,13 +331,30 @@ fun OneOutsideTrackingScreen(
         val personId = pendingTrackingPersonId
         pendingTrackingPersonId = null
         if (granted && personId != null) {
-            store.setTrackingEnabled(personId, true, OneOutsideTrackingMode.GPS)
-            store.saveSelectedPersonId(personId)
-            OneOutsideLocationService.start(context, personId)
-            serviceError = null
-            reload()
+            startGps(personId)
         } else {
             serviceError = "Location permission is required to record this phone's position."
+        }
+    }
+
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { reload() }
+
+    val backgroundSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { reload() }
+
+    fun requestBackgroundLocation() {
+        showBackgroundPermissionDialog = false
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            backgroundSettingsLauncher.launch(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = ("package:" + context.packageName).toUri()
+                }
+            )
         }
     }
 
@@ -374,15 +398,6 @@ fun OneOutsideTrackingScreen(
         OneOutsideLocationService.stop(context)
         serviceError = null
         reload()
-    }
-
-    fun openAppSettings() {
-        context.startActivity(
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = ("package:" + context.packageName).toUri()
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-        )
     }
 
     LaunchedEffect(recipientIds) {
@@ -437,7 +452,6 @@ fun OneOutsideTrackingScreen(
         ?: outsideHistoryRanges.last()
     val historyCutoffMillis = System.currentTimeMillis() - selectedHistoryRange.durationMillis
     val historyPoints = snapshot?.points.orEmpty().filter { it.capturedAtMillis >= historyCutoffMillis }
-    val historyPointsForMap = historyPoints.takeLast(250).map { it.point }
     val routeOriginOptions = oneExteriorRouteOriginOptions(
         home = snapshot?.home,
         currentPoint = latestReliablePoint?.point ?: currentPoint,
@@ -471,13 +485,9 @@ fun OneOutsideTrackingScreen(
             )
         }
     }.orEmpty()
-    val plannedPoints = if (simulationRunning) routePoints else emptyList()
-    val mapPoints = snapshot?.points.orEmpty().map { it.point }.takeLast(150) + plannedPoints
-    val detailedMapPoints = if (detailedMapMode == OutsideDetailedMapMode.HISTORY) {
-        historyPointsForMap
-    } else {
-        mapPoints
-    }
+    // Recorded GPS samples are observations, not a street route. Draw them as
+    // points until a reliable pedestrian map-matching geometry is available.
+    val detailedMapPoints = emptyList<OneExteriorPoint>()
     val detailedMapCurrentPoint = if (detailedMapMode == OutsideDetailedMapMode.HISTORY) {
         historyPoints.lastOrNull()?.point
     } else {
@@ -486,7 +496,6 @@ fun OneOutsideTrackingScreen(
     val canAdvance = simulationRunning && routePoints.isNotEmpty() && routeIndex < routePoints.lastIndex
     val currentZone = snapshot?.currentZone
     val locationEnabled = isSystemLocationEnabled(context)
-    val hasBackgroundPermission = hasOutsideBackgroundLocationPermission(context)
     val history = historyPoints.asReversed()
 
     fun resetRouteProgress() {
@@ -767,7 +776,11 @@ fun OneOutsideTrackingScreen(
                             detail = "Choose “Allow all the time” for zone alerts.",
                             tint = OneAmber,
                             icon = Icons.Default.LocationOn,
-                            action = { OutlinedButton(onClick = ::openAppSettings) { Text("Open app settings") } }
+                            action = {
+                                OutlinedButton(onClick = { showBackgroundPermissionDialog = true }) {
+                                    Text("Enable background access")
+                                }
+                            }
                         )
                     }
                     serviceError?.let {
@@ -792,6 +805,8 @@ fun OneOutsideTrackingScreen(
             OutsideLocationOverviewCard(
                 personName = selectedName,
                 profilePhotoUri = selectedPhotoUri,
+                home = snapshot?.home,
+                safePlaces = snapshot?.safePlaces.orEmpty(),
                 points = snapshot?.points.orEmpty().takeLast(80),
                 currentPoint = currentPoint,
                 latestLabel = snapshot?.lastPoint?.let {
@@ -1255,6 +1270,8 @@ fun OneOutsideTrackingScreen(
 
     if (showFullScreenMap) {
         OutsideFullScreenMapDialog(
+            personName = selectedName,
+            personPhotoUri = selectedPhotoUri,
             home = snapshot?.home,
             safePlaces = snapshot?.safePlaces.orEmpty(),
             routePoints = detailedMapPoints,
@@ -1286,6 +1303,27 @@ fun OneOutsideTrackingScreen(
         )
     }
 
+    if (showBackgroundPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackgroundPermissionDialog = false },
+            title = { Text("Keep location history while outside?") },
+            text = {
+                Text(
+                    "ONE needs background location to keep recording this phone's position and " +
+                        "detect safe-place arrivals and departures when the app is closed. " +
+                        "Choose ‘Allow all the time’ in Android settings. " +
+                        "The history stays on this phone for up to seven days. " +
+                        "You can decline and keep tracking only while the app is in use."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = ::requestBackgroundLocation) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackgroundPermissionDialog = false }) { Text("Not now") }
+            }
+        )
+    }
     if (showPlaceDialog) {
         OutsideDialog(
             onDismissRequest = {
@@ -1446,12 +1484,15 @@ private fun OutsideProfileAvatar(
 private fun OutsideLocationOverviewCard(
     personName: String,
     profilePhotoUri: String?,
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>,
     points: List<OneOutsideLocationPoint>,
     currentPoint: OneExteriorPoint?,
     latestLabel: String?,
     onOpenHistory: () -> Unit,
     onConfigureMap: () -> Unit
 ) {
+    var followLocation by remember(personName) { mutableStateOf(true) }
     val pointsToPlot = buildList {
         addAll(points.map { it.point })
         currentPoint?.takeIf { it !in this }?.let(::add)
@@ -1483,48 +1524,34 @@ private fun OutsideLocationOverviewCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
-                    .clip(RoundedCornerShape(22.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clip(RoundedCornerShape(22.dp))
             ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    if (pointsToPlot.isNotEmpty()) {
-                        val minLatitude = pointsToPlot.minOf { it.latitude }
-                        val maxLatitude = pointsToPlot.maxOf { it.latitude }
-                        val minLongitude = pointsToPlot.minOf { it.longitude }
-                        val maxLongitude = pointsToPlot.maxOf { it.longitude }
-                        val latitudeRange = (maxLatitude - minLatitude).takeIf { it > 0.000001 } ?: 0.001
-                        val longitudeRange = (maxLongitude - minLongitude).takeIf { it > 0.000001 } ?: 0.001
-                        pointsToPlot.forEachIndexed { index, point ->
-                            val x = ((point.longitude - minLongitude) / longitudeRange)
-                                .toFloat()
-                                .coerceIn(0.12f, 0.88f)
-                            val y = (1.0 - ((point.latitude - minLatitude) / latitudeRange))
-                                .toFloat()
-                                .coerceIn(0.12f, 0.88f)
-                            val center = androidx.compose.ui.geometry.Offset(size.width * x, size.height * y)
-                            drawCircle(
-                                color = if (index == pointsToPlot.lastIndex) OneBlue.copy(alpha = 0.28f) else OneCyan.copy(alpha = 0.20f),
-                                radius = if (index == pointsToPlot.lastIndex) 18f else 12f,
-                                center = center
-                            )
-                            drawCircle(
-                                color = if (index == pointsToPlot.lastIndex) OneBlue else OneCyan,
-                                radius = if (index == pointsToPlot.lastIndex) 6f else 4f,
-                                center = center
-                            )
-                        }
-                    }
-                }
-                OutsideProfileAvatar(
-                    name = personName,
-                    photoUri = profilePhotoUri,
-                    modifier = Modifier
-                        .size(74.dp)
-                        .align(Alignment.Center)
+                OneExteriorMap(
+                    home = home,
+                    safePlaces = safePlaces,
+                    routePoints = emptyList(),
+                    historyPoints = pointsToPlot,
+                    currentPoint = currentPoint,
+                    focusPoint = currentPoint ?: pointsToPlot.lastOrNull(),
+                    onMapTap = {},
+                    personName = personName,
+                    personPhotoUri = profilePhotoUri,
+                    followCurrentLocation = followLocation,
+                    onUserMapMove = { followLocation = false },
+                    modifier = Modifier.fillMaxSize()
                 )
+                if (currentPoint != null) {
+                    OutsideMapControlButton(
+                        icon = Icons.Default.MyLocation,
+                        contentDescription = "Center on person's location",
+                        onClick = { followLocation = true },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp)
+                    )
+                }
                 if (pointsToPlot.isEmpty()) {
                     Text(
-                        "Circles will appear as GPS history is recorded",
+                        "Waiting for GPS history",
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(12.dp),
@@ -1532,9 +1559,19 @@ private fun OutsideLocationOverviewCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Text(
+                    "© OpenStreetMap contributors",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Black
+                )
             }
             Text(
-                "The square is a calm overview. Open history to see the geographic map and choose a time range.",
+                "Map overview · open History for GPS points and the time range.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1626,6 +1663,8 @@ private fun OutsideMapSection(
 
 @Composable
 private fun OutsideFullScreenMapDialog(
+    personName: String,
+    personPhotoUri: String?,
     home: OneExteriorHomeZone?,
     safePlaces: List<OneExteriorSafePlace>,
     routePoints: List<OneExteriorPoint>,
@@ -1667,11 +1706,14 @@ private fun OutsideFullScreenMapDialog(
                     home = home,
                     safePlaces = safePlaces,
                     routePoints = routePoints,
+                    historyPoints = outsideHistoryPointsForMap(historyPoints),
                     currentPoint = currentPoint,
                     focusPoint = focusPoint,
                     searchPoint = searchPoint,
                     cameraCommand = cameraCommand,
                     onMapTap = onMapTap,
+                    personName = personName,
+                    personPhotoUri = personPhotoUri,
                     modifier = Modifier.fillMaxSize()
                 )
                 Surface(
@@ -1767,6 +1809,14 @@ private fun OutsideFullScreenMapDialog(
                 )
             }
         }
+    }
+}
+
+private fun outsideHistoryPointsForMap(points: List<OneOutsideLocationPoint>): List<OneExteriorPoint> {
+    val maxMapPoints = 1_500
+    if (points.size <= maxMapPoints) return points.map { it.point }
+    return (0 until maxMapPoints).map { index ->
+        points[(index.toLong() * points.lastIndex / (maxMapPoints - 1)).toInt()].point
     }
 }
 
@@ -1933,9 +1983,11 @@ private fun OutsideMapControls(
 private fun OutsideMapControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
+        modifier = modifier,
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
         tonalElevation = 5.dp,

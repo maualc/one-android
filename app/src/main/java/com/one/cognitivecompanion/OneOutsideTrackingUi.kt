@@ -12,21 +12,28 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocationOn
@@ -37,22 +44,28 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +74,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -76,6 +90,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import com.one.cognitivecompanion.ui.theme.OneAmber
@@ -84,6 +100,7 @@ import com.one.cognitivecompanion.ui.theme.OneCyan
 import com.one.cognitivecompanion.ui.theme.OneMint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlin.coroutines.cancellation.CancellationException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -139,11 +156,67 @@ fun OneOutsideTrackingScreen(
     var routeMenuExpanded by remember { mutableStateOf(false) }
     var messageDraft by rememberSaveable { mutableStateOf("") }
     var showClearHistoryDialog by remember { mutableStateOf(false) }
+    var showFullScreenMap by rememberSaveable { mutableStateOf(false) }
+    var mapSearchQuery by rememberSaveable { mutableStateOf("") }
+    var submittedMapSearchQuery by remember { mutableStateOf("") }
+    var mapSearchRequestId by remember { mutableIntStateOf(0) }
+    var mapSearchResults by remember { mutableStateOf<List<OneOutsideLocationSearchResult>>(emptyList()) }
+    var mapSearchError by rememberSaveable { mutableStateOf<String?>(null) }
+    var mapSearchLoading by remember { mutableStateOf(false) }
+    var mapSearchPoint by remember { mutableStateOf<OneExteriorPoint?>(null) }
+    var mapCameraCommandId by rememberSaveable { mutableLongStateOf(0L) }
+    var mapCameraCommand by remember { mutableStateOf<OneExteriorMapCameraCommand?>(null) }
     val mapEditMode = runCatching { OutsideMapEditMode.valueOf(mapEditModeName) }
         .getOrDefault(OutsideMapEditMode.NONE)
     val recipientIds = availableRecipients.map { it.id }
     val selectedRecipient = availableRecipients.firstOrNull { it.id == selectedPersonId }
     val selectedName = selectedRecipient?.displayName ?: "Person cared for"
+
+    fun issueMapCameraCommand(action: OneExteriorMapCameraAction, target: OneExteriorPoint? = null) {
+        mapCameraCommandId += 1L
+        mapCameraCommand = OneExteriorMapCameraCommand(mapCameraCommandId, action, target)
+    }
+
+    fun submitMapSearch() {
+        val query = mapSearchQuery.trim()
+        if (query.isEmpty()) {
+            mapSearchResults = emptyList()
+            mapSearchError = "Escribe una dirección, un lugar o una ciudad."
+            return
+        }
+        submittedMapSearchQuery = query
+        mapSearchRequestId += 1
+        mapSearchResults = emptyList()
+        mapSearchError = null
+    }
+
+    fun selectMapSearchResult(result: OneOutsideLocationSearchResult) {
+        mapSearchQuery = result.displayName
+        mapSearchPoint = result.point
+        mapSearchResults = emptyList()
+        mapSearchError = null
+        issueMapCameraCommand(OneExteriorMapCameraAction.FOCUS, result.point)
+    }
+
+    LaunchedEffect(mapSearchRequestId) {
+        if (mapSearchRequestId == 0) return@LaunchedEffect
+        val query = submittedMapSearchQuery
+        mapSearchLoading = true
+        mapSearchError = null
+        try {
+            val results = searchOneOutsideLocations(query)
+            mapSearchResults = results
+            if (results.isEmpty()) {
+                mapSearchError = "No se han encontrado resultados para esa búsqueda."
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            mapSearchResults = emptyList()
+            mapSearchError = "No se ha podido buscar la ubicación. Comprueba la conexión e inténtalo de nuevo."
+        } finally {
+            mapSearchLoading = false
+        }
+    }
 
     fun reload() {
         selectedPersonId?.let { snapshot = store.read(it) }
@@ -306,6 +379,61 @@ fun OneOutsideTrackingScreen(
     val hasBackgroundPermission = hasOutsideBackgroundLocationPermission(context)
     val latestReliablePoint = snapshot?.points.orEmpty().lastOrNull { it.zoneKey != null }
     val history = snapshot?.points.orEmpty().asReversed()
+
+    fun recenterMap() {
+        val target = latestReliablePoint?.point ?: currentPoint ?: snapshot?.home?.center
+        if (target == null) {
+            mapSearchError = "Todavía no hay una ubicación disponible para recentrar el mapa."
+            return
+        }
+        mapSearchPoint = null
+        mapSearchResults = emptyList()
+        mapSearchError = null
+        issueMapCameraCommand(OneExteriorMapCameraAction.RECENTER, target)
+    }
+
+    fun openFullScreenMap() {
+        // A new MapView is created for the dialog. The current focus point is
+        // enough to restore the useful camera target without replaying an old
+        // zoom command on the new instance.
+        mapCameraCommand = null
+        showFullScreenMap = true
+    }
+
+    fun closeFullScreenMap() {
+        mapCameraCommand = null
+        showFullScreenMap = false
+    }
+
+    fun handleMapTap(point: OneExteriorPoint) {
+        val personId = selectedPersonId ?: return
+        when (mapEditMode) {
+            OutsideMapEditMode.SET_HOME -> {
+                val radius = snapshot?.home?.radiusMeters ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS
+                store.saveHome(personId, point, radius)
+                clearMapEditMode()
+                syncZonesIfTracking(personId)
+                reload()
+            }
+            OutsideMapEditMode.ADD_SAFE_PLACE -> {
+                pendingPlacePoint = point
+                editingPlaceId = null
+                placeName = ""
+                placeRadius = ONE_OUTSIDE_DEFAULT_SAFE_RADIUS_METERS.toDisplayRadius()
+                showPlaceDialog = true
+            }
+            OutsideMapEditMode.MOVE_SAFE_PLACE -> {
+                val place = snapshot?.safePlaces.orEmpty().firstOrNull { it.id == movingSafePlaceId }
+                if (place != null) {
+                    store.saveSafePlace(personId, place.copy(center = point))
+                    syncZonesIfTracking(personId)
+                }
+                clearMapEditMode()
+                reload()
+            }
+            OutsideMapEditMode.NONE -> Unit
+        }
+    }
 
     fun advanceSimulation() {
         val personId = selectedPersonId ?: return
@@ -503,54 +631,41 @@ fun OneOutsideTrackingScreen(
                 }
             }
         }
-        item {
-            OneExteriorMap(
-                home = snapshot?.home,
-                safePlaces = snapshot?.safePlaces.orEmpty(),
-                routePoints = mapPoints,
-                currentPoint = currentPoint,
-                focusPoint = currentPoint,
-                onMapTap = { point ->
-                    val personId = selectedPersonId ?: return@OneExteriorMap
-                    when (mapEditMode) {
-                        OutsideMapEditMode.SET_HOME -> {
-                            val radius = snapshot?.home?.radiusMeters ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS
-                            store.saveHome(personId, point, radius)
-                            clearMapEditMode()
-                            syncZonesIfTracking(personId)
-                            reload()
-                        }
-                        OutsideMapEditMode.ADD_SAFE_PLACE -> {
-                            pendingPlacePoint = point
-                            editingPlaceId = null
-                            placeName = ""
-                            placeRadius = ONE_OUTSIDE_DEFAULT_SAFE_RADIUS_METERS.toDisplayRadius()
-                            showPlaceDialog = true
-                        }
-                        OutsideMapEditMode.MOVE_SAFE_PLACE -> {
-                            val place = snapshot?.safePlaces.orEmpty().firstOrNull { it.id == movingSafePlaceId }
-                            if (place != null) {
-                                store.saveSafePlace(personId, place.copy(center = point))
-                                syncZonesIfTracking(personId)
-                            }
-                            clearMapEditMode()
-                            reload()
-                        }
-                        OutsideMapEditMode.NONE -> Unit
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(310.dp)
-                    .clip(RoundedCornerShape(22.dp))
-            )
-        }
-        item {
-            Text(
-                "© OpenStreetMap contributors · Map data is used under the OSM Tile Usage Policy.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        if (!showFullScreenMap) {
+            item {
+                OutsideMapSection(
+                    home = snapshot?.home,
+                    safePlaces = snapshot?.safePlaces.orEmpty(),
+                    routePoints = mapPoints,
+                    currentPoint = currentPoint,
+                    focusPoint = mapSearchPoint ?: currentPoint,
+                    searchPoint = mapSearchPoint,
+                    cameraCommand = mapCameraCommand,
+                    onMapTap = ::handleMapTap,
+                    searchQuery = mapSearchQuery,
+                    searchResults = mapSearchResults,
+                    searchLoading = mapSearchLoading,
+                    searchError = mapSearchError,
+                    onSearchQueryChange = {
+                        mapSearchQuery = it
+                        mapSearchResults = emptyList()
+                        mapSearchError = null
+                    },
+                    onSearch = ::submitMapSearch,
+                    onSelectSearchResult = ::selectMapSearchResult,
+                    onZoomIn = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_IN) },
+                    onZoomOut = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_OUT) },
+                    onRecenter = ::recenterMap,
+                    onOpenFullScreen = ::openFullScreenMap
+                )
+            }
+            item {
+                Text(
+                    "© OpenStreetMap contributors · Map data is used under the OSM Tile Usage Policy.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         if (mapEditMode != OutsideMapEditMode.NONE) {
             item {
@@ -906,6 +1021,34 @@ fun OneOutsideTrackingScreen(
         }
     }
 
+    if (showFullScreenMap) {
+        OutsideFullScreenMapDialog(
+            home = snapshot?.home,
+            safePlaces = snapshot?.safePlaces.orEmpty(),
+            routePoints = mapPoints,
+            currentPoint = currentPoint,
+            focusPoint = mapSearchPoint ?: currentPoint,
+            searchPoint = mapSearchPoint,
+            cameraCommand = mapCameraCommand,
+            onMapTap = ::handleMapTap,
+            searchQuery = mapSearchQuery,
+            searchResults = mapSearchResults,
+            searchLoading = mapSearchLoading,
+            searchError = mapSearchError,
+            onSearchQueryChange = {
+                mapSearchQuery = it
+                mapSearchResults = emptyList()
+                mapSearchError = null
+            },
+            onSearch = ::submitMapSearch,
+            onSelectSearchResult = ::selectMapSearchResult,
+            onZoomIn = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_IN) },
+            onZoomOut = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_OUT) },
+            onRecenter = ::recenterMap,
+            onDismiss = ::closeFullScreenMap
+        )
+    }
+
     if (showPlaceDialog) {
         OutsideDialog(
             onDismissRequest = {
@@ -1002,6 +1145,296 @@ fun OneOutsideTrackingScreen(
                 Text("This removes the last 7 days of points and outside alerts for " + selectedName + " from this phone.")
             }
         )
+    }
+}
+
+@Composable
+private fun OutsideMapSection(
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>,
+    routePoints: List<OneExteriorPoint>,
+    currentPoint: OneExteriorPoint?,
+    focusPoint: OneExteriorPoint?,
+    searchPoint: OneExteriorPoint?,
+    cameraCommand: OneExteriorMapCameraCommand?,
+    onMapTap: (OneExteriorPoint) -> Unit,
+    searchQuery: String,
+    searchResults: List<OneOutsideLocationSearchResult>,
+    searchLoading: Boolean,
+    searchError: String?,
+    onSearchQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onSelectSearchResult: (OneOutsideLocationSearchResult) -> Unit,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onRecenter: () -> Unit,
+    onOpenFullScreen: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            OutsideMapSearchBar(
+                query = searchQuery,
+                results = searchResults,
+                loading = searchLoading,
+                error = searchError,
+                onQueryChange = onSearchQueryChange,
+                onSearch = onSearch,
+                onSelectResult = onSelectSearchResult,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            OutsideMapControlButton(
+                icon = Icons.Default.Fullscreen,
+                contentDescription = "Open map fullscreen",
+                onClick = onOpenFullScreen
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(310.dp)
+                .clip(RoundedCornerShape(22.dp))
+        ) {
+            OneExteriorMap(
+                home = home,
+                safePlaces = safePlaces,
+                routePoints = routePoints,
+                currentPoint = currentPoint,
+                focusPoint = focusPoint,
+                searchPoint = searchPoint,
+                cameraCommand = cameraCommand,
+                onMapTap = onMapTap,
+                modifier = Modifier.fillMaxSize()
+            )
+            OutsideMapControls(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp),
+                onZoomIn = onZoomIn,
+                onZoomOut = onZoomOut,
+                onRecenter = onRecenter
+            )
+        }
+    }
+}
+
+@Composable
+private fun OutsideFullScreenMapDialog(
+    home: OneExteriorHomeZone?,
+    safePlaces: List<OneExteriorSafePlace>,
+    routePoints: List<OneExteriorPoint>,
+    currentPoint: OneExteriorPoint?,
+    focusPoint: OneExteriorPoint?,
+    searchPoint: OneExteriorPoint?,
+    cameraCommand: OneExteriorMapCameraCommand?,
+    onMapTap: (OneExteriorPoint) -> Unit,
+    searchQuery: String,
+    searchResults: List<OneOutsideLocationSearchResult>,
+    searchLoading: Boolean,
+    searchError: String?,
+    onSearchQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onSelectSearchResult: (OneOutsideLocationSearchResult) -> Unit,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onRecenter: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                OneExteriorMap(
+                    home = home,
+                    safePlaces = safePlaces,
+                    routePoints = routePoints,
+                    currentPoint = currentPoint,
+                    focusPoint = focusPoint,
+                    searchPoint = searchPoint,
+                    cameraCommand = cameraCommand,
+                    onMapTap = onMapTap,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(12.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    tonalElevation = 6.dp,
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        OutsideMapSearchBar(
+                            query = searchQuery,
+                            results = searchResults,
+                            loading = searchLoading,
+                            error = searchError,
+                            onQueryChange = onSearchQueryChange,
+                            onSearch = onSearch,
+                            onSelectResult = onSelectSearchResult,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        OutsideMapControlButton(
+                            icon = Icons.Default.Close,
+                            contentDescription = "Close fullscreen map",
+                            onClick = onDismiss
+                        )
+                    }
+                }
+                OutsideMapControls(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(16.dp),
+                    onZoomIn = onZoomIn,
+                    onZoomOut = onZoomOut,
+                    onRecenter = onRecenter
+                )
+                Text(
+                    "© OpenStreetMap contributors",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .navigationBarsPadding()
+                        .padding(16.dp)
+                        .widthIn(max = 220.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OutsideMapSearchBar(
+    query: String,
+    results: List<OneOutsideLocationSearchResult>,
+    loading: Boolean,
+    error: String?,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onSelectResult: (OneOutsideLocationSearchResult) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { onQueryChange(it.take(160)) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Search location") },
+            placeholder = { Text("Address, place or city") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = onSearch, enabled = query.isNotBlank()) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    }
+                }
+            },
+            singleLine = true
+        )
+        error?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        if (results.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(
+                        "Search results",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = OneCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                    results.take(5).forEachIndexed { index, result ->
+                        TextButton(
+                            onClick = { onSelectResult(result) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    result.displayName,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "Tap to center the map",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        if (index < results.lastIndex) HorizontalDivider()
+                    }
+                }
+            }
+        }
+        Text(
+            "Search powered by OpenStreetMap / Nominatim",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun OutsideMapControls(
+    modifier: Modifier = Modifier,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onRecenter: () -> Unit
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutsideMapControlButton(Icons.Default.ZoomIn, "Zoom in", onZoomIn)
+        OutsideMapControlButton(Icons.Default.ZoomOut, "Zoom out", onZoomOut)
+        OutsideMapControlButton(Icons.Default.MyLocation, "Center on latest location", onRecenter)
+    }
+}
+
+@Composable
+private fun OutsideMapControlButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 5.dp,
+        shadowElevation = 5.dp
+    ) {
+        IconButton(onClick = onClick) {
+            Icon(icon, contentDescription = contentDescription, tint = OneBlue)
+        }
     }
 }
 

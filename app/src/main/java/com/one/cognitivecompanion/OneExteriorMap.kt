@@ -52,6 +52,7 @@ private const val ONE_ROUTE_SOURCE = "one-route"
 private const val ONE_HOME_POINT_SOURCE = "one-home-point"
 private const val ONE_SAFE_POINTS_SOURCE = "one-safe-points"
 private const val ONE_CURRENT_POINT_SOURCE = "one-current-point"
+private const val ONE_SEARCH_POINT_SOURCE = "one-search-point"
 
 private const val OSM_STYLE_JSON = """
 {
@@ -87,6 +88,19 @@ private val oneExteriorHttpClient: OkHttpClient by lazy {
 
 private var oneExteriorHttpClientConfigured = false
 
+enum class OneExteriorMapCameraAction {
+    ZOOM_IN,
+    ZOOM_OUT,
+    RECENTER,
+    FOCUS
+}
+
+data class OneExteriorMapCameraCommand(
+    val id: Long,
+    val action: OneExteriorMapCameraAction,
+    val target: OneExteriorPoint? = null
+)
+
 @Composable
 fun OneExteriorMap(
     home: OneExteriorHomeZone?,
@@ -95,7 +109,9 @@ fun OneExteriorMap(
     currentPoint: OneExteriorPoint?,
     onMapTap: (OneExteriorPoint) -> Unit,
     modifier: Modifier = Modifier,
-    focusPoint: OneExteriorPoint? = null
+    focusPoint: OneExteriorPoint? = null,
+    searchPoint: OneExteriorPoint? = null,
+    cameraCommand: OneExteriorMapCameraCommand? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -176,10 +192,10 @@ fun OneExteriorMap(
         modifier = modifier
     )
 
-    LaunchedEffect(styleReady, home, safePlaces, routePoints, currentPoint) {
+    LaunchedEffect(styleReady, home, safePlaces, routePoints, currentPoint, searchPoint) {
         val loadedMap = map ?: return@LaunchedEffect
         val style = loadedMap.style ?: return@LaunchedEffect
-        updateOneExteriorSources(style, home, safePlaces, routePoints, currentPoint)
+        updateOneExteriorSources(style, home, safePlaces, routePoints, currentPoint, searchPoint)
     }
 
     LaunchedEffect(styleReady, home?.center, focusPoint) {
@@ -195,6 +211,45 @@ fun OneExteriorMap(
                     .build()
             )
         )
+    }
+
+    LaunchedEffect(styleReady, cameraCommand?.id) {
+        val command = cameraCommand ?: return@LaunchedEffect
+        val loadedMap = map ?: return@LaunchedEffect
+        if (command.id == 0L) return@LaunchedEffect
+
+        when (command.action) {
+            OneExteriorMapCameraAction.ZOOM_IN,
+            OneExteriorMapCameraAction.ZOOM_OUT -> {
+                val currentCamera = loadedMap.cameraPosition
+                val target = currentCamera.target ?: return@LaunchedEffect
+                val delta = if (command.action == OneExteriorMapCameraAction.ZOOM_IN) 1.0 else -1.0
+                val nextZoom = (currentCamera.zoom + delta).coerceIn(2.0, 19.0)
+                loadedMap.animateCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.Builder()
+                            .target(target)
+                            .zoom(nextZoom)
+                            .bearing(currentCamera.bearing)
+                            .tilt(currentCamera.tilt)
+                            .build()
+                    )
+                )
+            }
+
+            OneExteriorMapCameraAction.RECENTER,
+            OneExteriorMapCameraAction.FOCUS -> {
+                val target = command.target ?: return@LaunchedEffect
+                loadedMap.animateCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.Builder()
+                            .target(LatLng(target.latitude, target.longitude))
+                            .zoom(if (command.action == OneExteriorMapCameraAction.RECENTER) 16.0 else 15.0)
+                            .build()
+                    )
+                )
+            }
+        }
     }
 }
 
@@ -226,6 +281,7 @@ private fun addOneExteriorLayers(map: MapLibreMap) {
     style.addSource(GeoJsonSource(ONE_HOME_POINT_SOURCE))
     style.addSource(GeoJsonSource(ONE_SAFE_POINTS_SOURCE))
     style.addSource(GeoJsonSource(ONE_CURRENT_POINT_SOURCE))
+    style.addSource(GeoJsonSource(ONE_SEARCH_POINT_SOURCE))
 
     style.addLayer(
         FillLayer("one-home-fill", ONE_HOME_ZONE_SOURCE).withProperties(
@@ -260,6 +316,7 @@ private fun addOneExteriorLayers(map: MapLibreMap) {
     addPointLayer(style, "one-home-center", ONE_HOME_POINT_SOURCE, "#1769E8")
     addPointLayer(style, "one-safe-center", ONE_SAFE_POINTS_SOURCE, "#0F9D7A")
     addPointLayer(style, "one-current-center", ONE_CURRENT_POINT_SOURCE, "#C43D5C", radius = 7.0f)
+    addPointLayer(style, "one-search-center", ONE_SEARCH_POINT_SOURCE, "#7B1FA2", radius = 8.0f)
 }
 
 private fun addPointLayer(style: Style, id: String, sourceId: String, color: String, radius: Float = 6.0f) {
@@ -278,7 +335,8 @@ private fun updateOneExteriorSources(
     home: OneExteriorHomeZone?,
     safePlaces: List<OneExteriorSafePlace>,
     routePoints: List<OneExteriorPoint>,
-    currentPoint: OneExteriorPoint?
+    currentPoint: OneExteriorPoint?,
+    searchPoint: OneExteriorPoint?
 ) {
     style.getSourceAs<GeoJsonSource>(ONE_HOME_ZONE_SOURCE)?.setGeoJson(
         home?.let {
@@ -305,6 +363,9 @@ private fun updateOneExteriorSources(
     )
     style.getSourceAs<GeoJsonSource>(ONE_CURRENT_POINT_SOURCE)?.setGeoJson(
         pointCollection(currentPoint)
+    )
+    style.getSourceAs<GeoJsonSource>(ONE_SEARCH_POINT_SOURCE)?.setGeoJson(
+        pointCollection(searchPoint)
     )
 }
 

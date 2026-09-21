@@ -535,6 +535,7 @@ fun OneApp() {
                             loadError = appState.homeLoadError,
                             onRetry = { coroutineScope.launch { appState.loadHome() } },
                             cameras = appState.cameras,
+                            videoConsentGranted = appState.consentStates?.get("video_capture") == true,
                             calibrationActionState = appState.calibrationActionState,
                             lastCalibration = appState.lastCalibration,
                             calibrationActionError = appState.calibrationActionError,
@@ -558,6 +559,9 @@ fun OneApp() {
                             },
                             onRefreshMapGeneration = { cameraId ->
                                 coroutineScope.launch { appState.refreshRoomMapGeneration(cameraId) }
+                            },
+                            onSubmitRoomSweep = { frames ->
+                                coroutineScope.launch { appState.submitRoomMapSweep(frames) }
                             },
                             onCreateManualMap = { roomName, zones, coordinateFrame ->
                                 coroutineScope.launch { appState.createManualRoomMap(roomName, zones, coordinateFrame) }
@@ -731,8 +735,8 @@ fun OneApp() {
                             cameraActionState = appState.cameraActionState,
                             cameraActionError = appState.cameraActionError,
                             onCameraRetry = { coroutineScope.launch { appState.loadCameras() } },
-                            onRegisterCamera = { name, roomId ->
-                                coroutineScope.launch { appState.registerCamera(name, roomId) }
+                            onRegisterCamera = { name, roomId, source ->
+                                coroutineScope.launch { appState.registerCamera(name, roomId, source) }
                             },
                             onUpdateCamera = { camera, name, roomId, enabled ->
                                 coroutineScope.launch { appState.updateCamera(camera, name, roomId, enabled) }
@@ -1311,7 +1315,7 @@ private fun CaregiverHomeScreen(
     cameraActionState: OneCameraActionState,
     cameraActionError: String?,
     onCameraRetry: () -> Unit,
-    onRegisterCamera: (String, UUID?) -> Unit,
+    onRegisterCamera: (String, UUID?, String) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
     onOpenCamera: (OneCamera) -> Unit,
     onOpenMap: () -> Unit,
@@ -1453,18 +1457,6 @@ private fun CaregiverHomeScreen(
             onOpenEvent = onOpenEvent
         )
 
-        if (isBackendHome) {
-            PublisherPairingCard(
-                pairing = publisherPairing,
-                loadState = publisherPairingLoadState,
-                error = publisherPairingError,
-                onCreatePairing = onCreatePublisherPairing,
-                pairingStatus = cameraPairingStatus,
-                pairingStatusLoadState = cameraPairingStatusLoadState,
-                pairingStatusError = cameraPairingStatusError,
-                onRefreshStatus = onRefreshCameraPairingStatus
-            )
-        }
     }
 
     if (showCareSpaces) {
@@ -1527,6 +1519,18 @@ private fun CaregiverHomeScreen(
                     onStartLiveKit = onStartLiveKit,
                     onStopLiveKit = onStopLiveKit
                 )
+                if (isBackendHome) {
+                    PublisherPairingCard(
+                        pairing = publisherPairing,
+                        loadState = publisherPairingLoadState,
+                        error = publisherPairingError,
+                        onCreatePairing = onCreatePublisherPairing,
+                        pairingStatus = cameraPairingStatus,
+                        pairingStatusLoadState = cameraPairingStatusLoadState,
+                        pairingStatusError = cameraPairingStatusError,
+                        onRefreshStatus = onRefreshCameraPairingStatus
+                    )
+                }
             }
         }
     }
@@ -1755,7 +1759,7 @@ private fun HomeCameraStatusCard(
     actionState: OneCameraActionState,
     actionError: String?,
     onRetry: () -> Unit,
-    onRegisterCamera: (String, UUID?) -> Unit,
+    onRegisterCamera: (String, UUID?, String) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
     onOpenCamera: (OneCamera) -> Unit,
     videoConsentGranted: Boolean,
@@ -1771,6 +1775,7 @@ private fun HomeCameraStatusCard(
     var cameraName by rememberSaveable { mutableStateOf("") }
     var cameraRoomId by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraEnabled by rememberSaveable { mutableStateOf(true) }
+    var cameraSource by rememberSaveable { mutableStateOf(OneCameraSource.LOCAL) }
     var cameraRoomMenuExpanded by rememberSaveable { mutableStateOf(false) }
     val editingCamera = editingCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
     val selectedRoomName = cameraRoomId?.let { id -> rooms.orEmpty().firstOrNull { it.id.toString() == id }?.name }
@@ -1835,6 +1840,7 @@ private fun HomeCameraStatusCard(
                         cameraName = ""
                         cameraRoomId = null
                         cameraEnabled = true
+                        cameraSource = OneCameraSource.LOCAL
                         showCameraDialog = true
                     },
                     enabled = actionState != OneCameraActionState.SUBMITTING
@@ -1874,6 +1880,7 @@ private fun HomeCameraStatusCard(
                             cameraName = camera.name
                             cameraRoomId = camera.roomId?.toString()
                             cameraEnabled = camera.enabled
+                            cameraSource = camera.source
                             showCameraDialog = true
                         }
                     )
@@ -1882,7 +1889,15 @@ private fun HomeCameraStatusCard(
             cameras.orEmpty().firstOrNull()?.let { primaryCamera ->
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 Text("Capture controls", style = MaterialTheme.typography.titleSmall)
-                Text("Sampling sends compressed frames to the consented vision endpoint. A paired publisher device supplies the optional real-time LiveKit feed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (primaryCamera.source == OneCameraSource.LOCAL) {
+                        "This device sends bounded compressed frames to the consented vision endpoint. The emulator uses the camera input configured for its AVD."
+                    } else {
+                        "Sampling sends compressed frames to the consented vision endpoint. A paired publisher device supplies the optional real-time LiveKit feed."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Button(
                     onClick = { if (captureCameraId == primaryCamera.id.toString()) onStopCapture() else requestMediaPermissions("capture", primaryCamera) },
                     enabled = primaryCamera.enabled && !paused && (captureCameraId == primaryCamera.id.toString() || videoConsentGranted) && !liveKitPublishing,
@@ -1911,7 +1926,14 @@ private fun HomeCameraStatusCard(
             title = { Text(if (editingCamera == null) "Register household camera" else "Edit household camera") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Register the paired device in ONE. This does not publish this phone's camera or microphone.", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (editingCamera == null) {
+                            "Choose which device supplies the consented room images. This phone or an emulator webcam can capture a bounded walkthrough; a paired phone uses a one-time code."
+                        } else {
+                            "Update the camera name or room assignment. The source is kept unchanged so an active pairing or local capture cannot be redirected accidentally."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     OutlinedTextField(
                         value = cameraName,
                         onValueChange = { cameraName = it.take(120) },
@@ -1946,6 +1968,50 @@ private fun HomeCameraStatusCard(
                             }
                         }
                     }
+                    if (editingCamera == null) {
+                        Text("Camera source", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        FilterChip(
+                            selected = cameraSource == OneCameraSource.LOCAL,
+                            onClick = { cameraSource = OneCameraSource.LOCAL },
+                            label = { Text("This device · phone or emulator webcam") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        FilterChip(
+                            selected = cameraSource == OneCameraSource.PAIRED,
+                            onClick = { cameraSource = OneCameraSource.PAIRED },
+                            label = { Text("Paired Android device · one-time code") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        FilterChip(
+                            selected = cameraSource == OneCameraSource.NETWORK,
+                            onClick = { cameraSource = OneCameraSource.NETWORK },
+                            label = { Text("Network camera · same Wi-Fi") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    when (cameraSource) {
+                                        OneCameraSource.LOCAL -> "The current Android camera is used only after consent. In the emulator, CameraX uses the AVD camera or webcam configured in its settings."
+                                        OneCameraSource.PAIRED -> "Create and use the one-time pairing code in the Camera setup sheet. Pairing creates the camera record automatically; do not register a duplicate here."
+                                        OneCameraSource.NETWORK -> "Discovery and ONVIF/RTSP streaming are not connected to the backend yet. Same Wi-Fi alone does not provide a usable camera stream."
+                                        else -> "This camera has no recognised source. Register a new source instead of changing it while it is in use."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                if (cameraSource == OneCameraSource.PAIRED) {
+                                    TextButton(onClick = { showCameraDialog = false }) {
+                                        Text("Close and show pairing options")
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (editingCamera != null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Camera enabled", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
@@ -1960,14 +2026,25 @@ private fun HomeCameraStatusCard(
                         showCameraDialog = false
                         val camera = editingCamera
                         if (camera == null) {
-                            onRegisterCamera(cameraName, selectedRoomId)
+                            onRegisterCamera(cameraName, selectedRoomId, cameraSource)
                         } else {
                             onUpdateCamera(camera, cameraName, selectedRoomId, cameraEnabled)
                         }
                         editingCameraId = null
                     },
-                    enabled = cameraName.trim().isNotBlank() && actionState != OneCameraActionState.SUBMITTING
-                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Saving…" else if (editingCamera == null) "Register" else "Save") }
+                    enabled = cameraName.trim().isNotBlank() && actionState != OneCameraActionState.SUBMITTING &&
+                        (editingCamera != null || cameraSource == OneCameraSource.LOCAL)
+                ) {
+                    Text(
+                        when {
+                            actionState == OneCameraActionState.SUBMITTING -> "Saving…"
+                            editingCamera != null -> "Save"
+                            cameraSource == OneCameraSource.LOCAL -> "Register local camera"
+                            cameraSource == OneCameraSource.PAIRED -> "Use pairing code below"
+                            else -> "Network camera unavailable"
+                        }
+                    )
+                }
             },
             dismissButton = {
                 TextButton(
@@ -2348,7 +2425,7 @@ private fun CameraStatusRow(
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(camera.name, style = MaterialTheme.typography.titleSmall)
             Text(
-                "${camera.roomId?.let { "Room configured" } ?: "Room not assigned"} · ${camera.platform.takeUnless { it.equals("browser", true) } ?: "paired device"}",
+                "${camera.roomId?.let { "Room configured" } ?: "Room not assigned"} · ${camera.source.cameraSourceLabel()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -2368,6 +2445,13 @@ private fun CameraStatusRow(
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open camera", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         }
     }
+}
+
+private fun String.cameraSourceLabel(): String = when (this) {
+    OneCameraSource.LOCAL -> "this device"
+    OneCameraSource.PAIRED -> "paired Android device"
+    OneCameraSource.NETWORK -> "network camera"
+    else -> "legacy camera"
 }
 
 private fun String.cameraStatusLabel(enabled: Boolean, platform: String = ""): String = when {
@@ -2393,6 +2477,28 @@ private fun LiveCameraScreen(
     session: OneSession?,
     onClose: () -> Unit
 ) {
+    if (camera.source == OneCameraSource.LOCAL) {
+        ScreenScroll {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onClose) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp).offset(x = (-3).dp).rotate(180f))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Back")
+                }
+            }
+            ScreenHeader("CAMERA", camera.name, "This device camera · consented local capture")
+            InfoCard(
+                "Local camera source",
+                "This camera is used by the foreground sampler and the room walkthrough. It is not published as a LiveKit stream from the caregiver screen."
+            )
+            InfoCard(
+                "Emulator camera",
+                "When running in an Android emulator, CameraX reads the AVD camera input. Configure it under the emulator's camera settings to use the PC webcam or the emulator scene."
+            )
+            OutlinedButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+        }
+        return
+    }
     var liveToken by remember(camera.id, session?.accessToken) { mutableStateOf<OneLiveKitToken?>(null) }
     var tokenError by remember(camera.id, session?.accessToken) { mutableStateOf<String?>(null) }
 
@@ -2595,6 +2701,7 @@ private fun MapScreen(
     loadError: String?,
     onRetry: () -> Unit,
     cameras: List<OneCamera>?,
+    videoConsentGranted: Boolean,
     calibrationActionState: OneCalibrationActionState,
     lastCalibration: OneCameraCalibration?,
     calibrationActionError: String?,
@@ -2611,6 +2718,7 @@ private fun MapScreen(
     onMapRetry: () -> Unit,
     onStartMapGeneration: (UUID, UUID?, String) -> Unit,
     onRefreshMapGeneration: (UUID) -> Unit,
+    onSubmitRoomSweep: (List<OneMapGenerationFrame>) -> Unit,
     onCreateManualMap: (String, List<String>, String) -> Unit,
     objectActionState: OneObjectActionState,
     objectActionError: String?,
@@ -2633,6 +2741,8 @@ private fun MapScreen(
     var roomScanRoomLabel by rememberSaveable { mutableStateOf("") }
     var roomScanCameraMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var roomScanRoomMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var showLocalRoomSweep by rememberSaveable { mutableStateOf(false) }
+    var roomSweepPermissionError by rememberSaveable { mutableStateOf<String?>(null) }
     var showObjectDialog by rememberSaveable { mutableStateOf(false) }
     var objectLabel by rememberSaveable { mutableStateOf("") }
     var objectDisplayName by rememberSaveable { mutableStateOf("") }
@@ -2691,8 +2801,43 @@ private fun MapScreen(
             generation.mapId != null && usableRoomMap?.id == generation.mapId
     } == true
     val canStartRoomScan = selectedRoomScanCamera != null &&
+        videoConsentGranted &&
         mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING &&
         mapGeneration?.isProcessing != true
+    val localRoomScanSelected = selectedRoomScanCamera?.source == OneCameraSource.LOCAL
+    val localScanJobMatchesCameraFormat = generationForSelectedCamera?.let { generation ->
+        generation.resolutionWidth == OneRoomSweepCaptureConfig.TARGET_WIDTH &&
+            generation.resolutionHeight == OneRoomSweepCaptureConfig.TARGET_HEIGHT &&
+            generation.orientation.equals("landscape", ignoreCase = true)
+    } == true
+    val roomSweepPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            roomSweepPermissionError = null
+            showLocalRoomSweep = true
+        } else {
+            roomSweepPermissionError = "Camera permission is required to capture a room walkthrough."
+        }
+    }
+    fun openLocalRoomSweep() {
+        if (!videoConsentGranted) {
+            roomSweepPermissionError = "Enable video capture consent in Account before opening the room camera."
+            return
+        }
+        if (!localRoomScanSelected || generationForSelectedCamera?.isCollecting != true) {
+            roomSweepPermissionError = "Start a collecting scan for a camera registered as this device first."
+            return
+        }
+        if (!localScanJobMatchesCameraFormat) {
+            roomSweepPermissionError = "This scan uses a different frame format. Start a new Android scan before opening the local camera."
+            return
+        }
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            roomSweepPermissionError = null
+            showLocalRoomSweep = true
+        } else {
+            roomSweepPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
 
     ScreenScroll {
         ScreenHeader("MAP", "Home map", "Approximate locations for the care team.")
@@ -2758,11 +2903,14 @@ private fun MapScreen(
             }
         }
         if (showMapTools) {
-        SectionHeading("ROOM SCAN", "Build a 2D room layout from a paired camera")
+        SectionHeading(
+            "ROOM SCAN",
+            if (localRoomScanSelected) "Build a 2D room layout with this device" else "Build a 2D room layout from a camera"
+        )
         if (!isBackend) {
-            InfoCard("Backend-only room scan", "Connect a consented backend and pair a publisher device before starting a camera walkthrough.")
+            InfoCard("Backend-only room scan", "Connect a consented backend before starting a camera walkthrough.")
         } else if (cameras.isNullOrEmpty()) {
-            InfoCard("Paired camera required", "Register or pair a publisher camera first. The caregiver coordinates the job; the paired device captures the frames.")
+            InfoCard("Camera source required", "Register this device, or pair an Android publisher with the one-time code in Camera setup, before starting a walkthrough.")
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -2772,10 +2920,17 @@ private fun MapScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Camera walkthrough", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Choose the paired camera and room. The publisher phone will receive the collecting job and submit up to 20 temporary RGB frames. The result is an approximate 2D map with explicit uncertainty.",
+                        if (localRoomScanSelected) {
+                            "This Android device captures up to 20 temporary RGB frames. In the emulator, CameraX uses the AVD camera or configured PC webcam. The result is an approximate 2D map with explicit uncertainty."
+                        } else {
+                            "Choose a camera and room. A paired publisher phone will receive the collecting job and submit up to 20 temporary RGB frames. The result is an approximate 2D map with explicit uncertainty."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (!videoConsentGranted) {
+                        Text("Enable video capture consent in Account before starting a walkthrough.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                    }
                     generationForSelectedCamera?.let { generation ->
                         Text(
                             "${generation.roomLabel} · ${generation.status.toMapGenerationLabel()} · ${generation.progress}%",
@@ -2783,7 +2938,12 @@ private fun MapScreen(
                             color = if (generation.status.equals("failed", true) || generation.status.equals("needs_rescan", true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         when {
-                            generation.isCollecting -> Text("Waiting for the paired publisher device to capture the room.", style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                            generation.isCollecting -> Text(
+                                if (localRoomScanSelected) "The job is ready. Capture the walkthrough on this device below."
+                                else "Waiting for the paired publisher device to capture the room.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OneAmber
+                            )
                             generation.isProcessing -> {
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 Text("The backend is analysing the room geometry.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2807,6 +2967,13 @@ private fun MapScreen(
                     ) {
                         Text(if (mapGenerationLoadState == OneMapGenerationLoadState.SUBMITTING) "Starting room scan…" else "Start camera walkthrough")
                     }
+                    if (localRoomScanSelected && generationForSelectedCamera?.isCollecting == true) {
+                        Button(
+                            onClick = ::openLocalRoomSweep,
+                            enabled = !showLocalRoomSweep && mapGenerationLoadState != OneMapGenerationLoadState.SUBMITTING,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (showLocalRoomSweep) "Scanner open" else "Capture with this device") }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { selectedRoomScanCamera?.let { onRefreshMapGeneration(it.id) } },
@@ -2817,10 +2984,22 @@ private fun MapScreen(
                     mapGenerationError?.let { error ->
                         Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
+                    roomSweepPermissionError?.let { error ->
+                        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
         OneArCoreCapabilityCard()
+        if (showLocalRoomSweep && localRoomScanSelected && generationForSelectedCamera?.isCollecting == true && localScanJobMatchesCameraFormat) {
+            RoomSweepCapturePanel(
+                onFramesReady = { frames ->
+                    showLocalRoomSweep = false
+                    onSubmitRoomSweep(frames)
+                },
+                onCancel = { showLocalRoomSweep = false }
+            )
+        }
         SectionHeading("SETUP", "Map and object memory")
         if (isBackend) {
             OutlinedButton(
@@ -2890,7 +3069,9 @@ private fun MapScreen(
             ) {
                 Icon(Icons.Default.Map, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (mapLoadState == OneMapLoadState.LOADING) "Refreshing…" else "Refresh room map")
+                // Keep the label and measured width constant while the
+                // periodic refresh runs in the background.
+                Text("Refresh room map")
             }
             OutlinedButton(
                 onClick = { showManualMapDialog = true },
@@ -2915,7 +3096,11 @@ private fun MapScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "The paired publisher phone must be online and will show the capture controls. This Android flow produces an approximate 2D RGB map; it does not claim metric 3D geometry.",
+                        if (selectedRoomScanCamera?.source == OneCameraSource.LOCAL) {
+                            "This device will show the capture controls after the scan is prepared. On an emulator, use the AVD camera or the webcam configured for it. This flow produces an approximate 2D RGB map; it does not claim metric 3D geometry."
+                        } else {
+                            "The paired publisher phone must be online and will show the capture controls. This Android flow produces an approximate 2D RGB map; it does not claim metric 3D geometry."
+                        },
                         style = MaterialTheme.typography.bodySmall
                     )
                     Box {
@@ -2929,7 +3114,7 @@ private fun MapScreen(
                         ) {
                             cameras.orEmpty().forEach { camera ->
                                 DropdownMenuItem(
-                                    text = { Text(camera.name) },
+                                    text = { Text("${camera.name} · ${camera.source.cameraSourceLabel()}") },
                                     onClick = {
                                         roomScanCameraId = camera.id.toString()
                                         if (roomScanRoomLabel.isBlank()) roomScanRoomLabel = camera.name

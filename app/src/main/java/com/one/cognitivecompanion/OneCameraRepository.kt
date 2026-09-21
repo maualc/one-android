@@ -3,6 +3,14 @@ package com.one.cognitivecompanion
 import java.time.Instant
 import java.util.UUID
 
+/** Stable identifiers for the camera source selected by the caregiver. */
+object OneCameraSource {
+    const val LOCAL = "android-local"
+    const val PAIRED = "paired-publisher"
+    const val NETWORK = "network"
+    const val LEGACY = "legacy"
+}
+
 data class OneCamera(
     val id: UUID,
     val name: String,
@@ -10,7 +18,8 @@ data class OneCamera(
     val platform: String,
     val status: String,
     val enabled: Boolean,
-    val lastSeenAt: Instant?
+    val lastSeenAt: Instant?,
+    val source: String = OneCameraSource.LEGACY
 )
 
 enum class OneCameraLoadState {
@@ -43,7 +52,8 @@ class OneApiCameraRepository(
             platform = camera.platform,
             status = camera.status,
             enabled = camera.enabled,
-            lastSeenAt = camera.lastSeenAt
+            lastSeenAt = camera.lastSeenAt,
+            source = camera.source
         )
     }
 }

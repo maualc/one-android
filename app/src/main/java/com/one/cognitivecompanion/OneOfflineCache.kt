@@ -123,7 +123,7 @@ class OneOfflineCache(context: Context) {
 
     private fun cameraJson(value: OneCamera) = JSONObject()
         .put("id", value.id.toString()).put("name", value.name).put("room_id", value.roomId?.toString() ?: JSONObject.NULL)
-        .put("platform", value.platform).put("status", value.status).put("enabled", value.enabled).put("last_seen_at", value.lastSeenAt?.toString() ?: JSONObject.NULL)
+        .put("platform", value.platform).put("source", value.source).put("status", value.status).put("enabled", value.enabled).put("last_seen_at", value.lastSeenAt?.toString() ?: JSONObject.NULL)
 
     private fun mapJson(value: OneRoomMap) = JSONObject()
         .put("id", value.id.toString()).put("home_id", value.homeId?.toString() ?: JSONObject.NULL).put("room_id", value.roomId?.toString() ?: JSONObject.NULL)
@@ -207,7 +207,7 @@ class OneOfflineCache(context: Context) {
 
     private fun JSONArray?.toObjects(): List<OneRemoteObject> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneRemoteObject(UUID.fromString(row.getString("id")), row.optString("label"), row.optString("status"), row.optNullableString("zone"), row.optNullableDouble("x"), row.optNullableDouble("y"), row.optNullableString("last_seen_at").toInstantOrNull(), row.optDouble("confidence"), row.optDouble("radius"))) } } } } ?: emptyList()
     private fun JSONArray?.toEvents(): List<OneEvent> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneEvent(runCatching { EventKind.valueOf(row.optString("kind")) }.getOrDefault(EventKind.OTHER), row.optString("location"), row.optString("time"), row.optString("explanation"), row.optString("confidence"), row.optNullableString("id")?.let(UUID::fromString), row.optNullableString("observed_at").toInstantOrNull(), row.optJSONArray("evidence_ids").toStringList())) } } } } ?: emptyList()
-    private fun JSONArray?.toCameras(): List<OneCamera> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneCamera(UUID.fromString(row.getString("id")), row.optString("name"), row.optNullableString("room_id")?.let(UUID::fromString), row.optString("platform"), row.optString("status"), row.optBoolean("enabled", true), row.optNullableString("last_seen_at").toInstantOrNull())) } } } } ?: emptyList()
+    private fun JSONArray?.toCameras(): List<OneCamera> = this?.let { rows -> buildList { for (index in 0 until rows.length()) runCatching { rows.getJSONObject(index) }.getOrNull()?.let { row -> runCatching { add(OneCamera(UUID.fromString(row.getString("id")), row.optString("name"), row.optNullableString("room_id")?.let(UUID::fromString), row.optString("platform"), row.optString("status"), row.optBoolean("enabled", true), row.optNullableString("last_seen_at").toInstantOrNull(), row.optString("source").ifBlank { OneCameraSource.LEGACY })) } } } } ?: emptyList()
     private fun JSONArray?.toStringList(): List<String> = this?.let { rows -> buildList { for (index in 0 until rows.length()) rows.optString(index).takeIf { it.isNotBlank() }?.let(::add) } } ?: emptyList()
 
     private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }

@@ -324,12 +324,14 @@ data class OneRemoteCamera(
     val platform: String,
     val status: String,
     val enabled: Boolean,
-    val lastSeenAt: Instant?
+    val lastSeenAt: Instant?,
+    val source: String = OneCameraSource.LEGACY
 )
 
 data class CameraRegistrationRequest(
     val name: String,
-    val roomId: UUID? = null
+    val roomId: UUID? = null,
+    val metadata: Map<String, String> = emptyMap()
 )
 
 data class CameraUpdateRequest(
@@ -1152,7 +1154,8 @@ class OneHttpApiClient(
                         platform = row.optString("platform").takeIf { it.isNotBlank() } ?: "unknown",
                         status = row.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
                         enabled = row.optNullableBoolean("enabled") ?: true,
-                        lastSeenAt = (row.optNullableString("lastSeenAt") ?: row.optNullableString("last_seen_at")).toInstantOrNull()
+                        lastSeenAt = (row.optNullableString("lastSeenAt") ?: row.optNullableString("last_seen_at")).toInstantOrNull(),
+                        source = row.cameraSource()
                     )
                 )
             }
@@ -1162,6 +1165,9 @@ class OneHttpApiClient(
     override suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera {
         val payload = JSONObject().put("name", request.name)
         request.roomId?.let { payload.put("room_id", it.toString()) }
+        if (request.metadata.isNotEmpty()) {
+            payload.put("metadata", JSONObject().apply { request.metadata.forEach { (key, value) -> put(key, value) } })
+        }
         val body = request(
             "/homes/${session.homeId}/cameras",
             "POST",
@@ -1175,7 +1181,8 @@ class OneHttpApiClient(
             platform = body.optString("platform").takeIf { it.isNotBlank() } ?: "browser",
             status = body.optString("status").takeIf { it.isNotBlank() } ?: "online",
             enabled = body.optNullableBoolean("enabled") ?: true,
-            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
+            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull(),
+            source = body.cameraSource(default = request.metadata["source"] ?: OneCameraSource.LEGACY)
         )
     }
 
@@ -1205,7 +1212,8 @@ class OneHttpApiClient(
             platform = body.optString("platform").takeIf { it.isNotBlank() } ?: "browser",
             status = body.optString("status").takeIf { it.isNotBlank() } ?: "unknown",
             enabled = body.optNullableBoolean("enabled") ?: request.enabled ?: true,
-            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull()
+            lastSeenAt = (body.optNullableString("lastSeenAt") ?: body.optNullableString("last_seen_at")).toInstantOrNull(),
+            source = body.cameraSource()
         )
     }
 
@@ -2066,6 +2074,11 @@ private fun JSONObject.optNullableString(key: String): String? = optString(key).
 private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
 
 private fun JSONObject.optNullableUuid(key: String): UUID? = optNullableString(key)?.let { value -> runCatching { UUID.fromString(value) }.getOrNull() }
+
+private fun JSONObject.cameraSource(default: String = OneCameraSource.LEGACY): String =
+    optNullableString("source")
+        ?: optJSONObject("metadata")?.optNullableString("source")
+        ?: default
 
 private fun JSONObject.evidenceIds(): List<String> {
     val array = optJSONArray("evidence_ids") ?: optString("evidence_ids")

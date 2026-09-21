@@ -700,7 +700,7 @@ class OneAppState(
         }
     }
 
-    suspend fun registerCamera(name: String, roomId: UUID?) {
+    suspend fun registerCamera(name: String, roomId: UUID?, source: String = OneCameraSource.LOCAL) {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
             cameraActionState = OneCameraActionState.ERROR
@@ -728,7 +728,19 @@ class OneAppState(
         try {
             val remote = apiClient.registerCamera(
                 authenticatedSession,
-                CameraRegistrationRequest(name = cleanName, roomId = roomId)
+                CameraRegistrationRequest(
+                    name = cleanName,
+                    roomId = roomId,
+                    metadata = mapOf(
+                        "source" to source,
+                        "platform" to when (source) {
+                            OneCameraSource.LOCAL -> "android"
+                            OneCameraSource.PAIRED -> "android-publisher"
+                            OneCameraSource.NETWORK -> "network"
+                            else -> "legacy"
+                        }
+                    )
+                )
             )
             val camera = OneCamera(
                 id = remote.id,
@@ -737,7 +749,8 @@ class OneAppState(
                 platform = remote.platform,
                 status = remote.status,
                 enabled = remote.enabled,
-                lastSeenAt = remote.lastSeenAt
+                lastSeenAt = remote.lastSeenAt,
+                source = remote.source
             )
             cameras = (cameras.orEmpty().filterNot { it.id == camera.id } + camera).sortedBy { it.name.lowercase() }
             lastRegisteredCamera = camera
@@ -786,7 +799,8 @@ class OneAppState(
                 platform = remote.platform,
                 status = remote.status,
                 enabled = remote.enabled,
-                lastSeenAt = remote.lastSeenAt
+                lastSeenAt = remote.lastSeenAt,
+                source = remote.source
             )
             cameras = cameras.orEmpty().map { if (it.id == updated.id) updated else it }
             lastRegisteredCamera = updated
@@ -807,7 +821,12 @@ class OneAppState(
             mapLoadError = null
             return
         }
-        mapLoadState = OneMapLoadState.LOADING
+        // Keep the map controls stable after the first successful response.
+        // Periodic refreshes must not turn the empty-map card or its refresh
+        // button into a loading placeholder for a few frames every cycle.
+        if (!mapHasLoadedOnce) {
+            mapLoadState = OneMapLoadState.LOADING
+        }
         mapLoadError = null
         try {
             rooms = apiClient.homeRooms(authenticatedSession)
@@ -817,13 +836,19 @@ class OneAppState(
             mapHasLoadedOnce = true
             mapLoadState = OneMapLoadState.LOADED
         } catch (error: Exception) {
-            offlineCache.readMap(authenticatedSession.homeId)?.let { (cachedRooms, cachedMap) ->
+            val cachedMap = offlineCache.readMap(authenticatedSession.homeId)
+            cachedMap?.let { (cachedRooms, cachedRoomMap) ->
                 rooms = cachedRooms
-                currentRoomMap = cachedMap
+                currentRoomMap = cachedRoomMap
                 mapIsStale = true
                 mapHasLoadedOnce = true
             }
-            mapLoadState = if (mapIsStale) OneMapLoadState.LOADED else OneMapLoadState.ERROR
+            if (mapHasLoadedOnce) {
+                // Keep the last rendered response visible and expose the
+                // degraded state through the stable offline chip.
+                mapIsStale = true
+            }
+            mapLoadState = if (mapHasLoadedOnce || mapIsStale) OneMapLoadState.LOADED else OneMapLoadState.ERROR
             mapLoadError = error.message ?: "Could not load the room map."
         }
     }
@@ -910,9 +935,12 @@ class OneAppState(
             mapGenerationError = "Start a room scan before submitting its frames."
             return
         }
-        if (authenticatedSession.role != OneRole.PUBLISHER || authenticatedSession.userId != cameraId) {
+        val localCaregiverCapture = canManageFamily && cameras.orEmpty()
+            .firstOrNull { it.id == cameraId }
+            ?.source == OneCameraSource.LOCAL
+        if ((authenticatedSession.role != OneRole.PUBLISHER || authenticatedSession.userId != cameraId) && !localCaregiverCapture) {
             mapGenerationLoadState = OneMapGenerationLoadState.ERROR
-            mapGenerationError = "Only the paired publisher device can submit room scan frames."
+            mapGenerationError = "Only the selected local device or its paired publisher can submit room scan frames."
             return
         }
         if (!generation.isCollecting) {

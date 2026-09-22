@@ -201,6 +201,7 @@ data class ConsentRequest(
 data class OneRemoteConsent(
     val id: UUID,
     val subjectUserId: UUID,
+    val careRecipientId: UUID? = null,
     val purpose: String,
     val policyVersion: String,
     val grantedAt: Instant?,
@@ -424,7 +425,10 @@ data class OneRemoteEvent(
     val explanation: String,
     val confidence: Double,
     val lastSeenAt: Instant?,
-    val evidenceIds: List<String> = emptyList()
+    val evidenceIds: List<String> = emptyList(),
+    val careRecipientId: UUID? = null,
+    val snapshotPath: String? = null,
+    val snapshotContentType: String? = null
 )
 
 data class OneRemoteClip(
@@ -459,6 +463,7 @@ data class OneRemoteMedicationCheckIn(
     val id: UUID?,
     val planId: UUID,
     val subjectUserId: UUID?,
+    val careRecipientId: UUID?,
     val scheduledFor: Instant,
     val status: String,
     val note: String?,
@@ -466,7 +471,8 @@ data class OneRemoteMedicationCheckIn(
 )
 
 data class MedicationPlanRequest(
-    val subjectUserId: UUID,
+    val subjectUserId: UUID? = null,
+    val careRecipientId: UUID? = null,
     val name: String,
     val dose: String,
     val schedule: String,
@@ -488,7 +494,8 @@ data class MedicationPlanUpdateRequest(
 data class OneMedicationPlan(
     val id: UUID,
     val homeId: UUID?,
-    val subjectUserId: UUID,
+    val subjectUserId: UUID?,
+    val careRecipientId: UUID?,
     val name: String,
     val dose: String,
     val schedule: String,
@@ -508,6 +515,60 @@ data class OneFamilyAssistantResult(
     val degraded: Boolean,
     val inferenceStatus: String?,
     val modelVersion: String?
+)
+
+data class OneTrackingDevice(
+    val id: UUID,
+    val careRecipientId: UUID,
+    val label: String,
+    val platform: String,
+    val status: String,
+    val lastSeenAt: Instant?
+)
+
+data class OneLocationPointUpload(
+    val clientSampleId: String,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyM: Double?,
+    val speedMps: Double? = null,
+    val bearingDeg: Double? = null,
+    val batteryPercent: Int? = null,
+    val capturedAt: Instant
+)
+
+data class OneRemoteLocationPoint(
+    val id: UUID,
+    val careRecipientId: UUID,
+    val deviceId: UUID,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyM: Double?,
+    val speedMps: Double?,
+    val bearingDeg: Double?,
+    val batteryPercent: Int?,
+    val capturedAt: Instant,
+    val receivedAt: Instant?
+)
+
+data class OneRemoteSafePlace(
+    val id: UUID,
+    val careRecipientId: UUID,
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+    val radiusM: Double
+)
+
+data class OneCareAnalytics(
+    val windowDays: Int,
+    val fallSignals: Int,
+    val fallsNeedingReview: Int,
+    val fallTrend: String,
+    val checkIns: Int,
+    val completedToday: Int,
+    val lastCheckInStatus: String?,
+    val lastCheckInExplanation: String?
 )
 
 class OneApiException(message: String, val statusCode: Int? = null, cause: Throwable? = null) : IOException(message, cause)
@@ -539,6 +600,7 @@ interface OneApiClient {
     suspend fun liveKitToken(session: OneSession, mode: String = "subscribe"): OneLiveKitToken
     suspend fun streamHomeEvents(session: OneSession, onEvent: suspend (OneRemoteEventSignal) -> Unit)
     fun clipContentUrl(session: OneSession, clipId: UUID): String
+    suspend fun eventSnapshot(session: OneSession, eventId: UUID): ByteArray
     suspend fun homeProfile(session: OneSession): OneHomeProfile
     suspend fun homeRooms(session: OneSession): List<OneRoom>
     suspend fun createRoom(session: OneSession, name: String): OneRoom
@@ -593,17 +655,18 @@ interface OneApiClient {
     suspend fun cameraPairingStatus(session: OneSession, pairingId: UUID): OneCameraPairingStatus
     suspend fun reconnectCamera(cameraId: UUID, reconnectToken: String): OneSession
     suspend fun createCameraReconnectLink(session: OneSession): OneCameraReconnectLink
-    suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null): List<OneRemoteMedicationReminder>
+    suspend fun medicationReminders(session: OneSession, day: String? = null, subjectUserId: UUID? = null, careRecipientId: UUID? = null): List<OneRemoteMedicationReminder>
     suspend fun medicationCheckIns(
         session: OneSession,
         subjectUserId: UUID? = null,
+        careRecipientId: UUID? = null,
         scheduledFrom: Instant? = null,
         scheduledTo: Instant? = null
     ): List<OneRemoteMedicationCheckIn>
-    suspend fun medicationPlans(session: OneSession, subjectUserId: UUID? = null, activeOnly: Boolean = true): List<OneMedicationPlan>
+    suspend fun medicationPlans(session: OneSession, subjectUserId: UUID? = null, careRecipientId: UUID? = null, activeOnly: Boolean = true): List<OneMedicationPlan>
     suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
     suspend fun updateMedicationPlan(session: OneSession, planId: UUID, request: MedicationPlanUpdateRequest): OneMedicationPlan
-    suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID): OneFamilyAssistantResult
+    suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID? = null, careRecipientId: UUID? = null): OneFamilyAssistantResult
     suspend fun markMedicationCheckIn(
         session: OneSession,
         planId: UUID,
@@ -611,7 +674,17 @@ interface OneApiClient {
         status: String,
         note: String = ""
     )
-    suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID? = null): OneCheckInResult
+    suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID? = null, careRecipientId: UUID? = null): OneCheckInResult
+    suspend fun registerTrackingDevice(session: OneSession, careRecipientId: UUID, deviceId: UUID, label: String): OneTrackingDevice
+    suspend fun updateTrackingDevice(session: OneSession, careRecipientId: UUID, deviceId: UUID, status: String): OneTrackingDevice
+    suspend fun uploadLocationPoints(session: OneSession, careRecipientId: UUID, deviceId: UUID, points: List<OneLocationPointUpload>)
+    suspend fun latestLocation(session: OneSession, careRecipientId: UUID): OneRemoteLocationPoint?
+    suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant? = null): List<OneRemoteLocationPoint>
+    suspend fun safePlaces(session: OneSession, careRecipientId: UUID): List<OneRemoteSafePlace>
+    suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace
+    suspend fun updateSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace
+    suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID)
+    suspend fun careAnalytics(session: OneSession, careRecipientId: UUID, windowDays: Int = 30): OneCareAnalytics
 }
 
 /**
@@ -627,6 +700,27 @@ class OneHttpApiClient(
 
     override fun clipContentUrl(session: OneSession, clipId: UUID): String =
         configuration.apiBaseUrl.trimEnd('/') + "/clips/$clipId/content"
+
+    override suspend fun eventSnapshot(session: OneSession, eventId: UUID): ByteArray = withContext(Dispatchers.IO) {
+        val connection = (URL(configuration.apiBaseUrl.trimEnd('/') + "/homes/${session.homeId}/events/$eventId/snapshot").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            setRequestProperty("Authorization", "Bearer ${session.accessToken}")
+            setRequestProperty("Accept", "image/*")
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                throw OneApiException("ONE API error ($status): ${detail.problemMessage()}", status)
+            }
+            connection.inputStream.use { input -> input.readBytes() }
+                .also { require(it.isNotEmpty()) { "The event snapshot is empty." } }
+        } finally {
+            connection.disconnect()
+        }
+    }
 
     override suspend fun health(): BackendHealth {
         val body = request(path = "/health", method = "GET")
@@ -923,6 +1017,7 @@ class OneHttpApiClient(
                     OneRemoteConsent(
                         id = id,
                         subjectUserId = subjectUserId,
+                        careRecipientId = row.optNullableUuid("care_recipient_id"),
                         purpose = purpose,
                         policyVersion = row.optString("policy_version"),
                         grantedAt = row.optNullableString("granted_at")?.toInstantOrNull(),
@@ -1457,7 +1552,10 @@ class OneHttpApiClient(
                         explanation = row.optString("explanation").takeIf { it.isNotBlank() } ?: "No explanation provided.",
                         confidence = row.optDouble("confidence", 0.0).takeUnless { it.isNaN() } ?: 0.0,
                         lastSeenAt = (row.optNullableString("last_seen_at") ?: row.optNullableString("lastSeenAt")).toInstantOrNull(),
-                        evidenceIds = row.evidenceIds()
+                        evidenceIds = row.evidenceIds(),
+                        careRecipientId = row.optNullableUuid("care_recipient_id"),
+                        snapshotPath = row.optNullableString("snapshot_path"),
+                        snapshotContentType = row.optNullableString("snapshot_content_type")
                     )
                 )
             }
@@ -1569,10 +1667,11 @@ class OneHttpApiClient(
         )
     }
 
-    override suspend fun medicationReminders(session: OneSession, day: String?, subjectUserId: UUID?): List<OneRemoteMedicationReminder> {
+    override suspend fun medicationReminders(session: OneSession, day: String?, subjectUserId: UUID?, careRecipientId: UUID?): List<OneRemoteMedicationReminder> {
         val query = buildList {
             day?.let { add("day=$it") }
             subjectUserId?.let { add("subject_user_id=$it") }
+            careRecipientId?.let { add("care_recipient_id=$it") }
         }.joinToString("&").takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
         val rows = request("/homes/${session.homeId}/medication-reminders$query", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
         return buildList {
@@ -1600,11 +1699,13 @@ class OneHttpApiClient(
     override suspend fun medicationCheckIns(
         session: OneSession,
         subjectUserId: UUID?,
+        careRecipientId: UUID?,
         scheduledFrom: Instant?,
         scheduledTo: Instant?
     ): List<OneRemoteMedicationCheckIn> {
         val query = buildList {
             subjectUserId?.let { add("subject_user_id=$it") }
+            careRecipientId?.let { add("care_recipient_id=$it") }
             scheduledFrom?.let { add("scheduled_from=$it") }
             scheduledTo?.let { add("scheduled_to=$it") }
         }.joinToString("&").takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
@@ -1623,6 +1724,7 @@ class OneHttpApiClient(
                         id = row.optNullableUuid("id"),
                         planId = planId,
                         subjectUserId = row.optNullableUuid("subject_user_id"),
+                        careRecipientId = row.optNullableUuid("care_recipient_id"),
                         scheduledFor = scheduledFor,
                         status = row.optString("status").takeIf { it.isNotBlank() } ?: "pending",
                         note = row.optNullableString("note"),
@@ -1633,9 +1735,10 @@ class OneHttpApiClient(
         }.sortedByDescending { it.scheduledFor }
     }
 
-    override suspend fun medicationPlans(session: OneSession, subjectUserId: UUID?, activeOnly: Boolean): List<OneMedicationPlan> {
+    override suspend fun medicationPlans(session: OneSession, subjectUserId: UUID?, careRecipientId: UUID?, activeOnly: Boolean): List<OneMedicationPlan> {
         val query = buildList {
             subjectUserId?.let { add("subject_user_id=$it") }
+            careRecipientId?.let { add("care_recipient_id=$it") }
             add("active_only=$activeOnly")
         }.joinToString("&")
         val rows = request(
@@ -1654,12 +1757,13 @@ class OneHttpApiClient(
 
     override suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan {
         val payload = JSONObject()
-            .put("subject_user_id", request.subjectUserId.toString())
             .put("name", request.name)
             .put("dose", request.dose)
             .put("schedule", request.schedule)
             .put("instructions", request.instructions)
             .put("active", request.active)
+        request.subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
+        request.careRecipientId?.let { payload.put("care_recipient_id", it.toString()) }
         request.assignedCaregiverId?.let { payload.put("assigned_caregiver_id", it.toString()) }
         return parseMedicationPlan(
             request(
@@ -1698,13 +1802,14 @@ class OneHttpApiClient(
         )
     }
 
-    override suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID): OneFamilyAssistantResult {
+    override suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID?, careRecipientId: UUID?): OneFamilyAssistantResult {
+        val payload = JSONObject().put("message", message.take(1_000))
+        subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
+        careRecipientId?.let { payload.put("care_recipient_id", it.toString()) }
         val body = request(
             "/homes/${session.homeId}/family-assistant",
             "POST",
-            JSONObject()
-                .put("message", message.take(1_000))
-                .put("subject_user_id", subjectUserId.toString()),
+            payload,
             token = session.accessToken
         )
         val data = body.optJSONObject("data") ?: throw OneApiException("ONE API response is missing the family assistant result.")
@@ -1752,9 +1857,10 @@ class OneHttpApiClient(
         )
     }
 
-    override suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID?): OneCheckInResult {
+    override suspend fun submitCheckIn(session: OneSession, transcript: String, subjectUserId: UUID?, careRecipientId: UUID?): OneCheckInResult {
         val payload = JSONObject().put("transcript", transcript.take(4_000))
         subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
+        careRecipientId?.let { payload.put("care_recipient_id", it.toString()) }
         val body = request(
             "/homes/${session.homeId}/check-ins",
             "POST",
@@ -1781,6 +1887,216 @@ class OneHttpApiClient(
             degraded = body.optBoolean("degraded", false)
         )
     }
+
+    override suspend fun registerTrackingDevice(
+        session: OneSession,
+        careRecipientId: UUID,
+        deviceId: UUID,
+        label: String
+    ): OneTrackingDevice {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/tracking-devices",
+            "POST",
+            JSONObject()
+                .put("device_id", deviceId.toString())
+                .put("label", label.take(120))
+                .put("platform", "android"),
+            token = session.accessToken
+        )
+        return parseTrackingDevice(body.optJSONObject("data") ?: body)
+    }
+
+    override suspend fun updateTrackingDevice(
+        session: OneSession,
+        careRecipientId: UUID,
+        deviceId: UUID,
+        status: String
+    ): OneTrackingDevice {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/tracking-devices/$deviceId",
+            "PATCH",
+            JSONObject().put("status", status),
+            token = session.accessToken
+        )
+        return parseTrackingDevice(body.optJSONObject("data") ?: body)
+    }
+
+    override suspend fun uploadLocationPoints(
+        session: OneSession,
+        careRecipientId: UUID,
+        deviceId: UUID,
+        points: List<OneLocationPointUpload>
+    ) {
+        if (points.isEmpty()) return
+        val rows = JSONArray()
+        points.take(200).forEach { point ->
+            rows.put(
+                JSONObject()
+                    .put("client_sample_id", point.clientSampleId.take(120))
+                    .put("latitude", point.latitude)
+                    .put("longitude", point.longitude)
+                    .put("captured_at", point.capturedAt.toString())
+                    .apply {
+                        point.accuracyM?.let { put("accuracy_m", it) }
+                        point.speedMps?.let { put("speed_mps", it) }
+                        point.bearingDeg?.let { put("bearing_deg", it) }
+                        point.batteryPercent?.let { put("battery_percent", it.coerceIn(0, 100)) }
+                    }
+            )
+        }
+        request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/location-points",
+            "POST",
+            JSONObject().put("device_id", deviceId.toString()).put("points", rows),
+            token = session.accessToken
+        )
+    }
+
+    override suspend fun latestLocation(session: OneSession, careRecipientId: UUID): OneRemoteLocationPoint? {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/locations/latest",
+            "GET",
+            token = session.accessToken
+        )
+        return body.optJSONObject("data")?.let(::parseRemoteLocationPoint)
+    }
+
+    override suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant?): List<OneRemoteLocationPoint> {
+        val query = since?.let { "?since=$it" }.orEmpty()
+        val rows = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/locations$query",
+            "GET",
+            token = session.accessToken
+        ).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                rows.optJSONObject(index)?.let { row -> runCatching { parseRemoteLocationPoint(row) }.getOrNull()?.let(::add) }
+            }
+        }.sortedBy { it.capturedAt }
+    }
+
+    override suspend fun safePlaces(session: OneSession, careRecipientId: UUID): List<OneRemoteSafePlace> {
+        val rows = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places",
+            "GET",
+            token = session.accessToken
+        ).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = row.optNullableUuid("id") ?: continue
+                add(
+                    OneRemoteSafePlace(
+                        id = id,
+                        careRecipientId = row.optNullableUuid("care_recipient_id") ?: careRecipientId,
+                        name = row.optString("name").ifBlank { "Safe place" },
+                        latitude = row.optDouble("latitude"),
+                        longitude = row.optDouble("longitude"),
+                        radiusM = row.optDouble("radius_m", 150.0)
+                    )
+                )
+            }
+        }
+    }
+
+    override suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places",
+            "POST",
+            JSONObject()
+                .put("name", place.name.take(120))
+                .put("latitude", place.center.latitude)
+                .put("longitude", place.center.longitude)
+                .put("radius_m", place.radiusMeters.coerceIn(25.0, 5_000.0)),
+            token = session.accessToken
+        ).optJSONObject("data") ?: throw OneApiException("ONE API response is missing the safe place.")
+        return OneRemoteSafePlace(
+            id = body.requiredUuid("id"),
+            careRecipientId = body.optNullableUuid("care_recipient_id") ?: careRecipientId,
+            name = body.optString("name").ifBlank { place.name },
+            latitude = body.optDouble("latitude"),
+            longitude = body.optDouble("longitude"),
+            radiusM = body.optDouble("radius_m", place.radiusMeters)
+        )
+    }
+
+    override suspend fun updateSafePlace(
+        session: OneSession,
+        careRecipientId: UUID,
+        placeId: UUID,
+        place: OneExteriorSafePlace
+    ): OneRemoteSafePlace {
+        val body = request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places/$placeId",
+            "PATCH",
+            JSONObject()
+                .put("name", place.name.take(120))
+                .put("latitude", place.center.latitude)
+                .put("longitude", place.center.longitude)
+                .put("radius_m", place.radiusMeters.coerceIn(25.0, 5_000.0)),
+            token = session.accessToken
+        ).optJSONObject("data") ?: throw OneApiException("ONE API response is missing the safe place.")
+        return OneRemoteSafePlace(
+            id = body.requiredUuid("id"),
+            careRecipientId = body.optNullableUuid("care_recipient_id") ?: careRecipientId,
+            name = body.optString("name").ifBlank { place.name },
+            latitude = body.optDouble("latitude"),
+            longitude = body.optDouble("longitude"),
+            radiusM = body.optDouble("radius_m", place.radiusMeters)
+        )
+    }
+
+    override suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID) {
+        request(
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places/$placeId",
+            "DELETE",
+            token = session.accessToken
+        )
+    }
+
+    override suspend fun careAnalytics(session: OneSession, careRecipientId: UUID, windowDays: Int): OneCareAnalytics {
+        val body = request(
+            "/homes/${session.homeId}/analytics?care_recipient_id=$careRecipientId&window_days=${windowDays.coerceIn(7, 90)}",
+            "GET",
+            token = session.accessToken
+        ).optJSONObject("data") ?: throw OneApiException("ONE API response is missing care analytics.")
+        val fall = body.optJSONObject("fall") ?: JSONObject()
+        val checkIn = body.optJSONObject("daily_check_in") ?: JSONObject()
+        return OneCareAnalytics(
+            windowDays = body.optInt("window_days", windowDays.coerceIn(7, 90)),
+            fallSignals = fall.optInt("total_signals", 0),
+            fallsNeedingReview = fall.optInt("needs_review", 0),
+            fallTrend = fall.optString("trend").ifBlank { "unknown" },
+            checkIns = checkIn.optInt("total", 0),
+            completedToday = checkIn.optInt("completed_today", 0),
+            lastCheckInStatus = checkIn.optNullableString("last_status"),
+            lastCheckInExplanation = checkIn.optNullableString("last_explanation")
+        )
+    }
+
+    private fun parseTrackingDevice(body: JSONObject): OneTrackingDevice = OneTrackingDevice(
+        id = body.requiredUuid("id"),
+        careRecipientId = body.requiredUuid("care_recipient_id"),
+        label = body.optString("label").ifBlank { "Android phone" },
+        platform = body.optString("platform").ifBlank { "android" },
+        status = body.optString("status").ifBlank { "active" },
+        lastSeenAt = body.optNullableString("last_seen_at")?.toInstantOrNull()
+    )
+
+    private fun parseRemoteLocationPoint(body: JSONObject): OneRemoteLocationPoint = OneRemoteLocationPoint(
+        id = body.requiredUuid("id"),
+        careRecipientId = body.requiredUuid("care_recipient_id"),
+        deviceId = body.requiredUuid("device_id"),
+        latitude = body.optDouble("latitude"),
+        longitude = body.optDouble("longitude"),
+        accuracyM = body.optNullableDouble("accuracy_m"),
+        speedMps = body.optNullableDouble("speed_mps"),
+        bearingDeg = body.optNullableDouble("bearing_deg"),
+        batteryPercent = body.optNullableInt("battery_percent"),
+        capturedAt = body.requiredString("captured_at").toInstantOrNull()
+            ?: throw OneApiException("ONE API returned an invalid location timestamp."),
+        receivedAt = body.optNullableString("received_at")?.toInstantOrNull()
+    )
 
     private fun parseCareSpace(body: JSONObject): OneCareSpace {
         val id = body.requiredUuid("id")
@@ -2076,7 +2392,8 @@ class OneHttpApiClient(
     private fun parseMedicationPlan(body: JSONObject, homeId: UUID): OneMedicationPlan = OneMedicationPlan(
         id = body.requiredUuid("id"),
         homeId = body.optNullableUuid("home_id") ?: homeId,
-        subjectUserId = body.requiredUuid("subject_user_id"),
+        subjectUserId = body.optNullableUuid("subject_user_id"),
+        careRecipientId = body.optNullableUuid("care_recipient_id"),
         name = body.requiredString("name"),
         dose = body.requiredString("dose"),
         schedule = body.requiredString("schedule"),
@@ -2148,6 +2465,8 @@ private fun JSONObject.requiredUuid(key: String): UUID = runCatching { UUID.from
 private fun JSONObject.optNullableString(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
 
 private fun JSONObject.optNullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeUnless { it.isNaN() }
+
+private fun JSONObject.optNullableInt(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key)
 
 private fun JSONObject.optNullableUuid(key: String): UUID? = optNullableString(key)?.let { value -> runCatching { UUID.fromString(value) }.getOrNull() }
 

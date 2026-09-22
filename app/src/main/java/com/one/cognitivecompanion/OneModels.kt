@@ -227,7 +227,9 @@ data class OneEvent(
     val confidence: String,
     val id: UUID? = null,
     val observedAt: Instant? = null,
-    val evidenceIds: List<String> = emptyList()
+    val evidenceIds: List<String> = emptyList(),
+    val careRecipientId: UUID? = null,
+    val snapshotAvailable: Boolean = false
 )
 
 data class ConsentChoice(

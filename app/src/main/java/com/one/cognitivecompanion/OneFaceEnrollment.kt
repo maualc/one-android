@@ -84,6 +84,15 @@ private val oneFaceCaptureStages = listOf(
     OneFaceCaptureStage("Left view", "Turn your head to the other side and hold still.")
 )
 
+private enum class OneFaceEnrollmentCameraPosition(
+    val label: String,
+    val apiValue: String,
+    val selector: CameraSelector
+) {
+    FRONT("Front camera", "front", CameraSelector.DEFAULT_FRONT_CAMERA),
+    BACK("Back camera", "back", CameraSelector.DEFAULT_BACK_CAMERA)
+}
+
 private data class OneValidatedFaceFrame(val frame: OneFaceEnrollmentFrame, val yaw: Float)
 
 @Composable
@@ -107,13 +116,16 @@ fun OneFaceEnrollmentDialog(
     }
     var capturedFrames by remember { mutableStateOf<List<OneValidatedFaceFrame>>(emptyList()) }
     var capturing by remember { mutableStateOf(false) }
+    var cameraReady by remember { mutableStateOf(false) }
+    var cameraPosition by remember { mutableStateOf(OneFaceEnrollmentCameraPosition.FRONT) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionGranted = granted
         if (!granted) error = "Camera permission is required to capture the three face views."
     }
 
-    DisposableEffect(permissionGranted, lifecycleOwner, previewView, imageCapture) {
+    DisposableEffect(permissionGranted, lifecycleOwner, previewView, imageCapture, cameraPosition) {
+        cameraReady = false
         if (!permissionGranted) return@DisposableEffect onDispose { }
         val providerFuture = ProcessCameraProvider.getInstance(context)
         val executor = ContextCompat.getMainExecutor(context)
@@ -126,12 +138,19 @@ fun OneFaceEnrollmentDialog(
                     cameraProvider.unbindAll()
                     return@runCatching
                 }
-                provider = cameraProvider.also {
-                    cameraProvider.unbindAll()
-                    val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-                    cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageCapture)
+                provider = cameraProvider
+                cameraProvider.unbindAll()
+                if (!cameraProvider.hasCamera(cameraPosition.selector)) {
+                    error = "${cameraPosition.label} is not available on this device."
+                    return@runCatching
                 }
-            }.onFailure { error = "The front camera could not be started." }
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                cameraProvider.bindToLifecycle(lifecycleOwner, cameraPosition.selector, preview, imageCapture)
+                cameraReady = true
+            }.onFailure {
+                cameraReady = false
+                error = "${cameraPosition.label} could not be started."
+            }
         }, executor)
         onDispose { disposed = true; provider?.unbindAll() }
     }
@@ -181,6 +200,30 @@ fun OneFaceEnrollmentDialog(
                             Text("FACE SETUP · ${capturedFrames.size + 1} OF 3", color = OneBlue, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             Text(stage.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                             Text("Setting up recognition for $recipientName", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OneFaceEnrollmentCameraPosition.values().forEach { position ->
+                                    val selectCamera = {
+                                        if (cameraPosition != position) {
+                                            cameraPosition = position
+                                            capturedFrames = emptyList()
+                                            error = null
+                                        }
+                                    }
+                                    if (cameraPosition == position) {
+                                        Button(
+                                            onClick = selectCamera,
+                                            enabled = !capturing,
+                                            modifier = Modifier.weight(1f)
+                                        ) { Text(position.label) }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = selectCamera,
+                                            enabled = !capturing,
+                                            modifier = Modifier.weight(1f)
+                                        ) { Text(position.label) }
+                                    }
+                                }
+                            }
                             Text(stage.instruction, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 repeat(3) { index ->
@@ -207,7 +250,7 @@ fun OneFaceEnrollmentDialog(
                                         error = null
                                         scope.launch {
                                             runCatching {
-                                                captureAndValidateFace(context, imageCapture, capturedFrames)
+                                                captureAndValidateFace(context, imageCapture, capturedFrames, cameraPosition.apiValue)
                                             }.onSuccess { validated ->
                                                 val updated = capturedFrames + validated
                                                 capturedFrames = updated
@@ -218,7 +261,7 @@ fun OneFaceEnrollmentDialog(
                                             capturing = false
                                         }
                                     },
-                                    enabled = !capturing,
+                                    enabled = !capturing && cameraReady,
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     if (capturing) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -238,7 +281,8 @@ fun OneFaceEnrollmentDialog(
 private suspend fun captureAndValidateFace(
     context: android.content.Context,
     imageCapture: ImageCapture,
-    existingFrames: List<OneValidatedFaceFrame>
+    existingFrames: List<OneValidatedFaceFrame>,
+    cameraPosition: String
 ): OneValidatedFaceFrame {
     val captured = suspendCancellableCoroutine<Pair<ByteArray, Int>> { continuation ->
         imageCapture.takePicture(
@@ -287,7 +331,7 @@ private suspend fun captureAndValidateFace(
         val bytes = output.toByteArray()
         check(bytes.size <= 2_900_000) { "The captured image is too large. Try again." }
         OneValidatedFaceFrame(
-            OneFaceEnrollmentFrame(Base64.encodeToString(bytes, Base64.NO_WRAP), bitmap.width, bitmap.height, "front"),
+            OneFaceEnrollmentFrame(Base64.encodeToString(bytes, Base64.NO_WRAP), bitmap.width, bitmap.height, cameraPosition),
             face.headEulerAngleY
         )
     }

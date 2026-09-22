@@ -259,6 +259,38 @@ class OneOutsideTrackingStore(context: Context) {
     }
 
     @Synchronized
+    fun upsertRemoteLocation(
+        personId: UUID,
+        remoteId: UUID,
+        point: OneExteriorPoint,
+        accuracyMeters: Float?,
+        capturedAtMillis: Long
+    ): Boolean {
+        val db = helper.writableDatabase
+        ensureProfile(db, personId)
+        val zone = classifyOneExteriorPoint(point, readHome(db, personId), readSafePlaces(db, personId))
+        val inserted = db.insertWithOnConflict(
+            TABLE_POINTS,
+            null,
+            ContentValues().apply {
+                put("id", "remote:$remoteId")
+                put("person_id", personId.toString())
+                put("latitude", point.latitude)
+                put("longitude", point.longitude)
+                accuracyMeters?.let { put("accuracy_m", it) } ?: putNull("accuracy_m")
+                put("captured_at", capturedAtMillis)
+                put("source", OneOutsideLocationSource.REMOTE.wireValue)
+                put("zone_key", zone.key.takeIf { oneOutsideLocationIsAccurate(accuracyMeters) })
+                putNull("street_name")
+                put("dwell_duration_millis", 0L)
+            },
+            SQLiteDatabase.CONFLICT_IGNORE
+        ) != -1L
+        if (inserted) prune(db, personId, capturedAtMillis)
+        return inserted
+    }
+
+    @Synchronized
     fun updateLocationStreetName(
         personId: UUID,
         pointId: String,

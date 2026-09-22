@@ -36,6 +36,7 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
         "assistant", "assistant_request" -> EventKind.ASSISTANT
         "object_observed", "object-observed", "observation" -> EventKind.OBJECT_OBSERVED
         "movement", "motion" -> EventKind.MOVEMENT
+        "fall_suspected", "fall-suspected" -> EventKind.MOVEMENT
         else -> EventKind.OTHER
     },
     location = "Home · approximate",
@@ -48,5 +49,7 @@ private fun OneRemoteEvent.toOneEvent(): OneEvent = OneEvent(
     },
     id = id,
     observedAt = lastSeenAt,
-    evidenceIds = evidenceIds
+    evidenceIds = evidenceIds,
+    careRecipientId = careRecipientId,
+    snapshotAvailable = !snapshotPath.isNullOrBlank()
 )

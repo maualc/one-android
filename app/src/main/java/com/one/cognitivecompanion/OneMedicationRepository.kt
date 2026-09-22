@@ -20,14 +20,18 @@ enum class OneMedicationPlanActionState {
 }
 
 interface OneMedicationRepository {
-    suspend fun load(session: OneSession, subjectUserId: UUID? = null): List<MedicationDose>
+    suspend fun load(session: OneSession, subjectUserId: UUID? = null, careRecipientId: UUID? = null): List<MedicationDose>
 }
 
 /** Reads today's deterministic, consent-gated reminder list. */
 class OneApiMedicationRepository(
     private val apiClient: OneApiClient
 ) : OneMedicationRepository {
-    override suspend fun load(session: OneSession, subjectUserId: UUID?): List<MedicationDose> = apiClient.medicationReminders(session, subjectUserId = subjectUserId).map { reminder ->
+    override suspend fun load(session: OneSession, subjectUserId: UUID?, careRecipientId: UUID?): List<MedicationDose> = apiClient.medicationReminders(
+        session,
+        subjectUserId = subjectUserId,
+        careRecipientId = careRecipientId
+    ).map { reminder ->
         MedicationDose(
             name = reminder.name,
             instructions = listOf(reminder.dose, reminder.instructions)

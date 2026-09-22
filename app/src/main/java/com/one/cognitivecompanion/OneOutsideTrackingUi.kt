@@ -90,6 +90,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -116,6 +117,7 @@ import com.one.cognitivecompanion.ui.theme.OneMint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.time.Instant
@@ -167,10 +169,14 @@ fun OneOutsideTrackingScreen(
     careRecipients: List<OneCareRecipient>?,
     isBackend: Boolean,
     careRecipientsLoading: Boolean,
+    onSelectCareRecipient: (UUID) -> Unit,
+    onEnableOutsideConsent: (UUID) -> Unit,
     onOpenFamily: () -> Unit
 ) {
     val context = LocalContext.current.applicationContext
     val store = remember(context) { OneOutsideTrackingStore(context) }
+    val locationRepository = remember(context) { OneLocationRepository(context) }
+    val coroutineScope = rememberCoroutineScope()
     val availableRecipients = if (!isBackend && careRecipients.isNullOrEmpty()) {
         listOf(outsideDemoRecipient)
     } else {
@@ -299,6 +305,7 @@ fun OneOutsideTrackingScreen(
         }
         store.saveSelectedPersonId(personId)
         selectedPersonId = personId
+        onSelectCareRecipient(personId)
         simulationRunning = false
         routeIndex = 0
         showRecipientMenu = false
@@ -311,10 +318,14 @@ fun OneOutsideTrackingScreen(
             return
         }
         simulationRunning = false
+        if (isBackend) onEnableOutsideConsent(personId)
         routeIndex = 0
         store.setTrackingEnabled(personId, true, OneOutsideTrackingMode.GPS)
         store.saveSelectedPersonId(personId)
         OneOutsideLocationService.start(context, personId)
+        if (isBackend) coroutineScope.launch {
+            serviceError = locationRepository.setDeviceStatus(personId, true).error
+        }
         serviceError = null
         reload()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
@@ -398,6 +409,9 @@ fun OneOutsideTrackingScreen(
     fun stopGps(personId: UUID) {
         store.setTrackingEnabled(personId, false, OneOutsideTrackingMode.GPS)
         OneOutsideLocationService.stop(context)
+        if (isBackend) coroutineScope.launch {
+            serviceError = locationRepository.setDeviceStatus(personId, false).error
+        }
         serviceError = null
         reload()
     }
@@ -413,6 +427,17 @@ fun OneOutsideTrackingScreen(
         simulationRunning = false
         routeIndex = 0
         snapshot = selectedPersonId?.let { store.read(it) }
+    }
+
+    LaunchedEffect(selectedPersonId, isBackend) {
+        val personId = selectedPersonId ?: return@LaunchedEffect
+        if (!isBackend) return@LaunchedEffect
+        while (isActive) {
+            val result = locationRepository.synchronize(personId)
+            snapshot = store.read(personId)
+            serviceError = result.error
+            delay(30_000L)
+        }
     }
 
     DisposableEffect(context, selectedPersonId) {
@@ -580,6 +605,10 @@ fun OneOutsideTrackingScreen(
                 val place = snapshot?.safePlaces.orEmpty().firstOrNull { it.id == movingSafePlaceId }
                 if (place != null) {
                     store.saveSafePlace(personId, place.copy(center = point))
+                    if (isBackend) coroutineScope.launch {
+                        serviceError = locationRepository.saveSafePlace(personId, place.copy(center = point)).error
+                        reload()
+                    }
                     syncZonesIfTracking(personId)
                 }
                 clearMapEditMode()
@@ -1094,6 +1123,10 @@ fun OneOutsideTrackingScreen(
                                 onDelete = {
                                     selectedPersonId?.let { personId ->
                                         store.removeSafePlace(personId, place.id)
+                                        if (isBackend) coroutineScope.launch {
+                                            serviceError = locationRepository.deleteSafePlace(personId, place).error
+                                            reload()
+                                        }
                                         syncZonesIfTracking(personId)
                                         reload()
                                     }
@@ -1518,6 +1551,10 @@ fun OneOutsideTrackingScreen(
                         radiusMeters = radius
                     )
                     store.saveSafePlace(personId, place)
+                    if (isBackend) coroutineScope.launch {
+                        serviceError = locationRepository.saveSafePlace(personId, place).error
+                        reload()
+                    }
                     syncZonesIfTracking(personId)
                     showPlaceDialog = false
                     pendingPlacePoint = null
@@ -2364,7 +2401,7 @@ private fun outsideInitials(name: String): String = name
     .joinToString("") { it.first().uppercaseChar().toString() }
     .ifBlank { "?" }
 
-private fun hasOutsideLocationPermission(context: Context): Boolean =
+internal fun hasOutsideLocationPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 

@@ -1,6 +1,7 @@
 package com.one.cognitivecompanion
 
 import android.Manifest
+import android.graphics.BitmapFactory
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.annotation.OptIn
@@ -97,6 +98,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -111,6 +113,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
@@ -483,6 +486,14 @@ fun OneApp() {
                             careRecipients = appState.careRecipients,
                             isBackend = appState.backendMode,
                             careRecipientsLoading = appState.careRecipientsLoadState == OneCareRecipientLoadState.LOADING,
+                            onSelectCareRecipient = { recipientId ->
+                                coroutineScope.launch { appState.selectCareRecipient(recipientId) }
+                            },
+                            onEnableOutsideConsent = { recipientId ->
+                                coroutineScope.launch {
+                                    appState.updateCareRecipientConsent("outside_location", true, recipientId)
+                                }
+                            },
                             onOpenFamily = { selectedTab = "family" }
                         )
                         "family" -> FamilyScreen(
@@ -534,6 +545,26 @@ fun OneApp() {
                             selectedSubjectFamilyConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("family_mode") } == true,
                             selectedSubjectAssistantConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("family_assistant") } == true,
                             onSelectFamilySubject = { subjectId -> coroutineScope.launch { appState.selectFamilySubject(subjectId) } },
+                            selectedCareRecipientId = appState.selectedCareRecipientId,
+                            selectedRecipientMedicationConsent = appState.selectedCareRecipientId?.let {
+                                appState.consentStatesByCareRecipient[it]?.get("medication_management")
+                            } == true,
+                            selectedRecipientAssistantConsent = appState.selectedCareRecipientId?.let {
+                                appState.consentStatesByCareRecipient[it]?.get("family_assistant")
+                            } == true,
+                            selectedRecipientAnalyticsConsent = appState.selectedCareRecipientId?.let {
+                                appState.consentStatesByCareRecipient[it]?.get("analytics")
+                            } == true,
+                            consentUpdatePurpose = appState.consentUpdatePurpose,
+                            consentUpdateError = appState.consentUpdateError,
+                            careAnalytics = appState.careAnalytics,
+                            careAnalyticsLoadState = appState.careAnalyticsLoadState,
+                            careAnalyticsLoadError = appState.careAnalyticsLoadError,
+                            onCareAnalyticsRetry = { coroutineScope.launch { appState.loadCareAnalytics() } },
+                            onSelectCareRecipient = { recipientId -> coroutineScope.launch { appState.selectCareRecipient(recipientId) } },
+                            onCareRecipientConsentChange = { recipientId, purpose, granted ->
+                                coroutineScope.launch { appState.updateCareRecipientConsent(purpose, granted, recipientId) }
+                            },
                             medicationDoses = appState.medicationDoses,
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
@@ -567,15 +598,18 @@ fun OneApp() {
                         )
                         "assistant" -> CaregiverAssistantScreen(
                             isBackend = appState.backendMode,
-                            members = appState.familyMembers,
-                            selectedFamilySubjectId = appState.selectedFamilySubjectId,
-                            selectedSubjectAssistantConsent = appState.selectedFamilySubjectId?.let {
-                                appState.consentStatesBySubject[it]?.get("family_assistant")
+                            recipients = appState.careRecipients,
+                            selectedCareRecipientId = appState.selectedCareRecipientId,
+                            selectedRecipientAssistantConsent = appState.selectedCareRecipientId?.let {
+                                appState.consentStatesByCareRecipient[it]?.get("family_assistant")
                             } == true,
                             familyLoadState = appState.familyLoadState,
                             familyLoadError = appState.familyLoadError,
                             onFamilyRetry = { coroutineScope.launch { appState.loadFamily() } },
-                            onSelectFamilySubject = { subjectId -> coroutineScope.launch { appState.selectFamilySubject(subjectId) } },
+                            onSelectCareRecipient = { recipientId -> coroutineScope.launch { appState.selectCareRecipient(recipientId) } },
+                            onEnableAssistantConsent = { recipientId ->
+                                coroutineScope.launch { appState.updateCareRecipientConsent("family_assistant", true, recipientId) }
+                            },
                             familyAssistantLoadState = appState.familyAssistantLoadState,
                             familyAssistantResult = appState.familyAssistantResult,
                             familyAssistantLoadError = appState.familyAssistantLoadError,
@@ -2576,6 +2610,18 @@ private fun FamilyScreen(
     selectedSubjectFamilyConsent: Boolean,
     selectedSubjectAssistantConsent: Boolean,
     onSelectFamilySubject: (UUID) -> Unit,
+    selectedCareRecipientId: UUID?,
+    selectedRecipientMedicationConsent: Boolean,
+    selectedRecipientAssistantConsent: Boolean,
+    selectedRecipientAnalyticsConsent: Boolean,
+    consentUpdatePurpose: String?,
+    consentUpdateError: String?,
+    careAnalytics: OneCareAnalytics?,
+    careAnalyticsLoadState: OneCareAnalyticsLoadState,
+    careAnalyticsLoadError: String?,
+    onCareAnalyticsRetry: () -> Unit,
+    onSelectCareRecipient: (UUID) -> Unit,
+    onCareRecipientConsentChange: (UUID, String, Boolean) -> Unit,
     medicationDoses: List<MedicationDose>?,
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
@@ -2606,6 +2652,7 @@ private fun FamilyScreen(
     val inviteRole = if (inviteRoleName == OneRole.RESIDENT.name) OneRole.RESIDENT else OneRole.CAREGIVER
     val canSubmitInvite = inviteName.trim().isNotBlank() && familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
     var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var recipientMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var showMedicationPlanDialog by rememberSaveable { mutableStateOf(false) }
     var editingMedicationPlanId by rememberSaveable { mutableStateOf<String?>(null) }
     var planName by rememberSaveable { mutableStateOf("") }
@@ -2617,18 +2664,20 @@ private fun FamilyScreen(
     var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
     val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
         ?: if (isBackend) "My view" else "Everyone"
+    val selectedRecipientName = careRecipients?.firstOrNull { it.id == selectedCareRecipientId }?.displayName
+        ?: if (isBackend) "Select cared-for person" else "Demo resident"
     val editingMedicationPlan = editingMedicationPlanId?.let { id -> medicationPlans.orEmpty().firstOrNull { it.id.toString() == id } }
     val caregiverMembers = members.orEmpty().filter { it.role.equals("admin", ignoreCase = true) || it.role.equals("caregiver", ignoreCase = true) }
     val assignedCaregiverName = planAssignedCaregiverId?.let { id -> caregiverMembers.firstOrNull { it.id.toString() == id }?.displayName }
-    val medicationAccessGranted = !isBackend || selectedSubjectMedicationConsent
+    val medicationAccessGranted = !isBackend || selectedRecipientMedicationConsent
     val familyAccessGranted = !isBackend || selectedSubjectFamilyConsent
-    val assistantAccessGranted = !isBackend || selectedSubjectAssistantConsent
+    val assistantAccessGranted = !isBackend || selectedRecipientAssistantConsent
     val visibleMedicationDoses = if (isBackend) {
         medicationDoses.orEmpty().filter(MedicationDose::isOpenReminder)
     } else {
         demoMedicationDoses.filter(MedicationDose::isOpenReminder)
     }
-    val canCreateMedicationPlan = isBackend && selectedFamilySubjectId != null && medicationAccessGranted && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
+    val canCreateMedicationPlan = isBackend && selectedCareRecipientId != null && medicationAccessGranted && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
     val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
 
     ScreenScroll {
@@ -2663,12 +2712,37 @@ private fun FamilyScreen(
                     }
                 }
             }
+            Box {
+                AssistChip(
+                    onClick = { recipientMenuExpanded = true },
+                    enabled = isBackend && !careRecipients.isNullOrEmpty(),
+                    label = { Text(selectedRecipientName) },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
+                )
+                OneDropdownMenu(expanded = recipientMenuExpanded, onDismissRequest = { recipientMenuExpanded = false }) {
+                    careRecipients.orEmpty().forEach { recipient ->
+                        DropdownMenuItem(
+                            text = { Text(recipient.displayName) },
+                            onClick = {
+                                recipientMenuExpanded = false
+                                onSelectCareRecipient(recipient.id)
+                            }
+                        )
+                    }
+                }
+            }
         }
-        Text("Showing plans and observations for $selectedSubjectName. Switch people before reviewing sensitive details.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (isBackend && selectedFamilySubjectId != null) {
+        Text("Showing medication and care information for $selectedRecipientName. Household access remains under $selectedSubjectName.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (isBackend && selectedCareRecipientId != null) {
             if (!familyAccessGranted) InfoCard("Family sharing is paused", "An active family_mode consent for $selectedSubjectName is required before reviewing family details.")
-            if (!medicationAccessGranted) InfoCard("Medication controls are paused", "An active medication_management consent for $selectedSubjectName is required. The information below stays administrative and non-medical.")
-            if (!assistantAccessGranted) InfoCard("Family assistant is paused", "An active family_assistant consent for $selectedSubjectName is required before sending a bounded summary request.")
+            if (!medicationAccessGranted) {
+                InfoCard("Medication controls are paused", "Enable medication consent for $selectedRecipientName before creating or viewing plans.")
+                OutlinedButton(onClick = { onCareRecipientConsentChange(selectedCareRecipientId, "medication_management", true) }) { Text("Enable medication support") }
+            }
+            if (!assistantAccessGranted) {
+                InfoCard("Family assistant is paused", "Enable assistant consent for $selectedRecipientName before requesting a bounded summary.")
+                OutlinedButton(onClick = { onCareRecipientConsentChange(selectedCareRecipientId, "family_assistant", true) }) { Text("Enable family assistant") }
+            }
         }
         SectionHeading("CARE RECIPIENTS", "People receiving support")
         CareRecipientsCard(
@@ -2684,8 +2758,36 @@ private fun FamilyScreen(
             onUpdate = onUpdateCareRecipient,
             onDelete = onDeleteCareRecipient,
             onEnrollFace = onEnrollFaceProfile,
-            onDisableFace = onDisableFaceProfile
+            onDisableFace = onDisableFaceProfile,
+            consentUpdatePurpose = consentUpdatePurpose,
+            onMedicationConsentChange = { recipientId, enabled ->
+                onCareRecipientConsentChange(recipientId, "medication_management", enabled)
+            }
         )
+        consentUpdateError?.let { error ->
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        SectionHeading("30-DAY CONTEXT", "Safety and daily check-ins")
+        if (isBackend && selectedCareRecipientId != null && !selectedRecipientAnalyticsConsent) {
+            InfoCard("Safety context is paused", "Enable analytics consent for $selectedRecipientName to view bounded fall and check-in counts.")
+            OutlinedButton(
+                onClick = { onCareRecipientConsentChange(selectedCareRecipientId, "analytics", true) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Enable 30-day context") }
+        } else when {
+            careAnalyticsLoadState == OneCareAnalyticsLoadState.LOADING -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            careAnalyticsLoadState == OneCareAnalyticsLoadState.ERROR -> {
+                InfoCard("Safety context unavailable", careAnalyticsLoadError ?: "ONE could not load the safety context.")
+                OutlinedButton(onClick = onCareAnalyticsRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
+            }
+            careAnalytics != null -> InfoCard(
+                "Last ${careAnalytics.windowDays} days",
+                "Fall signals: ${careAnalytics.fallSignals} (${careAnalytics.fallsNeedingReview} need review) · " +
+                    "Daily check-ins: ${careAnalytics.checkIns} · " +
+                    (careAnalytics.lastCheckInExplanation ?: "No recent check-in summary.")
+            )
+            else -> InfoCard("No safety context yet", "Recorded check-ins and fall-review signals will appear here.")
+        }
         SectionHeading("TODAY'S PLAN", "Medication reminders")
         if (canCreateMedicationPlan) {
             OutlinedButton(
@@ -2699,7 +2801,7 @@ private fun FamilyScreen(
                     showMedicationPlanDialog = true
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Add medication plan for $selectedSubjectName") }
+            ) { Text("Add medication plan for $selectedRecipientName") }
         }
         medicationPlanActionError?.let { error ->
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -3216,13 +3318,14 @@ private fun FamilyMembersSection(
 @Composable
 private fun CaregiverAssistantScreen(
     isBackend: Boolean,
-    members: List<OneFamilyMember>?,
-    selectedFamilySubjectId: UUID?,
-    selectedSubjectAssistantConsent: Boolean,
+    recipients: List<OneCareRecipient>?,
+    selectedCareRecipientId: UUID?,
+    selectedRecipientAssistantConsent: Boolean,
     familyLoadState: OneFamilyLoadState,
     familyLoadError: String?,
     onFamilyRetry: () -> Unit,
-    onSelectFamilySubject: (UUID) -> Unit,
+    onSelectCareRecipient: (UUID) -> Unit,
+    onEnableAssistantConsent: (UUID) -> Unit,
     familyAssistantLoadState: OneFamilyAssistantLoadState,
     familyAssistantResult: OneFamilyAssistantResult?,
     familyAssistantLoadError: String?,
@@ -3231,9 +3334,9 @@ private fun CaregiverAssistantScreen(
     var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf("") }
     var questionHistory by rememberSaveable { mutableStateOf(listOf<String>()) }
-    val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
-        ?: if (isBackend) "My view" else "Everyone"
-    val canSend = isBackend && selectedFamilySubjectId != null && selectedSubjectAssistantConsent &&
+    val selectedSubjectName = recipients?.firstOrNull { it.id == selectedCareRecipientId }?.displayName
+        ?: if (isBackend) "Select cared-for person" else "Everyone"
+    val canSend = isBackend && selectedCareRecipientId != null && selectedRecipientAssistantConsent &&
         draft.trim().isNotBlank() && familyAssistantLoadState != OneFamilyAssistantLoadState.SUBMITTING
 
     Column(modifier = Modifier.fillMaxSize().imePadding()) {
@@ -3249,13 +3352,13 @@ private fun CaregiverAssistantScreen(
                     "Summaries from recorded medication plans and check-ins only."
                 )
             }
-            if (isBackend && members == null && familyLoadState in setOf(OneFamilyLoadState.IDLE, OneFamilyLoadState.LOADING)) {
+            if (isBackend && recipients == null && familyLoadState in setOf(OneFamilyLoadState.IDLE, OneFamilyLoadState.LOADING)) {
                 item {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Text("Loading the people in this care space…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            if (isBackend && members == null && familyLoadState == OneFamilyLoadState.ERROR) {
+            if (isBackend && recipients == null && familyLoadState == OneFamilyLoadState.ERROR) {
                 item {
                     InfoCard("Care circle unavailable", familyLoadError ?: "ONE could not load the people represented by this space.")
                     OutlinedButton(onClick = onFamilyRetry, modifier = Modifier.fillMaxWidth()) { Text("Try again") }
@@ -3264,7 +3367,7 @@ private fun CaregiverAssistantScreen(
             if (!isBackend) {
                 item { AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · illustrative assistant") }) }
             }
-            if (members.orEmpty().isNotEmpty()) {
+            if (recipients.orEmpty().isNotEmpty()) {
                 item {
                     Box {
                         AssistChip(
@@ -3276,12 +3379,12 @@ private fun CaregiverAssistantScreen(
                             expanded = subjectMenuExpanded,
                             onDismissRequest = { subjectMenuExpanded = false }
                         ) {
-                            members.orEmpty().forEach { member ->
+                            recipients.orEmpty().forEach { recipient ->
                                 DropdownMenuItem(
-                                    text = { Text("${member.displayName} · ${member.familyRoleLabel()}") },
+                                    text = { Text(recipient.displayName) },
                                     onClick = {
                                         subjectMenuExpanded = false
-                                        onSelectFamilySubject(member.id)
+                                        onSelectCareRecipient(recipient.id)
                                     }
                                 )
                             }
@@ -3295,12 +3398,16 @@ private fun CaregiverAssistantScreen(
                     "I can summarize the selected person's active medication plans and recorded check-ins. I do not make care or medication decisions."
                 )
             }
-            if (isBackend && selectedFamilySubjectId != null && !selectedSubjectAssistantConsent) {
+            if (isBackend && selectedCareRecipientId != null && !selectedRecipientAssistantConsent) {
                 item {
                     InfoCard(
                         "Family assistant is paused",
                         "An active family_assistant consent for $selectedSubjectName is required before sending a summary request."
                     )
+                    OutlinedButton(
+                        onClick = { onEnableAssistantConsent(selectedCareRecipientId) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Enable family assistant") }
                 }
             }
             items(questionHistory) { question ->
@@ -3470,7 +3577,9 @@ private fun CareRecipientsCard(
     onUpdate: (OneCareRecipient, String, String?, String?) -> Unit,
     onDelete: (OneCareRecipient) -> Unit,
     onEnrollFace: (OneCareRecipient, List<OneFaceEnrollmentFrame>) -> Unit,
-    onDisableFace: (OneCareRecipient) -> Unit
+    onDisableFace: (OneCareRecipient) -> Unit,
+    consentUpdatePurpose: String?,
+    onMedicationConsentChange: (UUID, Boolean) -> Unit
 ) {
     var showDialog by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -3508,6 +3617,17 @@ private fun CareRecipientsCard(
                     ) { Text("Add") }
                 }
             }
+            Text(
+                "Recognition is optional, local to this care space, and uses derived face embeddings only. Raw enrollment photos and live frames are not stored.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "Only a caregiver or admin can add, change, or turn off recognition. An unknown person is never guessed as someone in this care space.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             when {
                 recipients == null && (loadState == OneCareRecipientLoadState.IDLE || loadState == OneCareRecipientLoadState.LOADING) -> {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -3537,6 +3657,30 @@ private fun CareRecipientsCard(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (recipient.faceRecognitionStatus == "ready") OneMint else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        if (canManage) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text("Medication reminders", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (recipient.medicationRemindersEnabled) {
+                                            "Enabled for this care profile."
+                                        } else {
+                                            "Off until a caregiver enables medication support."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = recipient.medicationRemindersEnabled,
+                                    onCheckedChange = { enabled -> onMedicationConsentChange(recipient.id, enabled) },
+                                    enabled = !busy && consentUpdatePurpose != "medication_management"
                                 )
                             }
                         }
@@ -4040,7 +4184,37 @@ private fun EventDetailScreen(
                 Text("${linkedClips.size} clips are linked to this observation; showing the most recent one.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        if (event.snapshotAvailable && event.id != null && session != null) {
+            SectionHeading("SAFETY SNAPSHOT", "Private review image")
+            EventSnapshot(apiClient = apiClient, session = session, eventId = event.id)
+        }
         InfoCard("Human review", "This observation can support attention and discussion. It is not a diagnosis or medical advice.")
+    }
+}
+
+@Composable
+private fun EventSnapshot(apiClient: OneApiClient, session: OneSession, eventId: UUID) {
+    val state by produceState<Result<ByteArray>?>(initialValue = null, apiClient, session.accessToken, eventId) {
+        value = runCatching { apiClient.eventSnapshot(session, eventId) }
+    }
+    when (val result = state) {
+        null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        else -> result.fold(
+            onSuccess = { bytes ->
+                val bitmap = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Private safety event snapshot",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(22.dp))
+                    )
+                } else {
+                    InfoCard("Snapshot unavailable", "ONE could not decode the retained safety image.")
+                }
+            },
+            onFailure = { error -> InfoCard("Snapshot unavailable", error.message ?: "ONE could not load the retained safety image.") }
+        )
     }
 }
 

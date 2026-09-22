@@ -4,17 +4,20 @@
 > Leerlo completo antes de modificar código. Este archivo es un contexto de
 > trabajo, no sustituye a los README ni al contrato OpenAPI versionado.
 
-Fecha de actualización: 2026-09-17
+Fecha de actualización: 2026-09-22
 Proyecto local de Codex: Hackathon
 Carpeta contenedora de referencia en este PC: C:\Users\alcar\Desktop\Development\ONE
 Producto: ONE Cognitive Companion
 Estado general: MVP multi-cliente local-first, con backend FastAPI, cliente
 iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
-Estado de esta sesión: `main` conserva la experiencia Android alineada con iOS.
-La rama `feature/outside-companion-tracking` sustituye en Android el antiguo
-mapa interior 2D/3D por un tracker exterior local, con GPS, zonas, historial,
-alertas y simulación de rutas. Este contexto debe actualizarse con cada
-traspaso entre máquinas.
+Estado de esta sesión: el trabajo activo está separado entre la rama
+`feature/outside-companion-tracking` de `one-android` y la rama `android-test`
+del backend local `one`. Android parte del commit `71efe4b` (`Improve exterior
+tracking and add care flows`), que conserva el mapa exterior estilo Life360 y
+la equiparación funcional con iOS. En esta rama el seguimiento ya no es solo
+local: ubicación, dispositivos y lugares seguros se sincronizan de forma
+consentida con el backend. Este contexto debe actualizarse con cada traspaso
+entre máquinas.
 
 ---
 
@@ -22,18 +25,15 @@ traspaso entre máquinas.
 
 Estas reglas son obligatorias salvo que el usuario las cambie expresamente:
 
-1. NO modificar el código de las APIs del repositorio backend. En este
-   checkout el repositorio se llama `one-backend`; lo mantiene otro compañero.
-   Puede inspeccionarse, ejecutarse y llamarse desde los clientes, pero no se
-   deben editar sus archivos desde este flujo de trabajo salvo autorización
-   expresa y coordinación.
-2. No modificar las llamadas, rutas, cuerpos ni contratos de `OneApi.kt` para
-   resolver problemas de interfaz o estado. Solo adaptar código Android fuera
-   del contrato cuando el usuario lo pida expresamente y exista un endpoint ya
-   documentado.
-3. No inventar endpoints nuevos ni cambiar la semántica del backend desde
-   Android. Si el contrato no permite una funcionalidad, explicarlo y pedir
-   coordinación antes de ampliar el alcance.
+1. El usuario autorizó expresamente el 22-09-2026 los cambios coordinados de
+   Android y backend para las pruebas de ubicación. Mantener Android aislado en
+   `feature/outside-companion-tracking` y el backend en `android-test`; no
+   mezclarlos todavía en `main` ni en `demo-release`.
+2. Todo cambio posterior de contrato debe actualizar conjuntamente backend,
+   `contracts/openapi.json`, tests y `OneApi.kt`. No usar cambios de API para
+   ocultar una incidencia puramente visual.
+3. El análisis interior por cámara permanece en `feature/camera-room-analysis`
+   y no debe mezclarse con el trabajo actual de seguimiento exterior.
 4. No mostrar nunca tokens, contraseñas, claves API, códigos de pairing,
    certificados ni valores reales de .env en respuestas, commits o archivos
    de contexto.
@@ -46,9 +46,9 @@ Estas reglas son obligatorias salvo que el usuario las cambie expresamente:
 7. No hacer git reset --hard, git checkout -- ni borrar archivos para
    resolver conflictos sin autorización explícita.
 
-La prioridad actual es continuar principalmente en one-android. El backend es
-la fuente de verdad del contrato; iOS y frontend sirven como referencia
-funcional y visual.
+La prioridad actual es validar Android contra el backend Docker real. El
+backend es la fuente de verdad del contrato; iOS y frontend sirven como
+referencia funcional y visual.
 
 ---
 
@@ -56,11 +56,12 @@ funcional y visual.
 
 La carpeta ONE es una carpeta contenedora y no es un repositorio Git. No se debe
 ejecutar git pull en ONE. Cada subcarpeta principal es un repo independiente.
-En este checkout, el repositorio backend se llama `one-backend`:
+En algunos equipos el repositorio backend se llama `one-backend`; en este PC
+su carpeta local es `one`:
 
 - one-android: app Android Kotlin/Compose
   Remoto: https://github.com/maualc/one-android
-- one-backend: API FastAPI y servicios locales
+- one / one-backend: API FastAPI y servicios locales
   Remoto: https://github.com/0xbiel/one.git
 - one-frontend: dashboard/publisher React + Vite
   Remoto: https://github.com/0xbiel/one-frontend.git
@@ -74,13 +75,15 @@ análisis del hackathon. tmp no es necesario para compilar la aplicación y
 contiene archivos grandes; no incluirlo en un repo ni subirlo salvo que una
 tarea concreta lo necesite.
 
-### Estado observado el 17-09-2026
+### Estado observado el 22-09-2026
 
-`one-android/main` sigue siendo la base alineada con iOS. La rama experimental
-`feature/exterior-companion-map` se conserva publicada sin cambios. Se creó una
-tercera rama, `feature/outside-companion-tracking`, desde `main` para el tracker
-exterior; sus cambios Android son deliberadamente independientes de iOS,
-frontend y backend.
+`one-android/main` queda reservado para versiones estables. Las ramas que se
+deben conservar separadas son `feature/camera-room-analysis`,
+`feature/demo-release` y la línea de seguimiento exterior. La integración
+actual cliente-servidor está en `feature/outside-companion-tracking` en Android
+y `android-test` en backend. La rama Android local está un commit por delante
+de su remoto y conserva cambios locales aún no publicados; el backend también
+tiene cambios locales sin commit.
 
 Commits relevantes observados:
 
@@ -334,7 +337,31 @@ patrones de SwiftUI:
 
 Se conservaron los estados de carga, error, stale/offline y demo, además de las
 acciones existentes de cámaras, pairing, clips, medicación, familia y mapas.
-No se modificó `OneApi.kt` ni el backend para esta equiparación.
+La equiparación visual original no modificó el contrato. La rama Android del
+tracker amplía ahora `OneApi.kt` de forma coordinada con el backend `android-test`.
+
+El enrollment facial Android permite escoger cámara frontal o trasera, reinicia
+las muestras al cambiar de cámara, valida tres vistas con ML Kit y envía el
+`camera_position` correcto. La UI refleja que el reconocimiento es opcional,
+local al care space y controlado por cuidadores; las fotos no se conservan como
+fotos después de derivar las plantillas.
+
+La tarjeta de personas cuidadas también permite activar o desactivar desde
+Android los recordatorios de medicación por persona. Usa el consentimiento
+existente `medication_management`, bloquea el interruptor mientras se actualiza
+y muestra el error junto al control.
+
+### Flujos conectados en Android + backend `android-test`
+
+- Family distingue la cuenta del hogar de la persona cuidada seleccionada.
+- Consentimientos, medicación, check-in diario y asistente familiar se dirigen
+  al `care_recipient_id` correcto.
+- La tarjeta de contexto muestra analítica agregada de 30 días sin presentar
+  señales como diagnósticos.
+- Los detalles de eventos pueden descargar y mostrar su captura privada usando
+  la sesión autenticada.
+- El mapa exterior mezcla caché local y datos remotos, conserva IDs
+  idempotentes y expone el error de sincronización sin bloquear el GPS local.
 
 ### Correcciones recientes ya publicadas en Android
 
@@ -372,8 +399,8 @@ La pestaña `Map` de esta rama ya no carga mapas de habitaciones. El flujo local
 es:
 
 1. Seleccionar la persona cuidada; en demo offline aparece un perfil local y
-   con backend se usan los care recipients existentes, sin escribir ubicación
-   en el backend.
+   con backend se usan los care recipients. Cuenta/hogar y destinatario de
+   cuidados son selecciones independientes.
 2. La vista inicial es un mapa cartográfico cuadrado con la foto del perfil (o
    iniciales) anclada a la coordenada del punto actual, no al centro de la pantalla,
    y círculos por cada punto reciente. El usuario puede desplazar el mapa y
@@ -401,14 +428,18 @@ es:
    La reconstrucción vial requiere un motor de map matching y una política de
    privacidad antes de enviar trazas a un proveedor. `Test a route` solo aparece en demo mode y
    permite probar salida, llegada a un lugar seguro y vuelta a casa sin moverse.
-7. `Resident message preview` solo crea una notificación en el propio teléfono;
-   todavía no existe sincronización entre teléfonos/familia. Para eso hará
-   falta acordar el contrato y almacenamiento compartido con backend.
+7. Con consentimiento `outside_location`, el móvil registra un dispositivo
+   estable por destinatario, sube puntos en lotes idempotentes, descarga hasta
+   siete días de historial y sincroniza altas, cambios y bajas de lugares
+   seguros. Al detener el GPS, el dispositivo remoto pasa a `paused`.
+8. `Resident message preview` sigue creando una notificación en el propio
+   teléfono; los mensajes entre teléfonos aún no se sincronizan.
 
 La precisión de cada punto se conserva y la app no clasifica zonas cuando el
 radio de error supera 120 m. El historial, radios, alertas y mensajes de esta
-primera entrega son locales a Android; no deben interpretarse como un servicio
-de emergencia ni como una coordenada exacta.
+primera entrega se guardan primero en Android y se replican en backend cuando
+hay sesión y consentimiento; no deben interpretarse como un servicio de
+emergencia ni como una coordenada exacta.
 
 El APK de debug local para esta rama se genera con
 `./gradlew :app:assembleDebug` en `app/build/outputs/apk/debug/app-debug.apk`.
@@ -472,16 +503,19 @@ Desde one-android:
     .\gradlew.bat assembleDebug
     .\gradlew.bat assembleRelease -PoneApiBaseUrl=https://configure-me.invalid/api/v1
 
-Última verificación realizada en este PC (16-09-2026):
+Última verificación realizada en este PC (22-09-2026):
 
     $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio1\jbr'
     .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
       -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
 
-Las tareas terminaron con `BUILD SUCCESSFUL`. El APK se generó en
-`app/build/outputs/apk/debug/app-debug.apk` y se copió también como
-`one-debug-lan-192.168.1.134.apk`. El test instrumentado no se ejecutó en esta
-sesión por no haber un dispositivo conectado. Si Android Studio muestra “Project
+En `feature/outside-companion-tracking`, `testDebugUnitTest`, `assembleDebug` y
+`lintDebug` terminaron con `BUILD SUCCESSFUL`; lint no produjo errores. El APK
+está en `app/build/outputs/apk/debug/app-debug.apk`. El backend `android-test`
+pasó `uv run --extra dev pytest -q` con 2 omisiones esperadas. En esta sesión
+Docker Compose no pudo arrancarse porque el daemon de Docker Desktop no estaba
+activo; queda pendiente repetir esa comprobación tras iniciarlo. El test
+instrumentado depende de que haya un dispositivo conectado. Si Android Studio muestra “Project
 JDK is not defined”, abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime`
 incluido, o usar `Add JDK from disk` apuntando a la carpeta `jbr` de la
 instalación de Android Studio. La ruta exacta cambia según el PC.
@@ -521,11 +555,28 @@ una vista LiveKit remota.
 
 ---
 
-## 7. Backend (carpeta local `one-backend`): referencia de solo lectura
+## 7. Backend (carpeta local `one` o `one-backend`)
 
 El backend es un monolito modular FastAPI para el MVP local-first. Usa
 PostgreSQL como base autoritativa en Compose y SQLite como fallback de cero
 configuración para desarrollo/tests.
+
+### Integración añadida en `android-test` (22-09-2026)
+
+- Migración `016_outside_location_tracking.sql` con dispositivos, puntos de
+  ubicación y lugares seguros.
+- Rutas consentidas `outside_location` para registrar/pausar dispositivos,
+  subir lotes idempotentes, consultar última posición/historial de siete días
+  y crear, editar o eliminar lugares seguros.
+- El contrato `contracts/openapi.json` se regeneró tras añadir las rutas.
+- Tests de consentimiento, idempotencia, límites temporales y contrato
+  PostgreSQL.
+- Compose arranca por defecto el núcleo (API, PostgreSQL, Redis, MinIO y
+  LiveKit). El worker de visión es opcional con el perfil `vision`; web y demo
+  usan perfiles separados.
+- Guía de pruebas en `docs/android-testing.md` y descarga de modelos faciales
+  mediante `scripts/download_face_models.ps1`. Los modelos y `.env` locales no
+  se versionan.
 
 ### Componentes
 
@@ -576,6 +627,10 @@ Rutas especialmente relevantes para Android:
     GET    /api/v1/homes/{home_id}/medication-reminders
     POST   /api/v1/homes/{home_id}/medication-plans/{plan_id}/check-ins
     POST   /api/v1/homes/{home_id}/family-assistant
+    POST   /api/v1/homes/{home_id}/care-recipients/{recipient_id}/tracking-devices
+    POST   /api/v1/homes/{home_id}/care-recipients/{recipient_id}/location-points
+    GET    /api/v1/homes/{home_id}/care-recipients/{recipient_id}/locations
+    GET    /api/v1/homes/{home_id}/care-recipients/{recipient_id}/safe-places
     GET    /api/v1/homes/{home_id}/maps/current
     POST   /api/v1/homes/{home_id}/cameras/{camera_id}/map-generation
     GET    /api/v1/homes/{home_id}/cameras/{camera_id}/map-generation
@@ -611,9 +666,13 @@ chat.
 ### Ejecutar con Docker
 
     cd C:\ruta\al\ONE\one-backend
-    docker compose up --build
+    docker compose up --build -d
+    docker compose --profile vision up --build -d
+    docker compose ps
+    curl.exe http://127.0.0.1:8000/api/v1/health
 
-Compose incluye API, PostgreSQL, Redis, MinIO, LiveKit de desarrollo y Caddy.
+El primer comando levanta API, PostgreSQL, Redis, MinIO y LiveKit. El segundo
+añade el worker de visión; Caddy/frontend requieren `--profile web`.
 Los valores de desarrollo (devkey, secret, contraseñas de ejemplo) no son
 válidos para compartir el servicio en una LAN o producción. Para teléfonos,
 LiveKit necesita una URL alcanzable por el dispositivo y cámara/micrófono

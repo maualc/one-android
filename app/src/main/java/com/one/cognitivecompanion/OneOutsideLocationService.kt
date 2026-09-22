@@ -37,6 +37,7 @@ import java.util.UUID
 
 class OneOutsideLocationService : Service() {
     private lateinit var store: OneOutsideTrackingStore
+    private lateinit var locationRepository: OneLocationRepository
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
     private var subscribedPersonId: UUID? = null
@@ -51,6 +52,7 @@ class OneOutsideLocationService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = OneOutsideTrackingStore(this)
+        locationRepository = OneLocationRepository(this)
         locationClient = LocationServices.getFusedLocationProviderClient(this)
         OneOutsideNotificationHelper.ensureChannels(this)
     }
@@ -199,6 +201,11 @@ class OneOutsideLocationService : Service() {
             }
         )
         sendTrackingBroadcast(personId)
+        serviceScope.launch {
+            val sync = locationRepository.synchronize(personId)
+            if (sync.error != null) sendTrackingBroadcast(personId, error = sync.error)
+            else sendTrackingBroadcast(personId)
+        }
         scheduleStreetLookupIfNeeded(update)
         if (stationaryObservations >= 3 && samplingWhileMoving) {
             requestLocationUpdates(personId, moving = false)
@@ -379,6 +386,15 @@ class OneOutsideLocationService : Service() {
                 store.setTrackingEnabled(personId, false, OneOutsideTrackingMode.GPS)
             }
             context.stopService(Intent(context, OneOutsideLocationService::class.java).setAction(ACTION_STOP))
+        }
+
+        fun stop(context: Context, personId: UUID) {
+            OneOutsideTrackingStore(context).setTrackingEnabled(personId, false, OneOutsideTrackingMode.GPS)
+            context.stopService(
+                Intent(context, OneOutsideLocationService::class.java)
+                    .setAction(ACTION_STOP)
+                    .putExtra(EXTRA_PERSON_ID, personId.toString())
+            )
         }
 
         fun syncGeofences(context: Context, personId: UUID) {

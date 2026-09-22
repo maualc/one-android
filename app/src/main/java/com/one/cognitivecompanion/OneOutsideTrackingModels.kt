@@ -19,7 +19,8 @@ const val ONE_OUTSIDE_STATIONARY_DISTANCE_METERS = 50.0
 
 enum class OneOutsideLocationSource(val wireValue: String) {
     GPS("gps"),
-    SIMULATED("simulated");
+    SIMULATED("simulated"),
+    REMOTE("remote");
 
     companion object {
         fun fromWire(value: String?): OneOutsideLocationSource =

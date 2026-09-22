@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
@@ -81,6 +83,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -484,6 +487,7 @@ fun OneApp() {
                             OneRole.CAREGIVER -> when (visibleTab) {
                         "map" -> OneOutsideTrackingScreen(
                             careRecipients = appState.careRecipients,
+                            selectedCareRecipientId = appState.selectedCareRecipientId,
                             isBackend = appState.backendMode,
                             careRecipientsLoading = appState.careRecipientsLoadState == OneCareRecipientLoadState.LOADING,
                             onSelectCareRecipient = { recipientId ->
@@ -540,11 +544,7 @@ fun OneApp() {
                             onRemoveFamilyMember = { member ->
                                 coroutineScope.launch { appState.removeFamilyMember(member) }
                             },
-                            selectedFamilySubjectId = appState.selectedFamilySubjectId,
-                            selectedSubjectMedicationConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("medication_management") } == true,
                             selectedSubjectFamilyConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("family_mode") } == true,
-                            selectedSubjectAssistantConsent = appState.selectedFamilySubjectId?.let { appState.consentStatesBySubject[it]?.get("family_assistant") } == true,
-                            onSelectFamilySubject = { subjectId -> coroutineScope.launch { appState.selectFamilySubject(subjectId) } },
                             selectedCareRecipientId = appState.selectedCareRecipientId,
                             selectedRecipientMedicationConsent = appState.selectedCareRecipientId?.let {
                                 appState.consentStatesByCareRecipient[it]?.get("medication_management")
@@ -1463,7 +1463,11 @@ private fun CaregiverHomeScreen(
     }
 
     if (showDailyCheckIn) {
-        ModalBottomSheet(onDismissRequest = { showDailyCheckIn = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showDailyCheckIn = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.background
+        ) {
             DailyCheckInFlow(
                 loadState = dailyCheckInState,
                 result = dailyCheckInResult,
@@ -1665,9 +1669,12 @@ private fun DailyCheckInFlow(
     val prompt = dailyCheckInPrompts[step]
     val selectedAnswer = answers[prompt.id]
     val submitting = loadState == OneAssistantLoadState.SUBMITTING
+    val transcript = dailyCheckInPrompts.joinToString("\n") { item ->
+        "${item.title}: ${answers[item.id] ?: "Not answered"}"
+    }
 
     Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
+        modifier = modifier.fillMaxHeight().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Text("TODAY’S CHECK-IN", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
@@ -1717,11 +1724,7 @@ private fun DailyCheckInFlow(
                         if (step < dailyCheckInPrompts.lastIndex) {
                             step += 1
                         } else {
-                            onSubmit(
-                                dailyCheckInPrompts.joinToString("\n") { item ->
-                                    "${item.title}: ${answers[item.id] ?: "Not answered"}"
-                                }
-                            )
+                            onSubmit(transcript)
                             started = false
                         }
                     },
@@ -1739,6 +1742,16 @@ private fun DailyCheckInFlow(
                 Spacer(Modifier.width(10.dp))
                 Text("Recording check-in…")
             }
+        } else if (error != null && answers.isNotEmpty()) {
+            Button(
+                onClick = { onSubmit(transcript) },
+                enabled = !submitting,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Retry check-in") }
+            OutlinedButton(
+                onClick = { step = dailyCheckInPrompts.lastIndex; started = true },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Review answers") }
         } else if (result != null) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -2605,11 +2618,7 @@ private fun FamilyScreen(
     isAdmin: Boolean,
     onUpdateFamilyMember: (OneFamilyMember, OneRole) -> Unit,
     onRemoveFamilyMember: (OneFamilyMember) -> Unit,
-    selectedFamilySubjectId: UUID?,
-    selectedSubjectMedicationConsent: Boolean,
     selectedSubjectFamilyConsent: Boolean,
-    selectedSubjectAssistantConsent: Boolean,
-    onSelectFamilySubject: (UUID) -> Unit,
     selectedCareRecipientId: UUID?,
     selectedRecipientMedicationConsent: Boolean,
     selectedRecipientAssistantConsent: Boolean,
@@ -2651,7 +2660,6 @@ private fun FamilyScreen(
     var inviteRoleName by rememberSaveable { mutableStateOf(OneRole.CAREGIVER.name) }
     val inviteRole = if (inviteRoleName == OneRole.RESIDENT.name) OneRole.RESIDENT else OneRole.CAREGIVER
     val canSubmitInvite = inviteName.trim().isNotBlank() && familyInviteLoadState != OneFamilyInviteLoadState.SUBMITTING
-    var subjectMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var recipientMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var showMedicationPlanDialog by rememberSaveable { mutableStateOf(false) }
     var editingMedicationPlanId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -2662,8 +2670,6 @@ private fun FamilyScreen(
     var planAssignedCaregiverId by rememberSaveable { mutableStateOf<String?>(null) }
     var assignedCaregiverMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
-    val selectedSubjectName = members?.firstOrNull { it.id == selectedFamilySubjectId }?.displayName
-        ?: if (isBackend) "My view" else "Everyone"
     val selectedRecipientName = careRecipients?.firstOrNull { it.id == selectedCareRecipientId }?.displayName
         ?: if (isBackend) "Select cared-for person" else "Demo resident"
     val editingMedicationPlan = editingMedicationPlanId?.let { id -> medicationPlans.orEmpty().firstOrNull { it.id.toString() == id } }
@@ -2681,45 +2687,27 @@ private fun FamilyScreen(
     val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
 
     ScreenScroll {
-        ScreenHeader("CARE CIRCLE", "Family", "People, reminders, and permissions around the home.")
+        ScreenHeader("FAMILY", "Family")
         if (!isBackend) {
             AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · synthetic family data") })
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box {
-                AssistChip(
-                    onClick = { subjectMenuExpanded = true },
-                    enabled = isBackend && !members.isNullOrEmpty(),
-                    label = { Text(selectedSubjectName) },
-                    leadingIcon = { Icon(Icons.Default.People, contentDescription = null) }
-                )
-                OneDropdownMenu(
-                    expanded = subjectMenuExpanded,
-                    onDismissRequest = { subjectMenuExpanded = false }
-                ) {
-                    members.orEmpty().forEach { member ->
-                        DropdownMenuItem(
-                            text = { Text("${member.displayName} · ${member.familyRoleLabel()}") },
-                            onClick = {
-                                subjectMenuExpanded = false
-                                onSelectFamilySubject(member.id)
-                            }
-                        )
-                    }
-                }
-            }
-            Box {
-                AssistChip(
+        if (careRecipients.orEmpty().size > 1) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
                     onClick = { recipientMenuExpanded = true },
-                    enabled = isBackend && !careRecipients.isNullOrEmpty(),
-                    label = { Text(selectedRecipientName) },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
-                )
-                OneDropdownMenu(expanded = recipientMenuExpanded, onDismissRequest = { recipientMenuExpanded = false }) {
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = isBackend
+                ) {
+                    Icon(Icons.Default.Person, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(selectedRecipientName, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(Icons.Default.ExpandMore, contentDescription = "Choose cared-for person")
+                }
+                OneDropdownMenu(
+                    expanded = recipientMenuExpanded,
+                    onDismissRequest = { recipientMenuExpanded = false },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     careRecipients.orEmpty().forEach { recipient ->
                         DropdownMenuItem(
                             text = { Text(recipient.displayName) },
@@ -2731,10 +2719,14 @@ private fun FamilyScreen(
                     }
                 }
             }
+        } else if (selectedCareRecipientId != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Person, contentDescription = null, tint = OneBlue)
+                Text(selectedRecipientName, style = MaterialTheme.typography.titleSmall)
+            }
         }
-        Text("Showing medication and care information for $selectedRecipientName. Household access remains under $selectedSubjectName.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (isBackend && selectedCareRecipientId != null) {
-            if (!familyAccessGranted) InfoCard("Family sharing is paused", "An active family_mode consent for $selectedSubjectName is required before reviewing family details.")
+            if (!familyAccessGranted) InfoCard("Family sharing is paused", "Family sharing consent is required to view household details.")
             if (!medicationAccessGranted) {
                 InfoCard("Medication controls are paused", "Enable medication consent for $selectedRecipientName before creating or viewing plans.")
                 OutlinedButton(onClick = { onCareRecipientConsentChange(selectedCareRecipientId, "medication_management", true) }) { Text("Enable medication support") }
@@ -2744,7 +2736,7 @@ private fun FamilyScreen(
                 OutlinedButton(onClick = { onCareRecipientConsentChange(selectedCareRecipientId, "family_assistant", true) }) { Text("Enable family assistant") }
             }
         }
-        SectionHeading("CARE RECIPIENTS", "People receiving support")
+        Text("People cared for", style = MaterialTheme.typography.titleLarge)
         CareRecipientsCard(
             isBackend = isBackend,
             recipients = careRecipients,
@@ -3618,12 +3610,7 @@ private fun CareRecipientsCard(
                 }
             }
             Text(
-                "Recognition is optional, local to this care space, and uses derived face embeddings only. Raw enrollment photos and live frames are not stored.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "Only a caregiver or admin can add, change, or turn off recognition. An unknown person is never guessed as someone in this care space.",
+                "Face recognition is optional. Enrollment photos are not retained.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3718,7 +3705,6 @@ private fun CareRecipientsCard(
             title = { Text(if (editing == null) "Add care recipient" else "Edit care recipient") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("This profile represents a person receiving support; it does not create a login.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(value = displayName, onValueChange = { displayName = it.take(120) }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = relationship, onValueChange = { relationship = it.take(120) }, label = { Text("Relationship (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = roomLabel, onValueChange = { roomLabel = it.take(120) }, label = { Text("Room (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())

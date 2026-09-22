@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -167,6 +168,7 @@ private val outsideDemoRecipient = OneCareRecipient(
 @Composable
 fun OneOutsideTrackingScreen(
     careRecipients: List<OneCareRecipient>?,
+    selectedCareRecipientId: UUID?,
     isBackend: Boolean,
     careRecipientsLoading: Boolean,
     onSelectCareRecipient: (UUID) -> Unit,
@@ -182,7 +184,8 @@ fun OneOutsideTrackingScreen(
     } else {
         careRecipients.orEmpty()
     }
-    var selectedPersonId by remember { mutableStateOf(store.readSelectedPersonId()) }
+    var selectedPersonId by remember { mutableStateOf(selectedCareRecipientId ?: store.readSelectedPersonId()) }
+    var followCurrentLocation by remember(selectedPersonId) { mutableStateOf(true) }
     var snapshot by remember { mutableStateOf<OneOutsideTrackingSnapshot?>(null) }
     var serviceError by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingTrackingPersonId by remember { mutableStateOf<UUID?>(null) }
@@ -305,6 +308,7 @@ fun OneOutsideTrackingScreen(
         }
         store.saveSelectedPersonId(personId)
         selectedPersonId = personId
+        followCurrentLocation = true
         onSelectCareRecipient(personId)
         simulationRunning = false
         routeIndex = 0
@@ -416,11 +420,24 @@ fun OneOutsideTrackingScreen(
         reload()
     }
 
-    LaunchedEffect(recipientIds) {
+    LaunchedEffect(recipientIds, selectedCareRecipientId, isBackend, careRecipientsLoading) {
+        if (isBackend && (careRecipients == null || careRecipientsLoading)) return@LaunchedEffect
         val current = store.readSelectedPersonId()
-        val valid = current?.takeIf { it in recipientIds } ?: recipientIds.firstOrNull()
-        if (valid != current) store.saveSelectedPersonId(valid)
+        val preferred = selectedCareRecipientId ?: current
+        val valid = preferred?.takeIf { it in recipientIds } ?: recipientIds.firstOrNull()
+        if (valid != selectedPersonId) {
+            selectedPersonId?.let { previous ->
+                if (store.read(previous).trackingEnabled) {
+                    store.setTrackingEnabled(previous, false)
+                    OneOutsideLocationService.stop(context)
+                }
+            }
+            store.saveSelectedPersonId(valid)
+        }
         selectedPersonId = valid
+        if (isBackend && valid != null && valid != selectedCareRecipientId) {
+            onSelectCareRecipient(valid)
+        }
     }
 
     LaunchedEffect(selectedPersonId) {
@@ -554,6 +571,7 @@ fun OneOutsideTrackingScreen(
         mapSearchPoint = null
         mapSearchResults = emptyList()
         mapSearchError = null
+        followCurrentLocation = true
         issueMapCameraCommand(OneExteriorMapCameraAction.RECENTER, target)
     }
 
@@ -683,10 +701,12 @@ fun OneOutsideTrackingScreen(
                 routePoints = emptyList(),
                 currentPoint = currentPoint,
                 focusPoint = latestReliablePoint?.point ?: currentPoint ?: snapshot?.home?.center,
+                cameraCommand = mapCameraCommand,
                 onMapTap = {},
                 personName = selectedName,
                 personPhotoUri = selectedPhotoUri,
-                followCurrentLocation = true,
+                followCurrentLocation = followCurrentLocation,
+                onUserMapMove = { followCurrentLocation = false },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -726,7 +746,12 @@ fun OneOutsideTrackingScreen(
                                 color = if (currentZone != null) OneMint else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        TextButton(onClick = { showRecipientMenu = true }) { Text("Change") }
+                        if (availableRecipients.size > 1) {
+                            TextButton(onClick = { showRecipientMenu = true }) {
+                                Text("Change")
+                                Icon(Icons.Default.ExpandMore, contentDescription = null)
+                            }
+                        }
                     }
                     DropdownMenu(
                         expanded = showRecipientMenu,
@@ -831,7 +856,7 @@ fun OneOutsideTrackingScreen(
                     }
                     if (isBackend) {
                         Text(
-                            "This map currently follows this Android phone only; location is stored locally.",
+                            "Location saved on this phone",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

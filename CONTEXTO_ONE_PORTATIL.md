@@ -4,7 +4,7 @@
 > Leerlo completo antes de modificar código. Este archivo es un contexto de
 > trabajo, no sustituye a los README ni al contrato OpenAPI versionado.
 
-Fecha de actualización: 2026-09-22
+Fecha de actualización: 2026-09-22 (revisión del estado Android, Docker y documentación)
 Proyecto local de Codex: Hackathon
 Carpeta contenedora de referencia en este PC: C:\Users\alcar\Desktop\Development\ONE
 Producto: ONE Cognitive Companion
@@ -12,11 +12,12 @@ Estado general: MVP multi-cliente local-first, con backend FastAPI, cliente
 iOS nativo, cliente Android nativo, dashboard web y documentación Vocs.
 Estado de esta sesión: el trabajo activo está separado entre la rama
 `feature/outside-companion-tracking` de `one-android` y la rama `android-test`
-del backend local `one`. Android parte del commit `71efe4b` (`Improve exterior
-tracking and add care flows`), que conserva el mapa exterior estilo Life360 y
-la equiparación funcional con iOS. En esta rama el seguimiento ya no es solo
-local: ubicación, dispositivos y lugares seguros se sincronizan de forma
-consentida con el backend. Este contexto debe actualizarse con cada traspaso
+del backend local `one-backend`. El tracker exterior conserva el mapa estilo
+Life360 y sincroniza ubicación, dispositivos y lugares seguros con el backend
+cuando hay consentimiento. Se ajustaron además el selector de personas, el
+seguimiento de cámara al mover el mapa y el check-in diario. Consulta la
+sección 16 para el estado exacto de este PC, cambios locales, Docker y comandos
+para reproducir el entorno. Este contexto debe actualizarse en cada traspaso
 entre máquinas.
 
 ---
@@ -56,8 +57,8 @@ referencia funcional y visual.
 
 La carpeta ONE es una carpeta contenedora y no es un repositorio Git. No se debe
 ejecutar git pull en ONE. Cada subcarpeta principal es un repo independiente.
-En algunos equipos el repositorio backend se llama `one-backend`; en este PC
-su carpeta local es `one`:
+En este PC el checkout del repositorio backend está en `one-backend` (en otros
+equipos también puede llamarse `one`):
 
 - one-android: app Android Kotlin/Compose
   Remoto: https://github.com/maualc/one-android
@@ -77,24 +78,38 @@ tarea concreta lo necesite.
 
 ### Estado observado el 22-09-2026
 
-`one-android/main` queda reservado para versiones estables. Las ramas que se
-deben conservar separadas son `feature/camera-room-analysis`,
-`feature/demo-release` y la línea de seguimiento exterior. La integración
-actual cliente-servidor está en `feature/outside-companion-tracking` en Android
-y `android-test` en backend. Ambos repositorios están limpios y sincronizados
-con sus remotos tras los commits `8595711` en Android y `7f66672` en backend.
+`one-android/main` queda reservado para versiones estables. El trabajo activo
+de seguimiento debe permanecer en `feature/outside-companion-tracking` en
+Android y `android-test` en backend; no mezclarlo con `main`,
+`feature/demo-release` ni `feature/camera-room-analysis`.
 
 Commits relevantes observados:
 
-- one-android — `8595711 Complete outside tracking and care recipient flows`
-  (`feature/outside-companion-tracking` y su remoto, limpio).
-- one-backend — `7f66672 Add backend support for outside location tracking`
-  (`android-test` y su remoto, limpio).
-- one-android `main` — `719c82b docs: refresh portable handoff context`
-  (`origin/main`, reservado para estable).
-- one-frontend — `7a6220b Support iPhone-guided camera calibration` (limpio).
-- one-ios — `f7f8ae2 Show calibration targets in room geometry` (limpio).
-- one-docs — `7bf54b2 Document clear-floor calibration guidance` (limpio).
+- one-android — punto de partida `4316d7c Refresh portable handoff context`
+  en `feature/outside-companion-tracking`, igual que `origin` al comenzar esta
+  sesión; consultar `git log` y `git status` para saber si ya se creó/publicó
+  el commit de los cambios descritos en la sección 16.
+- one-backend — `7f66672 Add backend support for outside location tracking` en
+  `android-test`; README y `.env.example` modificados y `docs/docker.md` nuevo,
+  pendientes de commit.
+- one-docs — `77261f2 Document care analytics and safety context` en `main`;
+  README y tres guías Docker/quickstart/troubleshooting modificadas localmente.
+- one-frontend — `2308e1d Add daily check-in and safety analytics flows`,
+  `main` limpio.
+- one-ios — `cc37ebc Add daily check-in and safety review surfaces`, `main`
+  limpio.
+
+Hay una carpeta adicional `one-espionage` que no forma parte de los cinco
+repositorios del proyecto: su rama `main` está 8 commits atrasada y tiene
+cambios/borrados locales. No tocarla, actualizarla, limpiarla ni incluirla en
+commits de ONE sin una petición explícita.
+
+En el momento de esta revisión, los contenedores del proyecto existían pero
+estaban parados (`Exited (0)`); no asumir que Docker sigue levantado. Antes de
+la parada, `/api/v1/health` devolvía estado `degraded` con PostgreSQL en error y
+los logs de API mostraban `psycopg.OperationalError: the connection is closed`
+tras reiniciarse PostgreSQL. Se documenta en la sección 16 cómo levantar y
+verificar el stack.
 
 Commits Android recientes publicados:
 
@@ -117,28 +132,34 @@ carpeta ONE contenedora sigue sin ser un repositorio y nunca se debe hacer
 
 ### Opción A: los repos ya están clonados
 
-Abrir PowerShell en la carpeta contenedora del portátil y actualizar cada repo
-por separado. Usar --ff-only para no crear merges automáticos inesperados:
+Abrir PowerShell en la carpeta contenedora y revisar primero cada árbol. Para
+continuar el tracker, actualizar las ramas de trabajo correctas (no hacer pull
+de `main` en Android/backend):
 
     cd C:\ruta\al\ONE
-    git -C one-android pull --ff-only origin main
-    git -C one-backend pull --ff-only origin main
+    git -C one-android status --short --branch
+    git -C one-android switch feature/outside-companion-tracking
+    git -C one-android pull --ff-only origin feature/outside-companion-tracking
+    git -C one-backend status --short --branch
+    git -C one-backend switch android-test
+    git -C one-backend pull --ff-only origin android-test
+
+Para los repos de referencia, usar `main` solo si se van a consultar o
+actualizar deliberadamente:
+
     git -C one-frontend pull --ff-only origin main
     git -C one-ios pull --ff-only origin main
     git -C one-docs pull --ff-only origin main
 
-Si alguno tiene cambios locales, detenerse y revisar primero:
-
-    git -C one-android status --short --branch
-
-No sobrescribir cambios locales sin confirmar con el usuario.
+Si algún repo tiene cambios locales, detenerse y revisarlos antes del pull; no
+sobrescribirlos ni cambiar de rama si Git indica que no es seguro.
 
 ### Opción B: clonar desde cero
 
     mkdir C:\ruta\al\ONE
     cd C:\ruta\al\ONE
-    git clone https://github.com/maualc/one-android.git one-android
-    git clone https://github.com/0xbiel/one.git one-backend
+    git clone --branch feature/outside-companion-tracking https://github.com/maualc/one-android.git one-android
+    git clone --branch android-test https://github.com/0xbiel/one.git one-backend
     git clone https://github.com/0xbiel/one-frontend.git one-frontend
     git clone https://github.com/0xbiel/one-ios.git one-ios
     git clone https://github.com/0xbiel/one-docs.git one-docs
@@ -445,16 +466,19 @@ emergencia ni como una coordenada exacta.
 
 El APK de debug local para esta rama se genera con
 `./gradlew :app:assembleDebug` en `app/build/outputs/apk/debug/app-debug.apk`.
-Se verificó con tests unitarios, cuatro tests instrumentados en emulador API 36,
-instalación y arranque de la actividad principal. Queda pendiente validar el
+En verificaciones anteriores se ejecutaron tests unitarios e instrumentados en
+emulador API 36. En la sesión más reciente, `:app:assembleDebug` terminó con
+`BUILD SUCCESSFUL`; no se pudo verificar la ejecución en emulador porque `adb`
+no está disponible en el PATH de esta terminal. Queda pendiente validar el
 seguimiento real en un teléfono físico y la concesión del permiso de segundo
 plano en cada versión de Android. El mapa y la resolución del nombre de calle
 requieren red; la consulta de calle puede enviar coordenadas al geocodificador.
 
 ### Conectividad LAN para probar en un teléfono físico
 
-El APK de debug normal usa `10.0.2.2` para el emulador. En este PC se generó un
-APK de prueba con el endpoint LAN `http://192.168.1.134:8000/api/v1`:
+El APK de debug normal usa `10.0.2.2` para el emulador. En una prueba anterior
+se usó el endpoint LAN `http://192.168.1.134:8000/api/v1`; esa IP puede haber
+cambiado y no debe reutilizarse sin comprobar `ipconfig`:
 
     .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
       -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
@@ -471,9 +495,14 @@ estar en la misma Wi‑Fi. Comprobar desde el navegador del teléfono:
     http://192.168.1.134:8000/api/v1/health
 
 Si no responde, revisar que Docker esté arrancado y el firewall de Windows
-permita la red privada. Un error `Could not reach the ONE API` es de conexión,
-no significa que exista un mapa válido. LiveKit también necesita anunciar una
-URL accesible por el teléfono; `localhost` solo sirve dentro del propio PC.
+permita la red privada. `OneApi.kt` transforma cualquier excepción de la
+petición en el texto genérico `Could not reach the ONE API`; ese mensaje por sí
+solo no identifica si falló DNS, socket, timeout o la respuesta. En la
+configuración inspeccionada, el recurso debug ya permite HTTP y el recurso main
+(usado por release) lo prohíbe; por tanto no atribuir el error al bloqueo HTTP
+sin más evidencia. Revisar endpoint compilado, reachability y Logcat. LiveKit
+también necesita anunciar una URL accesible por el teléfono; `localhost` solo
+sirve dentro del propio PC.
 
 ---
 
@@ -484,6 +513,13 @@ URL accesible por el teléfono; `localhost` solo sirve dentro del propio PC.
 El valor por defecto de debug está pensado para el emulador:
 
     http://10.0.2.2:8000/api/v1
+
+`app/src/debug/res/xml/network_security_config.xml` permite HTTP en debug para
+el backend local; `app/src/main/res/xml/network_security_config.xml` mantiene
+HTTP deshabilitado, por lo que release debe usar HTTPS. En móvil físico,
+compilar con la IP actual del PC (no una IP antigua):
+
+    .\gradlew.bat :app:assembleDebug -PoneApiBaseUrl=http://<IP_DEL_PC>:8000/api/v1
 
 Para otro endpoint, no escribirlo permanentemente en código ni incluir
 secretos. Pasarlo como propiedad de Gradle:
@@ -505,19 +541,18 @@ Desde one-android:
     .\gradlew.bat assembleDebug
     .\gradlew.bat assembleRelease -PoneApiBaseUrl=https://configure-me.invalid/api/v1
 
-Última verificación realizada en este PC (22-09-2026):
+Una verificación anterior en este PC (22-09-2026) ejecutó:
 
     $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio1\jbr'
     .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug `
       -PoneApiBaseUrl=http://192.168.1.134:8000/api/v1
 
-En `feature/outside-companion-tracking`, `testDebugUnitTest`, `assembleDebug` y
-`lintDebug` terminaron con `BUILD SUCCESSFUL`; lint no produjo errores. El APK
-está en `app/build/outputs/apk/debug/app-debug.apk`. El backend `android-test`
-pasó `uv run --extra dev pytest -q` con 2 omisiones esperadas. En esta sesión
-Docker Compose no pudo arrancarse porque el daemon de Docker Desktop no estaba
-activo; queda pendiente repetir esa comprobación tras iniciarlo. El test
-instrumentado depende de que haya un dispositivo conectado. Si Android Studio muestra “Project
+En esa verificación, `testDebugUnitTest`, `assembleDebug` y `lintDebug`
+terminaron con `BUILD SUCCESSFUL`; lint no produjo errores. El backend
+`android-test` pasó `uv run --extra dev pytest -q` con 2 omisiones esperadas.
+La comprobación actual de Docker y la build más reciente están descritas en la
+sección 16. El test instrumentado depende de que haya un dispositivo conectado.
+Si Android Studio muestra “Project
 JDK is not defined”, abrir `Setup SDK` y elegir el `jbr-25 JetBrains Runtime`
 incluido, o usar `Add JDK from disk` apuntando a la carpeta `jbr` de la
 instalación de Android Studio. La ruta exacta cambia según el PC.
@@ -668,17 +703,24 @@ chat.
 ### Ejecutar con Docker
 
     cd C:\ruta\al\ONE\one-backend
+    if (-not (Test-Path .env)) { Copy-Item .env.example .env }
     docker compose up --build -d
-    docker compose --profile vision up --build -d
     docker compose ps
-    curl.exe http://127.0.0.1:8000/api/v1/health
+    Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/health" -UseBasicParsing
 
-El primer comando levanta API, PostgreSQL, Redis, MinIO y LiveKit. El segundo
-añade el worker de visión; Caddy/frontend requieren `--profile web`.
+El stack por defecto levanta API, PostgreSQL 16, Redis 7, MinIO y LiveKit local.
+El perfil `--profile web` añade el frontend sibling y Caddy; el frontend se abre
+en `http://127.0.0.1:4175`. El perfil opcional `--profile vision` añade el
+worker de geometría (necesita pesos/modelos locales); `--profile demo` necesita
+el repo sibling `one-demo-service`, que no está en esta carpeta de proyecto.
+Las migraciones PostgreSQL, incluida `016_outside_location_tracking.sql`, se
+aplican durante el arranque de la API. Los puertos por defecto son loopback:
+API 8000, frontend 4175; con el `.env.example` actual Caddy usa HTTPS 8443 y
+HTTP 8080. El Compose fallback sin `.env` usa 8080/8081 para Caddy.
 Los valores de desarrollo (devkey, secret, contraseñas de ejemplo) no son
 válidos para compartir el servicio en una LAN o producción. Para teléfonos,
 LiveKit necesita una URL alcanzable por el dispositivo y cámara/micrófono
-requieren origen seguro HTTPS/WSS.
+requieren origen seguro HTTPS/WSS. No guardar ni copiar `.env` a Git.
 
 ---
 
@@ -829,8 +871,8 @@ Ejemplo seguro para Android después de modificar código:
     git diff --check
     git diff --stat
     git add app CONTEXTO_ONE_PORTATIL.md
-    git commit -m "describe the Android change"
-    git push origin main
+    git commit -m "describe the change"
+    git push origin feature/outside-companion-tracking
 
 Si el usuario todavía no quiere publicar, detenerse después de verificar y
 dejar el commit local o los cambios sin commit según haya pedido.
@@ -845,17 +887,19 @@ hacer commit y push; al regresar al primer PC, hacer otro pull.
 Ejemplo para cambios Android hechos en el portátil:
 
     cd C:\ruta\al\ONE\one-android
-    git pull --ff-only origin main
+    git switch feature/outside-companion-tracking
+    git pull --ff-only origin feature/outside-companion-tracking
     # trabajar y probar
     git status --short --branch
     git add app CONTEXTO_ONE_PORTATIL.md
     git commit -m "describe the change"
-    git push origin main
+    git push origin feature/outside-companion-tracking
 
 Después, en el PC principal:
 
     cd C:\ruta\al\ONE\one-android
-    git pull --ff-only origin main
+    git switch feature/outside-companion-tracking
+    git pull --ff-only origin feature/outside-companion-tracking
 
 Para cambios de backend, frontend, iOS o docs se repite el mismo patrón,
 entrando en su subcarpeta correspondiente. Nunca hacer git add . desde la raíz
@@ -872,9 +916,10 @@ estado, revisar el conflicto y pedir instrucciones si el resultado no es obvio.
 Se puede pegar el siguiente texto junto con este archivo:
 
 Lee CONTEXTO_ONE_PORTATIL.md completo antes de trabajar. Estoy continuando ONE
-Cognitive Companion desde one-android. Respeta estrictamente que el backend
-`one-backend` es solo lectura porque lo mantiene otro compañero. No modifiques
-las llamadas ni los contratos de `OneApi.kt` salvo autorización expresa.
+Cognitive Companion desde one-android en
+`feature/outside-companion-tracking`, coordinada con `one-backend` en
+`android-test`. Comprueba el estado de cada repo antes de editarlo; no mezcles
+ramas y no modifiques contratos de API salvo que la tarea lo requiera.
 Primero
 comprueba git status, inspecciona el código relevante, implementa solo lo
 solicitado y verifica con Gradle/lint/tests. No expongas secretos ni valores de
@@ -891,7 +936,8 @@ antes de ampliar el alcance.
       pull de ese repo.
 - [ ] Confirmar que los cinco repos están clonados con los remotos indicados:
       `one-android`, `one-backend`, `one-frontend`, `one-ios` y `one-docs`.
-- [ ] Ejecutar git pull --ff-only origin main dentro de cada repo.
+- [ ] Usar `feature/outside-companion-tracking` en one-android y `android-test`
+      en one-backend; los repos de referencia siguen en `main`.
 - [ ] Abrir one-android en Android Studio y sincronizar Gradle.
 - [ ] Configurar un emulador/dispositivo y permisos necesarios.
 - [ ] Ejecutar testDebugUnitTest, lintDebug y assembleDebug.
@@ -899,6 +945,177 @@ antes de ampliar el alcance.
 - [ ] Usar demo mode solo para revisar la UI sin backend.
 - [ ] No copiar .env, local.properties, keystores ni datos de usuario.
 - [ ] Antes de publicar, revisar git diff, git status y el repo exacto.
+
+---
+
+## 16. Estado del PC y guía de reproducción (22-09-2026)
+
+Esta sección es la referencia más reciente para el trabajo actual. Los estados
+de contenedores y los cambios locales pueden variar; confirmarlos con los
+comandos antes de continuar.
+
+### Cambios Android de esta sesión
+
+En `feature/outside-companion-tracking`, sobre `4316d7c`:
+
+- Family usa como selección principal a la persona cuidada, evita duplicar el
+  selector de miembro del hogar y reduce el texto explicativo redundante.
+- Map comparte la selección de care recipient con Family. Si se arrastra el
+  mapa se desactiva el seguimiento automático de cámara; cambiar de persona o
+  pulsar recenter lo vuelve a activar. Se simplificó el estado de ubicación.
+- La hoja del check-in se abre directamente expandida, usa el color de canvas
+  de la app y mantiene sus respuestas si falla el envío, con acciones de
+  reintento y revisión.
+- No se cambió el contrato ni se editó el backend en esta sesión.
+
+Verificación más reciente: `.\gradlew.bat :app:assembleDebug` terminó
+correctamente. APK generado en
+`app/build/outputs/apk/debug/app-debug.apk`. No se instaló ni se verificó en un
+emulador en esa pasada: `adb` no está disponible en el PATH de esta terminal.
+
+**Diagnóstico de conexión corregido:** `OneApi.kt` transforma excepciones de la
+petición en `Could not reach the ONE API`, ocultando la causa concreta. El
+recurso debug de Network Security ya permite HTTP (`10.0.2.2` o IP LAN); el
+recurso principal/release exige HTTPS. La explicación anterior que atribuía el
+error al bloqueo HTTP fue incorrecta y no debe repetirse. Hay que comprobar la
+URL incluida en BuildConfig, la conectividad y Logcat.
+
+### Qué contiene Docker en `one-backend`
+
+El Dockerfile raíz construye la API con Python 3.12 e instala las dependencias
+de runtime de `.[postgres]`; copia la app y las migraciones SQL. Al iniciar, la
+API aplica las migraciones numeradas, incluida
+`016_outside_location_tracking.sql`. El Compose normal levanta:
+
+| Servicio | Función | Puerto publicado por defecto |
+| --- | --- | --- |
+| `api` | FastAPI de ONE | `127.0.0.1:8000` |
+| `postgres` | PostgreSQL 16 y almacenamiento autoritativo | interno |
+| `redis` | servicio de caché/coordinación | interno |
+| `minio` | almacenamiento compatible con S3 | interno |
+| `livekit` | WebRTC local de desarrollo, sin LiveKit Cloud | `7880`, `7881`, `7882/udp` en todas las interfaces |
+| `caddy` (`web`) | reverse proxy HTTPS/HTTP local | IPv4 `8443`/`8080`; además IPv6 wildcard |
+
+Perfiles opcionales:
+
+- `web`: construye el repo sibling `one-frontend` y arranca frontend y Caddy.
+  Con el `.env.example` actual, frontend `127.0.0.1:4175`, Caddy HTTPS
+  IPv4 `8443` y HTTP IPv4 `8080`, más mappings IPv6 wildcard.
+- `vision`: construye `geometry_service/Dockerfile`, un worker Python separado
+  y pesado que requiere checkpoints/modelos locales montados; no hace falta
+  para el tracker exterior ni para el check-in.
+- `demo`: necesita `one-demo-service` junto a `one-backend`; ese checkout no
+  estaba presente entre los cinco repos principales de este PC.
+
+El stack no queda completamente limitado a loopback: API y frontend usan
+127.0.0.1 por defecto, pero LiveKit publica sus puertos en todas las
+interfaces y el servicio Caddy añade mappings IPv6 wildcard (`[::]`) aunque su
+binding IPv4 sea loopback. `ONE_CADDY_BIND` solo controla el mapping IPv4.
+Restringir LiveKit/Caddy con Windows Firewall en redes no confiables; quitar
+la publicación IPv6 requiere cambiar explícitamente los mappings de Compose.
+
+Los datos se conservan en volúmenes Docker con nombre (`one_pg`, `one_objects`,
+`one_minio`, `caddy_data`, `caddy_config`). `docker compose down` conserva los
+volúmenes; `docker compose down -v` los borra. Las imágenes, código, modelos y
+configuración no contienen los datos de otro PC. La base actual puede contener
+información personal y ubicación: no exportarla ni subirla a Git. Para tener
+los mismos registros en otro PC se necesita un backup PostgreSQL trasladado de
+forma privada y cifrada; levantar Compose desde cero crea una base nueva.
+
+El `.env` es local/ignorado. Si no existe, crear una copia de la plantilla sin
+sobrescribir una configuración existente:
+
+~~~powershell
+Set-Location C:\Users\alcar\Desktop\Development\ONE\one-backend
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+~~~
+
+No copiar el `.env` real entre equipos ni mostrar sus contraseñas, secretos o
+claves. En la última inspección de este PC los puertos de API no estaban
+sobrescritos y Compose usaba el loopback por defecto (`127.0.0.1:8000`); el
+frontend usaba `127.0.0.1:4175`, Caddy `8443/8080`. El `.env` local tenía
+`ONE_GEOMETRY_REQUIRE_GPU=true` y apuntaba la geometría a `127.0.0.1:8090`.
+Dentro del contenedor `127.0.0.1` es el propio contenedor; para acceder a un
+worker ejecutado en Windows host, la dirección normalmente debe ser
+`http://host.docker.internal:8090`. Esto solo afecta a geometría de mapas
+interiores, no al tracker exterior.
+
+### Arranque, verificación y frontend
+
+Para reproducir el API y sus dependencias desde PowerShell:
+
+~~~powershell
+Set-Location C:\Users\alcar\Desktop\Development\ONE\one-backend
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose up --build -d
+docker compose ps
+Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/v1/health' -UseBasicParsing
+~~~
+
+Para abrir también la web:
+
+~~~powershell
+docker compose --profile web up --build -d
+Start-Process 'http://127.0.0.1:4175'
+~~~
+
+La salida saludable debe indicar `database_status: ok`. Si la base se reinició
+por separado y la API quedó con una conexión psycopg cerrada, revisar logs y
+reiniciar solo la API:
+
+~~~powershell
+docker compose logs --tail=150 api
+docker compose logs --tail=150 postgres
+docker compose restart api
+Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/v1/health' -UseBasicParsing
+~~~
+
+En la última observación antes de apagar los servicios, el health devolvía
+`status: degraded` / `database_status: error`, con `psycopg.OperationalError:
+the connection is closed` en los logs. En la inspección posterior todos los
+contenedores figuraban `Exited (0)`, por lo que el stack debe volver a arrancar
+antes de probar la app.
+
+`docker compose stop` detiene sin borrar contenedores ni volúmenes. Para
+actualizar imágenes o aplicar cambios de Compose, repetir `docker compose up
+--build -d`; un simple `restart` no aplica cambios de puertos ni variables.
+
+### Android Studio y acceso desde dispositivos
+
+Abrir la carpeta `one-android` directamente en Android Studio y dejar que
+Gradle sincronice. Para el emulador, la URL por defecto del build debug es
+`http://10.0.2.2:8000/api/v1`; `10.0.2.2` es el alias del host desde el
+emulador, no desde un móvil físico. Ejecutar:
+
+~~~powershell
+Set-Location C:\Users\alcar\Desktop\Development\ONE\one-android
+git switch feature/outside-companion-tracking
+.\gradlew.bat :app:assembleDebug
+~~~
+
+Para teléfono físico, obtener la IPv4 actual del PC con `ipconfig`, editar el
+`.env` local del backend para que `ONE_API_BIND=0.0.0.0`, levantar/recrear la
+API (`docker compose up -d --force-recreate api`), permitir TCP 8000 solo en
+la red privada de Windows Firewall y compilar Android con:
+
+~~~powershell
+.\gradlew.bat :app:assembleDebug -PoneApiBaseUrl=http://<IP_DEL_PC>:8000/api/v1
+~~~
+
+El teléfono y el PC deben estar en la misma Wi-Fi. Probar primero
+`http://<IP_DEL_PC>:8000/api/v1/health` desde el navegador del teléfono. Para
+release, usar siempre un endpoint HTTPS real.
+
+### Repos y publicación
+
+Los cambios Android y este contexto se publican solo en
+`one-android:feature/outside-companion-tracking`. Los cambios locales de
+`one-backend` (README, `.env.example` y `docs/docker.md` nuevo) y `one-docs`
+(README, Docker, quickstart y troubleshooting) viven en repos y ramas separados;
+no se incluyen en el push de Android. Revisar sus propios estados antes de
+prepararlos para publicar. `npm` no está en el PATH de esta terminal, pero
+`pnpm run build` de one-docs terminó correctamente usando el runtime Node/pnpm
+disponible. No usar `git add .` desde la carpeta contenedora ONE.
 
 Fin del contexto de traspaso.
 

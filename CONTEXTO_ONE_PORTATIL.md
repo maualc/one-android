@@ -81,15 +81,17 @@ tarea concreta lo necesite.
 deben conservar separadas son `feature/camera-room-analysis`,
 `feature/demo-release` y la línea de seguimiento exterior. La integración
 actual cliente-servidor está en `feature/outside-companion-tracking` en Android
-y `android-test` en backend. La rama Android local está un commit por delante
-de su remoto y conserva cambios locales aún no publicados; el backend también
-tiene cambios locales sin commit.
+y `android-test` en backend. Ambos repositorios están limpios y sincronizados
+con sus remotos tras los commits `8595711` en Android y `7f66672` en backend.
 
 Commits relevantes observados:
 
-- one-android — `719c82b docs: refresh portable handoff context` (`main` y
-  `origin/main`, limpio antes de abrir la rama del tracker).
-- one-backend — `fe5e131 Keep calibration targets on clear floor` (limpio).
+- one-android — `8595711 Complete outside tracking and care recipient flows`
+  (`feature/outside-companion-tracking` y su remoto, limpio).
+- one-backend — `7f66672 Add backend support for outside location tracking`
+  (`android-test` y su remoto, limpio).
+- one-android `main` — `719c82b docs: refresh portable handoff context`
+  (`origin/main`, reservado para estable).
 - one-frontend — `7a6220b Support iPhone-guided camera calibration` (limpio).
 - one-ios — `f7f8ae2 Show calibration targets in room geometry` (limpio).
 - one-docs — `7bf54b2 Document clear-floor calibration guidance` (limpio).

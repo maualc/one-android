@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
+import android.os.BatteryManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -202,6 +203,7 @@ fun OneOutsideTrackingScreen(
     var messageDraft by rememberSaveable { mutableStateOf("") }
     var showClearHistoryDialog by remember { mutableStateOf(false) }
     var showFullScreenMap by rememberSaveable { mutableStateOf(false) }
+    var showAdvancedPanel by rememberSaveable { mutableStateOf(false) }
     var detailedMapModeName by rememberSaveable { mutableStateOf(OutsideDetailedMapMode.CONFIGURATION.name) }
     var historyRangeId by rememberSaveable { mutableStateOf(OUTSIDE_DEFAULT_HISTORY_RANGE_ID) }
     var mapSearchQuery by rememberSaveable { mutableStateOf("") }
@@ -644,12 +646,181 @@ fun OneOutsideTrackingScreen(
         return
     }
 
-    LazyColumn(
+    if (!showAdvancedPanel) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            OneExteriorMap(
+                home = snapshot?.home,
+                safePlaces = snapshot?.safePlaces.orEmpty(),
+                routePoints = emptyList(),
+                currentPoint = currentPoint,
+                focusPoint = latestReliablePoint?.point ?: currentPoint ?: snapshot?.home?.center,
+                onMapTap = {},
+                personName = selectedName,
+                personPhotoUri = selectedPhotoUri,
+                followCurrentLocation = true,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+                shadowElevation = 8.dp
+            ) {
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutsideProfileAvatar(
+                            name = selectedName,
+                            photoUri = selectedPhotoUri,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                selectedName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                currentZone?.label ?: if (currentPoint == null) "Waiting for location" else "Outside saved places",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (currentZone != null) OneMint else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { showRecipientMenu = true }) { Text("Change") }
+                    }
+                    DropdownMenu(
+                        expanded = showRecipientMenu,
+                        onDismissRequest = { showRecipientMenu = false },
+                        modifier = Modifier.width(260.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ) {
+                        availableRecipients.forEach { recipient ->
+                            DropdownMenuItem(
+                                text = { Text(recipient.displayName) },
+                                onClick = { setSelectedPerson(recipient.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            OutsideMapControls(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 14.dp),
+                onZoomIn = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_IN) },
+                onZoomOut = { issueMapCameraCommand(OneExteriorMapCameraAction.ZOOM_OUT) },
+                onRecenter = ::recenterMap
+            )
+
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                shadowElevation = 10.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(11.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                snapshot?.lastPoint?.let {
+                                    oneOutsideLocationLabel(it, snapshot?.home, snapshot?.safePlaces.orEmpty())
+                                } ?: "Location not available yet",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                latestReliablePoint?.let { point ->
+                                    val dwell = point.dwellDurationMillis
+                                    if (dwell >= 60_000L) "Here for ${formatOutsideDuration(dwell)} · updated ${formatOutsideTime(point.capturedAtMillis)}"
+                                    else "Updated ${formatOutsideTime(point.capturedAtMillis)}"
+                                } ?: "Enable location sharing to place this phone on the map",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = snapshot?.trackingEnabled == true,
+                            onCheckedChange = { enabled ->
+                                val personId = selectedPersonId ?: return@Switch
+                                if (enabled) requestGps(personId) else stopGps(personId)
+                            }
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(
+                            latestReliablePoint?.accuracyMeters?.let { "Accuracy ±${it.toInt()} m" } ?: "Accuracy —",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            readOutsideBatteryPercent(context)?.let { "Battery $it%" } ?: "Battery —",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            if (snapshot?.trackingEnabled == true) "Sharing on" else "Sharing paused",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (snapshot?.trackingEnabled == true) OneMint else OneAmber
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(onClick = ::openHistoryMap, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.History, contentDescription = null)
+                            Spacer(Modifier.width(5.dp))
+                            Text("History")
+                        }
+                        Button(onClick = { showAdvancedPanel = true }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.LocationOn, contentDescription = null)
+                            Spacer(Modifier.width(5.dp))
+                            Text("Places")
+                        }
+                        IconButton(onClick = { profilePhotoLauncher.launch(arrayOf("image/*")) }) {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = "Choose profile photo", tint = OneBlue)
+                        }
+                    }
+                    if (isBackend) {
+                        Text(
+                            "This map currently follows this Android phone only; location is stored locally.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    } else LazyColumn(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
+            TextButton(onClick = { showAdvancedPanel = false }) {
+                Icon(Icons.Default.Map, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Back to live map")
+            }
             OutsideHeader(
                 "LOCATION",
                 "Outside companion",
@@ -1560,7 +1731,7 @@ private fun OutsideLocationOverviewCard(
                     )
                 }
                 Text(
-                    "© OpenStreetMap contributors",
+                    "© OpenStreetMap · OpenFreeMap",
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(6.dp)
@@ -1798,7 +1969,7 @@ private fun OutsideFullScreenMapDialog(
                     )
                 }
                 Text(
-                    "© OpenStreetMap contributors",
+                    "© OpenStreetMap · OpenFreeMap",
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .navigationBarsPadding()
@@ -2205,6 +2376,13 @@ private fun isSystemLocationEnabled(context: Context): Boolean {
     val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) manager.isLocationEnabled
     else manager.isProviderEnabled(LocationManager.GPS_PROVIDER) || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+}
+
+private fun readOutsideBatteryPercent(context: Context): Int? {
+    val batteryManager = context.getSystemService(BatteryManager::class.java) ?: return null
+    return batteryManager
+        .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        .takeIf { it in 0..100 }
 }
 
 @Composable

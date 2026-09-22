@@ -610,6 +610,68 @@ class OneAppState(
         }
     }
 
+    suspend fun enrollFaceProfile(recipient: OneCareRecipient, frames: List<OneFaceEnrollmentFrame>) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || !canManageFamily) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Only caregivers connected to ONE can set up face recognition."
+            return
+        }
+        if (frames.size < 3) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Capture a front, right and left view before continuing."
+            return
+        }
+        careRecipientActionState = OneCareRecipientActionState.SUBMITTING
+        careRecipientActionError = null
+        try {
+            apiClient.recordConsent(
+                authenticatedSession,
+                ConsentRequest(
+                    purpose = "face_recognition",
+                    policyVersion = "2026-09",
+                    granted = true,
+                    careRecipientId = recipient.id
+                )
+            )
+            val profile = apiClient.enrollFaceProfile(authenticatedSession, recipient.id, frames)
+            careRecipients = careRecipients.orEmpty().map { item ->
+                if (item.id == recipient.id) item.copy(
+                    faceRecognitionStatus = profile.status,
+                    faceProfileUpdatedAt = profile.updatedAt
+                ) else item
+            }
+            careRecipientActionState = OneCareRecipientActionState.LOADED
+        } catch (error: Exception) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = error.message ?: "Could not set up face recognition for this person."
+        }
+    }
+
+    suspend fun disableFaceProfile(recipient: OneCareRecipient) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || !canManageFamily) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = "Only caregivers connected to ONE can disable face recognition."
+            return
+        }
+        careRecipientActionState = OneCareRecipientActionState.SUBMITTING
+        careRecipientActionError = null
+        try {
+            val profile = apiClient.deleteFaceProfile(authenticatedSession, recipient.id)
+            careRecipients = careRecipients.orEmpty().map { item ->
+                if (item.id == recipient.id) item.copy(
+                    faceRecognitionStatus = profile.status,
+                    faceProfileUpdatedAt = profile.updatedAt
+                ) else item
+            }
+            careRecipientActionState = OneCareRecipientActionState.LOADED
+        } catch (error: Exception) {
+            careRecipientActionState = OneCareRecipientActionState.ERROR
+            careRecipientActionError = error.message ?: "Could not disable face recognition for this person."
+        }
+    }
+
     suspend fun checkBackendHealth() {
         if (!backendMode) {
             backendHealth = null

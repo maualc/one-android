@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.one.cognitivecompanion"
     val configuredApiBaseUrl = providers.gradleProperty("oneApiBaseUrl").orNull
+    val configuredMapStyleUrl = providers.gradleProperty("oneMapStyleUrl").orNull
     compileSdk {
         version = release(37)
     }
@@ -23,6 +24,11 @@ android {
             "String",
             "ONE_API_BASE_URL",
             "\"${configuredApiBaseUrl ?: "http://10.0.2.2:8000/api/v1"}\""
+        )
+        buildConfigField(
+            "String",
+            "ONE_MAP_STYLE_URL",
+            "\"${configuredMapStyleUrl ?: "https://tiles.openfreemap.org/styles/liberty"}\""
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -71,6 +77,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.maplibre.android)
     implementation(libs.play.services.location)
+    implementation(libs.mlkit.face.detection)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

@@ -98,7 +98,25 @@ data class OneCareRecipient(
     val relationship: String?,
     val roomLabel: String?,
     val createdAt: Instant?,
-    val profilePhotoUrl: String? = null
+    val profilePhotoUrl: String? = null,
+    val medicationRemindersEnabled: Boolean = false,
+    val faceRecognitionStatus: String = "not_enrolled",
+    val faceProfileUpdatedAt: Instant? = null
+)
+
+data class OneFaceEnrollmentFrame(
+    val frameBase64: String,
+    val width: Int,
+    val height: Int,
+    val cameraPosition: String = "front"
+)
+
+data class OneFaceProfile(
+    val careRecipientId: UUID,
+    val status: String,
+    val modelVersion: String?,
+    val sampleCount: Int,
+    val updatedAt: Instant?
 )
 
 data class CareRecipientCreateRequest(
@@ -176,7 +194,8 @@ data class ConsentRequest(
     val purpose: String,
     val policyVersion: String,
     val granted: Boolean,
-    val subjectUserId: UUID? = null
+    val subjectUserId: UUID? = null,
+    val careRecipientId: UUID? = null
 )
 
 data class OneRemoteConsent(
@@ -509,6 +528,9 @@ interface OneApiClient {
     suspend fun createCareRecipient(session: OneSession, request: CareRecipientCreateRequest): OneCareRecipient
     suspend fun updateCareRecipient(session: OneSession, recipientId: UUID, request: CareRecipientUpdateRequest): OneCareRecipient
     suspend fun deleteCareRecipient(session: OneSession, recipientId: UUID): OneCareRecipient
+    suspend fun faceProfile(session: OneSession, recipientId: UUID): OneFaceProfile
+    suspend fun enrollFaceProfile(session: OneSession, recipientId: UUID, frames: List<OneFaceEnrollmentFrame>): OneFaceProfile
+    suspend fun deleteFaceProfile(session: OneSession, recipientId: UUID): OneFaceProfile
     suspend fun recordConsent(session: OneSession, consentRequest: ConsentRequest)
     suspend fun homeConsents(session: OneSession): List<OneRemoteConsent>
     suspend fun requestDataExport(session: OneSession): OneDataExport
@@ -815,6 +837,50 @@ class OneHttpApiClient(
         return parseCareRecipient(body.optJSONObject("data") ?: body)
     }
 
+    override suspend fun faceProfile(session: OneSession, recipientId: UUID): OneFaceProfile =
+        parseFaceProfile(
+            request(
+                "/homes/${session.homeId}/care-recipients/$recipientId/face-profile",
+                "GET",
+                token = session.accessToken
+            )
+        )
+
+    override suspend fun enrollFaceProfile(
+        session: OneSession,
+        recipientId: UUID,
+        frames: List<OneFaceEnrollmentFrame>
+    ): OneFaceProfile {
+        require(frames.size in 3..8) { "Capture between three and eight clear face views." }
+        val rows = JSONArray()
+        frames.forEach { frame ->
+            rows.put(
+                JSONObject()
+                    .put("frame_base64", frame.frameBase64)
+                    .put("width", frame.width)
+                    .put("height", frame.height)
+                    .put("camera_position", frame.cameraPosition)
+            )
+        }
+        return parseFaceProfile(
+            request(
+                "/homes/${session.homeId}/care-recipients/$recipientId/face-profile/enroll",
+                "POST",
+                JSONObject().put("frames", rows),
+                token = session.accessToken
+            )
+        )
+    }
+
+    override suspend fun deleteFaceProfile(session: OneSession, recipientId: UUID): OneFaceProfile =
+        parseFaceProfile(
+            request(
+                "/homes/${session.homeId}/care-recipients/$recipientId/face-profile",
+                "DELETE",
+                token = session.accessToken
+            )
+        )
+
     private suspend fun sessionFrom(body: JSONObject): OneSession {
         val accessToken = body.requiredString("access_token")
         val homeId = body.requiredUuid("home_id")
@@ -841,6 +907,7 @@ class OneHttpApiClient(
             .put("policy_version", consentRequest.policyVersion)
             .put("granted", consentRequest.granted)
         consentRequest.subjectUserId?.let { payload.put("subject_user_id", it.toString()) }
+        consentRequest.careRecipientId?.let { payload.put("care_recipient_id", it.toString()) }
         request("/homes/${session.homeId}/consents", "POST", payload, token = session.accessToken)
     }
 
@@ -1747,8 +1814,22 @@ class OneHttpApiClient(
         roomLabel = body.optNullableString("room_label"),
         createdAt = body.optNullableString("created_at")?.toInstantOrNull(),
         profilePhotoUrl = body.optNullableString("profile_photo_url")
-            ?: body.optNullableString("photo_url")
+            ?: body.optNullableString("photo_url"),
+        medicationRemindersEnabled = body.optBoolean("medication_reminders_enabled", false),
+        faceRecognitionStatus = body.optString("face_recognition_status").ifBlank { "not_enrolled" },
+        faceProfileUpdatedAt = body.optNullableString("face_profile_updated_at")?.toInstantOrNull()
     )
+
+    private fun parseFaceProfile(body: JSONObject): OneFaceProfile {
+        val profile = body.optJSONObject("profile") ?: body
+        return OneFaceProfile(
+            careRecipientId = profile.requiredUuid("care_recipient_id"),
+            status = profile.optString("status").ifBlank { "not_enrolled" },
+            modelVersion = profile.optNullableString("model_version"),
+            sampleCount = profile.optInt("sample_count", 0),
+            updatedAt = profile.optNullableString("updated_at")?.toInstantOrNull()
+        )
+    }
 
     private fun parseFamilyMemberMutation(body: JSONObject): OneFamilyMemberMutation {
         val row = body.optJSONObject("data") ?: throw OneApiException("ONE API response is missing the family member.")

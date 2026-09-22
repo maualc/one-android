@@ -15,6 +15,7 @@ cameraX = "1.4.2"
 lifecycleService = "2.8.7"
 maplibre = "11.8.0"
 playServicesLocation = "21.3.0"
+mlKitFaceDetection = "16.1.7"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -43,6 +44,7 @@ androidx-camera-view = { group = "androidx.camera", name = "camera-view", versio
 androidx-lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version.ref = "lifecycleService" }
 maplibre-android = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibre" }
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlKitFaceDetection" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

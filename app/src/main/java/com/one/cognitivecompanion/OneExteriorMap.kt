@@ -74,24 +74,6 @@ private const val ONE_CURRENT_POINT_SOURCE = "one-current-point"
 private const val ONE_SEARCH_POINT_SOURCE = "one-search-point"
 private const val ONE_PERSON_AVATAR_IMAGE = "one-person-avatar-image"
 
-private const val OSM_STYLE_JSON = """
-{
-  "version": 8,
-  "name": "ONE OpenStreetMap exterior demo",
-  "sources": {
-    "one-osm": {
-      "type": "raster",
-      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      "tileSize": 256,
-      "attribution": "© OpenStreetMap contributors"
-    }
-  },
-  "layers": [
-    { "id": "one-osm", "type": "raster", "source": "one-osm" }
-  ]
-}
-"""
-
 private const val DEFAULT_MAP_LATITUDE = 40.4168
 private const val DEFAULT_MAP_LONGITUDE = -3.7038
 
@@ -208,7 +190,7 @@ fun OneExteriorMap(
                     currentOnMapTap.value(OneExteriorPoint(point.latitude, point.longitude))
                     true
                 }
-                loadedMap.setStyle(Style.Builder().fromJson(OSM_STYLE_JSON)) {
+                loadedMap.setStyle(Style.Builder().fromUri(BuildConfig.ONE_MAP_STYLE_URL)) {
                     if (!disposed) {
                         map = loadedMap
                         styleReady = true

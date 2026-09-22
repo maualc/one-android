@@ -513,6 +513,12 @@ fun OneApp() {
                             onDeleteCareRecipient = { recipient ->
                                 coroutineScope.launch { appState.deleteCareRecipient(recipient) }
                             },
+                            onEnrollFaceProfile = { recipient, frames ->
+                                coroutineScope.launch { appState.enrollFaceProfile(recipient, frames) }
+                            },
+                            onDisableFaceProfile = { recipient ->
+                                coroutineScope.launch { appState.disableFaceProfile(recipient) }
+                            },
                             familyMemberActionState = appState.familyMemberActionState,
                             familyMemberActionError = appState.familyMemberActionError,
                             familyMemberActionId = appState.familyMemberActionId,
@@ -637,6 +643,12 @@ fun OneApp() {
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
                             onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
+                            dailyCheckInState = appState.assistantLoadState,
+                            dailyCheckInResult = appState.assistantResult,
+                            dailyCheckInError = appState.assistantLoadError,
+                            onSubmitDailyCheckIn = { transcript ->
+                                coroutineScope.launch { appState.submitAssistantCheckIn(transcript) }
+                            },
                             cameras = appState.cameras,
                             camerasAreStale = appState.camerasAreStale,
                             rooms = appState.rooms,
@@ -1217,6 +1229,10 @@ private fun CaregiverHomeScreen(
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
     onMedicationRetry: () -> Unit,
+    dailyCheckInState: OneAssistantLoadState,
+    dailyCheckInResult: OneCheckInResult?,
+    dailyCheckInError: String?,
+    onSubmitDailyCheckIn: (String) -> Unit,
     cameras: List<OneCamera>?,
     camerasAreStale: Boolean,
     rooms: List<OneRoom>?,
@@ -1250,6 +1266,7 @@ private fun CaregiverHomeScreen(
 ) {
     var showCareSpaces by rememberSaveable { mutableStateOf(false) }
     var showCameraSetup by rememberSaveable { mutableStateOf(false) }
+    var showDailyCheckIn by rememberSaveable { mutableStateOf(false) }
     val isBackendHome = isBackend
     val events = homeSnapshot?.events ?: if (isBackendHome) emptyList() else demoEvents
     val doses = (if (isBackendHome) medicationDoses.orEmpty() else demoMedicationDoses)
@@ -1319,6 +1336,8 @@ private fun CaregiverHomeScreen(
             eventCount = events.size,
             checkInTime = firstCheckIn?.time,
             isMedicationLoading = medicationLoadState == OneMedicationLoadState.LOADING && isBackendHome,
+            hasCheckInToday = firstCheckIn != null || dailyCheckInResult != null,
+            onOpenCheckIn = { showDailyCheckIn = true },
             onOpenPlan = onOpenPlan
         )
         if (isBackendHome && medicationLoadState == OneMedicationLoadState.ERROR && medicationDoses == null) {
@@ -1409,6 +1428,21 @@ private fun CaregiverHomeScreen(
         }
     }
 
+    if (showDailyCheckIn) {
+        ModalBottomSheet(onDismissRequest = { showDailyCheckIn = false }) {
+            DailyCheckInFlow(
+                loadState = dailyCheckInState,
+                result = dailyCheckInResult,
+                error = dailyCheckInError,
+                onSubmit = onSubmitDailyCheckIn,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp)
+            )
+        }
+    }
+
     if (showCameraSetup) {
         ModalBottomSheet(onDismissRequest = { showCameraSetup = false }) {
             Column(
@@ -1496,6 +1530,8 @@ private fun HomeTodayCard(
     eventCount: Int,
     checkInTime: String?,
     isMedicationLoading: Boolean,
+    hasCheckInToday: Boolean,
+    onOpenCheckIn: () -> Unit,
     onOpenPlan: () -> Unit
 ) {
     Card(
@@ -1535,12 +1571,165 @@ private fun HomeTodayCard(
                 Text("$eventCount events", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 checkInTime?.let { Text("Check-in $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
+            TextButton(onClick = onOpenCheckIn, contentPadding = PaddingValues(0.dp)) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = OneBlue, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    if (hasCheckInToday) "Review today’s check-in" else "Start today’s check-in",
+                    color = OneBlue,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
             TextButton(onClick = onOpenPlan, contentPadding = PaddingValues(0.dp)) {
                 Text("Open today’s plan", color = OneBlue, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.width(6.dp))
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = OneBlue, modifier = Modifier.size(18.dp))
             }
         }
+    }
+}
+
+private data class DailyCheckInPrompt(
+    val id: String,
+    val title: String,
+    val detail: String,
+    val options: List<String>
+)
+
+private val dailyCheckInPrompts = listOf(
+    DailyCheckInPrompt(
+        "moment",
+        "How are you feeling in this moment?",
+        "Choose the answer that feels closest. There is no right answer.",
+        listOf("Good", "Okay", "Hard to say")
+    ),
+    DailyCheckInPrompt(
+        "routine",
+        "How did the morning go?",
+        "A simple reflection helps compare with the person’s own familiar rhythm.",
+        listOf("Familiar", "A little different", "I’m not sure")
+    ),
+    DailyCheckInPrompt(
+        "note",
+        "Anything you want a caregiver to know?",
+        "Keep it short, or choose that there is nothing to add.",
+        listOf("Nothing to add", "I’d like to share something", "Skip for now")
+    )
+)
+
+@Composable
+private fun DailyCheckInFlow(
+    loadState: OneAssistantLoadState,
+    result: OneCheckInResult?,
+    error: String?,
+    onSubmit: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var started by rememberSaveable { mutableStateOf(result == null) }
+    var step by rememberSaveable { mutableIntStateOf(0) }
+    var answers by rememberSaveable { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val prompt = dailyCheckInPrompts[step]
+    val selectedAnswer = answers[prompt.id]
+    val submitting = loadState == OneAssistantLoadState.SUBMITTING
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        Text("TODAY’S CHECK-IN", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+        Text(
+            if (started) prompt.title else "A calm moment, with context.",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            if (started) prompt.detail else "Three short prompts become a bounded signal for the caregiver. You can go back at any time.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (started) {
+            Text(
+                "PROMPT ${step + 1} OF ${dailyCheckInPrompts.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = OneBlue,
+                fontWeight = FontWeight.Bold
+            )
+            prompt.options.forEach { option ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { answers = answers + (prompt.id to option) },
+                    shape = RoundedCornerShape(17.dp),
+                    color = if (selectedAnswer == option) OneBlue.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(
+                        1.dp,
+                        if (selectedAnswer == option) OneBlue.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(option, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                        if (selectedAnswer == option) Icon(Icons.Default.CheckCircle, contentDescription = null, tint = OneBlue)
+                    }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { if (step == 0) started = false else step -= 1 },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Back") }
+                Button(
+                    onClick = {
+                        if (step < dailyCheckInPrompts.lastIndex) {
+                            step += 1
+                        } else {
+                            onSubmit(
+                                dailyCheckInPrompts.joinToString("\n") { item ->
+                                    "${item.title}: ${answers[item.id] ?: "Not answered"}"
+                                }
+                            )
+                            started = false
+                        }
+                    },
+                    enabled = selectedAnswer != null && !submitting,
+                    modifier = Modifier.weight(1f)
+                ) { Text(if (submitting) "Recording…" else if (step == dailyCheckInPrompts.lastIndex) "Record check-in" else "Continue") }
+            }
+        } else if (submitting) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("Recording check-in…")
+            }
+        } else if (result != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("RECORDED RESULT · ${result.status.uppercase()}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Text(if (result.trend == "unknown") "Keep the context human." else "Trend: ${result.trend}", style = MaterialTheme.typography.titleMedium)
+                    Text(result.explanation, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(result.limitations, style = MaterialTheme.typography.bodySmall, color = OneAmber)
+                }
+            }
+            Button(
+                onClick = { answers = emptyMap(); step = 0; started = true },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Run check-in again") }
+        } else {
+            Button(
+                onClick = { answers = emptyMap(); step = 0; started = true },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Start check-in") }
+        }
+
+        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
     }
 }
 
@@ -2374,6 +2563,8 @@ private fun FamilyScreen(
     onCreateCareRecipient: (String, String?, String?) -> Unit,
     onUpdateCareRecipient: (OneCareRecipient, String, String?, String?) -> Unit,
     onDeleteCareRecipient: (OneCareRecipient) -> Unit,
+    onEnrollFaceProfile: (OneCareRecipient, List<OneFaceEnrollmentFrame>) -> Unit,
+    onDisableFaceProfile: (OneCareRecipient) -> Unit,
     familyMemberActionState: OneFamilyMemberActionState,
     familyMemberActionError: String?,
     familyMemberActionId: UUID?,
@@ -2491,7 +2682,9 @@ private fun FamilyScreen(
             onRetry = onCareRecipientsRetry,
             onCreate = onCreateCareRecipient,
             onUpdate = onUpdateCareRecipient,
-            onDelete = onDeleteCareRecipient
+            onDelete = onDeleteCareRecipient,
+            onEnrollFace = onEnrollFaceProfile,
+            onDisableFace = onDisableFaceProfile
         )
         SectionHeading("TODAY'S PLAN", "Medication reminders")
         if (canCreateMedicationPlan) {
@@ -3275,7 +3468,9 @@ private fun CareRecipientsCard(
     onRetry: () -> Unit,
     onCreate: (String, String?, String?) -> Unit,
     onUpdate: (OneCareRecipient, String, String?, String?) -> Unit,
-    onDelete: (OneCareRecipient) -> Unit
+    onDelete: (OneCareRecipient) -> Unit,
+    onEnrollFace: (OneCareRecipient, List<OneFaceEnrollmentFrame>) -> Unit,
+    onDisableFace: (OneCareRecipient) -> Unit
 ) {
     var showDialog by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -3283,6 +3478,8 @@ private fun CareRecipientsCard(
     var relationship by rememberSaveable { mutableStateOf("") }
     var roomLabel by rememberSaveable { mutableStateOf("") }
     var deleteTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var faceTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var disableFaceTargetId by rememberSaveable { mutableStateOf<String?>(null) }
     val editing = editingId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
     val busy = actionState == OneCareRecipientActionState.SUBMITTING
 
@@ -3323,24 +3520,47 @@ private fun CareRecipientsCard(
                 recipients.isNullOrEmpty() -> Text("No care recipients have been added yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> recipients.orEmpty().forEachIndexed { index, recipient ->
                     if (index > 0) HorizontalDivider()
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(recipient.displayName, style = MaterialTheme.typography.titleSmall)
                             val details = listOfNotNull(recipient.relationship, recipient.roomLabel).joinToString(" · ")
                             Text(details.ifBlank { "Care recipient" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (recipient.faceRecognitionStatus == "ready") OneMint.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Text(
+                                    if (recipient.faceRecognitionStatus == "ready") "FACE READY" else "FACE OFF",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (recipient.faceRecognitionStatus == "ready") OneMint else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                         if (canManage) {
-                            TextButton(
-                                onClick = {
-                                    editingId = recipient.id.toString()
-                                    displayName = recipient.displayName
-                                    relationship = recipient.relationship.orEmpty()
-                                    roomLabel = recipient.roomLabel.orEmpty()
-                                    showDialog = true
-                                },
-                                enabled = !busy
-                            ) { Text("Edit") }
-                            TextButton(onClick = { deleteTargetId = recipient.id.toString() }, enabled = !busy) { Text("Remove") }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { faceTargetId = recipient.id.toString() }, enabled = !busy) {
+                                    Text(if (recipient.faceRecognitionStatus == "ready") "Update face" else "Set up face")
+                                }
+                                if (recipient.faceRecognitionStatus == "ready") {
+                                    TextButton(onClick = { disableFaceTargetId = recipient.id.toString() }, enabled = !busy) { Text("Disable") }
+                                }
+                                Spacer(Modifier.weight(1f))
+                                TextButton(
+                                    onClick = {
+                                        editingId = recipient.id.toString()
+                                        displayName = recipient.displayName
+                                        relationship = recipient.relationship.orEmpty()
+                                        roomLabel = recipient.roomLabel.orEmpty()
+                                        showDialog = true
+                                    },
+                                    enabled = !busy
+                                ) { Text("Edit") }
+                                TextButton(onClick = { deleteTargetId = recipient.id.toString() }, enabled = !busy) { Text("Remove") }
+                            }
                         }
                     }
                 }
@@ -3384,6 +3604,33 @@ private fun CareRecipientsCard(
                 Button(onClick = { deleteTargetId = null; onDelete(deleteTarget) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { deleteTargetId = null }, enabled = !busy) { Text("Cancel") } }
+        )
+    }
+    val faceTarget = faceTargetId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
+    if (faceTarget != null) {
+        OneFaceEnrollmentDialog(
+            recipientName = faceTarget.displayName,
+            onDismiss = { faceTargetId = null },
+            onComplete = { frames ->
+                faceTargetId = null
+                onEnrollFace(faceTarget, frames)
+            }
+        )
+    }
+    val disableFaceTarget = disableFaceTargetId?.let { id -> recipients.orEmpty().firstOrNull { it.id.toString() == id } }
+    if (disableFaceTarget != null) {
+        OneAlertDialog(
+            onDismissRequest = { if (!busy) disableFaceTargetId = null },
+            title = { Text("Disable face recognition?") },
+            text = { Text("The encrypted face profile for ${disableFaceTarget.displayName} will be revoked. A new guided capture is required to enable it again.") },
+            confirmButton = {
+                Button(
+                    onClick = { disableFaceTargetId = null; onDisableFace(disableFaceTarget) },
+                    enabled = !busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Disable") }
+            },
+            dismissButton = { TextButton(onClick = { disableFaceTargetId = null }, enabled = !busy) { Text("Cancel") } }
         )
     }
 }

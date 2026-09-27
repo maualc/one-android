@@ -534,7 +534,9 @@ data class OneLocationPointUpload(
     val speedMps: Double? = null,
     val bearingDeg: Double? = null,
     val batteryPercent: Int? = null,
-    val capturedAt: Instant
+    val capturedAt: Instant,
+    val streetName: String? = null,
+    val dwellDurationMillis: Long = 0L
 )
 
 data class OneRemoteLocationPoint(
@@ -548,8 +550,14 @@ data class OneRemoteLocationPoint(
     val bearingDeg: Double?,
     val batteryPercent: Int?,
     val capturedAt: Instant,
-    val receivedAt: Instant?
+    val receivedAt: Instant?,
+    val clientSampleId: String? = null,
+    val streetName: String? = null,
+    val dwellDurationMillis: Long = 0L
 )
+
+data class OneLocationHistoryPage(val points: List<OneRemoteLocationPoint>, val nextCursor: String?, val clearedAt: Instant?)
+data class OneLocationState(val clearedAt: Instant?, val latest: OneRemoteLocationPoint?)
 
 data class OneRemoteSafePlace(
     val id: UUID,
@@ -557,7 +565,9 @@ data class OneRemoteSafePlace(
     val name: String,
     val latitude: Double,
     val longitude: Double,
-    val radiusM: Double
+    val radiusM: Double,
+    val kind: String = "safe",
+    val revision: Int = 1
 )
 
 data class OneCareAnalytics(
@@ -679,11 +689,15 @@ interface OneApiClient {
     suspend fun updateTrackingDevice(session: OneSession, careRecipientId: UUID, deviceId: UUID, status: String): OneTrackingDevice
     suspend fun uploadLocationPoints(session: OneSession, careRecipientId: UUID, deviceId: UUID, points: List<OneLocationPointUpload>)
     suspend fun latestLocation(session: OneSession, careRecipientId: UUID): OneRemoteLocationPoint?
-    suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant? = null): List<OneRemoteLocationPoint>
+    suspend fun locationState(session: OneSession, careRecipientId: UUID): OneLocationState
+    suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant, until: Instant, cursor: String? = null): OneLocationHistoryPage
+    suspend fun clearLocationHistory(session: OneSession, careRecipientId: UUID): Instant
+    suspend fun outsideLocationSearch(session: OneSession, careRecipientId: UUID, query: String): String
+    suspend fun outsideLocationReverse(session: OneSession, careRecipientId: UUID, point: OneExteriorPoint): String?
     suspend fun safePlaces(session: OneSession, careRecipientId: UUID): List<OneRemoteSafePlace>
-    suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace
-    suspend fun updateSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace
-    suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID)
+    suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace, kind: String = "safe"): OneRemoteSafePlace
+    suspend fun updateSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID, place: OneExteriorSafePlace, revision: Int): OneRemoteSafePlace
+    suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID, revision: Int)
     suspend fun careAnalytics(session: OneSession, careRecipientId: UUID, windowDays: Int = 30): OneCareAnalytics
 }
 
@@ -1941,6 +1955,8 @@ class OneHttpApiClient(
                         point.speedMps?.let { put("speed_mps", it) }
                         point.bearingDeg?.let { put("bearing_deg", it) }
                         point.batteryPercent?.let { put("battery_percent", it.coerceIn(0, 100)) }
+                        point.streetName?.let { put("street_name", it.take(160)) }
+                        put("dwell_duration_millis", point.dwellDurationMillis)
                     }
             )
         }
@@ -1961,18 +1977,41 @@ class OneHttpApiClient(
         return body.optJSONObject("data")?.let(::parseRemoteLocationPoint)
     }
 
-    override suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant?): List<OneRemoteLocationPoint> {
-        val query = since?.let { "?since=$it" }.orEmpty()
-        val rows = request(
+    override suspend fun locationHistory(session: OneSession, careRecipientId: UUID, since: Instant, until: Instant, cursor: String?): OneLocationHistoryPage {
+        val query = "?since=$since&until=$until&limit=500" + (cursor?.let { "&cursor=$it" } ?: "")
+        val body = request(
             "/homes/${session.homeId}/care-recipients/$careRecipientId/locations$query",
             "GET",
             token = session.accessToken
-        ).optJSONArray("data") ?: JSONArray()
-        return buildList {
+        )
+        val rows = body.optJSONArray("data") ?: JSONArray()
+        val points = buildList {
             for (index in 0 until rows.length()) {
                 rows.optJSONObject(index)?.let { row -> runCatching { parseRemoteLocationPoint(row) }.getOrNull()?.let(::add) }
             }
-        }.sortedBy { it.capturedAt }
+        }
+        return OneLocationHistoryPage(points, body.optString("next_cursor").takeIf { it.isNotBlank() }, body.optNullableString("cleared_at")?.toInstantOrNull())
+    }
+
+    override suspend fun locationState(session: OneSession, careRecipientId: UUID): OneLocationState {
+        val body = request("/homes/${session.homeId}/care-recipients/$careRecipientId/locations/state", "GET", token = session.accessToken)
+        return OneLocationState(body.optNullableString("cleared_at")?.toInstantOrNull(), body.optJSONObject("latest")?.let(::parseRemoteLocationPoint))
+    }
+
+    override suspend fun clearLocationHistory(session: OneSession, careRecipientId: UUID): Instant {
+        val body = request("/homes/${session.homeId}/care-recipients/$careRecipientId/locations", "DELETE", token = session.accessToken)
+        return body.requiredString("cleared_at").toInstantOrNull() ?: throw OneApiException("Invalid clear timestamp")
+    }
+
+    override suspend fun outsideLocationSearch(session: OneSession, careRecipientId: UUID, query: String): String {
+        val encoded = java.net.URLEncoder.encode(query, Charsets.UTF_8.name())
+        return request("/homes/${session.homeId}/care-recipients/$careRecipientId/geo/search?q=$encoded", "GET", token = session.accessToken)
+            .optJSONArray("data")?.toString() ?: "[]"
+    }
+
+    override suspend fun outsideLocationReverse(session: OneSession, careRecipientId: UUID, point: OneExteriorPoint): String? {
+        return request("/homes/${session.homeId}/care-recipients/$careRecipientId/geo/reverse?lat=${point.latitude}&lon=${point.longitude}", "GET", token = session.accessToken)
+            .optJSONObject("data")?.toString()
     }
 
     override suspend fun safePlaces(session: OneSession, careRecipientId: UUID): List<OneRemoteSafePlace> {
@@ -1992,22 +2031,26 @@ class OneHttpApiClient(
                         name = row.optString("name").ifBlank { "Safe place" },
                         latitude = row.optDouble("latitude"),
                         longitude = row.optDouble("longitude"),
-                        radiusM = row.optDouble("radius_m", 150.0)
+                        radiusM = row.optDouble("radius_m", 20.0),
+                        kind = row.optString("kind", "safe"),
+                        revision = row.optInt("revision", 1)
                     )
                 )
             }
         }
     }
 
-    override suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace): OneRemoteSafePlace {
+    override suspend fun createSafePlace(session: OneSession, careRecipientId: UUID, place: OneExteriorSafePlace, kind: String): OneRemoteSafePlace {
         val body = request(
             "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places",
             "POST",
             JSONObject()
+                .put("id", place.id)
+                .put("kind", kind)
                 .put("name", place.name.take(120))
                 .put("latitude", place.center.latitude)
                 .put("longitude", place.center.longitude)
-                .put("radius_m", place.radiusMeters.coerceIn(25.0, 5_000.0)),
+                .put("radius_m", place.radiusMeters.coerceIn(20.0, 5_000.0)),
             token = session.accessToken
         ).optJSONObject("data") ?: throw OneApiException("ONE API response is missing the safe place.")
         return OneRemoteSafePlace(
@@ -2016,7 +2059,9 @@ class OneHttpApiClient(
             name = body.optString("name").ifBlank { place.name },
             latitude = body.optDouble("latitude"),
             longitude = body.optDouble("longitude"),
-            radiusM = body.optDouble("radius_m", place.radiusMeters)
+            radiusM = body.optDouble("radius_m", place.radiusMeters),
+            kind = body.optString("kind", kind),
+            revision = body.optInt("revision", 1)
         )
     }
 
@@ -2024,16 +2069,18 @@ class OneHttpApiClient(
         session: OneSession,
         careRecipientId: UUID,
         placeId: UUID,
-        place: OneExteriorSafePlace
+        place: OneExteriorSafePlace,
+        revision: Int
     ): OneRemoteSafePlace {
         val body = request(
             "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places/$placeId",
             "PATCH",
             JSONObject()
+                .put("revision", revision)
                 .put("name", place.name.take(120))
                 .put("latitude", place.center.latitude)
                 .put("longitude", place.center.longitude)
-                .put("radius_m", place.radiusMeters.coerceIn(25.0, 5_000.0)),
+                .put("radius_m", place.radiusMeters.coerceIn(20.0, 5_000.0)),
             token = session.accessToken
         ).optJSONObject("data") ?: throw OneApiException("ONE API response is missing the safe place.")
         return OneRemoteSafePlace(
@@ -2042,13 +2089,15 @@ class OneHttpApiClient(
             name = body.optString("name").ifBlank { place.name },
             latitude = body.optDouble("latitude"),
             longitude = body.optDouble("longitude"),
-            radiusM = body.optDouble("radius_m", place.radiusMeters)
+            radiusM = body.optDouble("radius_m", place.radiusMeters),
+            kind = body.optString("kind", "safe"),
+            revision = body.optInt("revision", revision + 1)
         )
     }
 
-    override suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID) {
+    override suspend fun deleteSafePlace(session: OneSession, careRecipientId: UUID, placeId: UUID, revision: Int) {
         request(
-            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places/$placeId",
+            "/homes/${session.homeId}/care-recipients/$careRecipientId/safe-places/$placeId?revision=$revision",
             "DELETE",
             token = session.accessToken
         )
@@ -2095,7 +2144,10 @@ class OneHttpApiClient(
         batteryPercent = body.optNullableInt("battery_percent"),
         capturedAt = body.requiredString("captured_at").toInstantOrNull()
             ?: throw OneApiException("ONE API returned an invalid location timestamp."),
-        receivedAt = body.optNullableString("received_at")?.toInstantOrNull()
+        receivedAt = body.optNullableString("received_at")?.toInstantOrNull(),
+        clientSampleId = body.optNullableString("client_sample_id"),
+        streetName = body.optNullableString("street_name"),
+        dwellDurationMillis = body.optLong("dwell_duration_millis", 0L)
     )
 
     private fun parseCareSpace(body: JSONObject): OneCareSpace {

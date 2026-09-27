@@ -178,6 +178,7 @@ fun OneOutsideTrackingScreen(
     val context = LocalContext.current.applicationContext
     val store = remember(context) { OneOutsideTrackingStore(context) }
     val locationRepository = remember(context) { OneLocationRepository(context) }
+    val canClearSharedHistory = !isBackend || OneSecureStore(context).restore()?.session?.backendRole == "admin"
     val coroutineScope = rememberCoroutineScope()
     val availableRecipients = if (!isBackend && careRecipients.isNullOrEmpty()) {
         listOf(outsideDemoRecipient)
@@ -188,6 +189,7 @@ fun OneOutsideTrackingScreen(
     var followCurrentLocation by remember(selectedPersonId) { mutableStateOf(true) }
     var snapshot by remember { mutableStateOf<OneOutsideTrackingSnapshot?>(null) }
     var serviceError by rememberSaveable { mutableStateOf<String?>(null) }
+    var refreshingHistory by remember { mutableStateOf(false) }
     var pendingTrackingPersonId by remember { mutableStateOf<UUID?>(null) }
     var showBackgroundPermissionDialog by remember { mutableStateOf(false) }
     var hasBackgroundPermission by remember { mutableStateOf(hasOutsideBackgroundLocationPermission(context)) }
@@ -265,7 +267,11 @@ fun OneOutsideTrackingScreen(
         mapSearchLoading = true
         mapSearchError = null
         try {
-            val results = searchOneOutsideLocations(query)
+            if (!isBackend) throw IllegalStateException("Search needs the ONE API")
+            val session = OneSecureStore(context).restore()?.session
+                ?: throw IllegalStateException("Sign in to search for a place")
+            val recipientId = selectedPersonId ?: throw IllegalStateException("Select a person")
+            val results = searchOneOutsideLocations(query, session, recipientId)
             mapSearchResults = results
             if (results.isEmpty()) {
                 mapSearchError = "No se han encontrado resultados para esa búsqueda."
@@ -273,7 +279,8 @@ fun OneOutsideTrackingScreen(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             mapSearchResults = emptyList()
-            mapSearchError = "No se ha podido buscar la ubicación. Comprueba la conexión e inténtalo de nuevo."
+            mapSearchError = if (!isBackend) "La búsqueda de lugares requiere conectarse a ONE."
+                else "No se ha podido buscar la ubicación. Comprueba la conexión e inténtalo de nuevo."
         } finally {
             mapSearchLoading = false
         }
@@ -440,6 +447,17 @@ fun OneOutsideTrackingScreen(
         }
     }
 
+    fun saveHomeZone(personId: UUID, point: OneExteriorPoint, radius: Double) {
+        store.saveHome(personId, point, radius)
+        if (isBackend) store.queuePlace(personId, "home", "home", "save")
+        if (isBackend) coroutineScope.launch {
+            serviceError = locationRepository.saveHome(personId, point, radius).error
+            reload()
+        }
+        syncZonesIfTracking(personId)
+        reload()
+    }
+
     LaunchedEffect(selectedPersonId) {
         simulationRunning = false
         routeIndex = 0
@@ -449,6 +467,8 @@ fun OneOutsideTrackingScreen(
     LaunchedEffect(selectedPersonId, isBackend) {
         val personId = selectedPersonId ?: return@LaunchedEffect
         if (!isBackend) return@LaunchedEffect
+        serviceError = locationRepository.pull(personId).error
+        snapshot = store.read(personId)
         while (isActive) {
             val result = locationRepository.synchronize(personId)
             snapshot = store.read(personId)
@@ -586,6 +606,11 @@ fun OneOutsideTrackingScreen(
 
     fun openHistoryMap() {
         openFullScreenMap(OutsideDetailedMapMode.HISTORY)
+        if (isBackend) selectedPersonId?.let { personId -> coroutineScope.launch {
+            refreshingHistory = true
+            try { serviceError = locationRepository.pull(personId).error; reload() }
+            finally { refreshingHistory = false }
+        } }
     }
 
     fun closeFullScreenMap() {
@@ -607,7 +632,7 @@ fun OneOutsideTrackingScreen(
         when (mapEditMode) {
             OutsideMapEditMode.SET_HOME -> {
                 val radius = snapshot?.home?.radiusMeters ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS
-                store.saveHome(personId, point, radius)
+                saveHomeZone(personId, point, radius)
                 clearMapEditMode()
                 syncZonesIfTracking(personId)
                 reload()
@@ -623,6 +648,7 @@ fun OneOutsideTrackingScreen(
                 val place = snapshot?.safePlaces.orEmpty().firstOrNull { it.id == movingSafePlaceId }
                 if (place != null) {
                     store.saveSafePlace(personId, place.copy(center = point))
+                    if (isBackend) store.queuePlace(personId, place.id, "safe", "save")
                     if (isBackend) coroutineScope.launch {
                         serviceError = locationRepository.saveSafePlace(personId, place.copy(center = point)).error
                         reload()
@@ -927,7 +953,7 @@ fun OneOutsideTrackingScreen(
                         }
                     }
                     Text(
-                        if (isBackend) "Only this Android phone is linked in this prototype. Nothing is sent to the backend."
+                        if (isBackend) "Location is shared with this care space when tracking is enabled."
                         else "Demo profile: location data stays on this phone.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1090,7 +1116,7 @@ fun OneOutsideTrackingScreen(
                         OutlinedButton(
                             onClick = {
                                 selectedPersonId?.let { personId ->
-                                    store.saveHome(
+                                    saveHomeZone(
                                         personId,
                                         point.point,
                                         snapshot?.home?.radiusMeters ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS
@@ -1120,7 +1146,12 @@ fun OneOutsideTrackingScreen(
                                 },
                             onDelete = {
                                 selectedPersonId?.let { personId ->
+                                    if (isBackend) store.queuePlace(personId, "home", "home", "delete")
                                     store.removeHome(personId)
+                                    if (isBackend) coroutineScope.launch {
+                                        serviceError = locationRepository.deleteHome(personId).error
+                                        reload()
+                                    }
                                     syncZonesIfTracking(personId)
                                     reload()
                                 }
@@ -1147,6 +1178,7 @@ fun OneOutsideTrackingScreen(
                                 },
                                 onDelete = {
                                     selectedPersonId?.let { personId ->
+                                        if (isBackend) store.queuePlace(personId, place.id, "safe", "delete")
                                         store.removeSafePlace(personId, place.id)
                                         if (isBackend) coroutineScope.launch {
                                             serviceError = locationRepository.deleteSafePlace(personId, place).error
@@ -1399,14 +1431,22 @@ fun OneOutsideTrackingScreen(
                     HorizontalDivider()
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
-                            onClick = ::reload,
+                            onClick = {
+                                val personId = selectedPersonId
+                                if (isBackend && personId != null) coroutineScope.launch {
+                                    refreshingHistory = true
+                                    try { serviceError = locationRepository.pull(personId).error; reload() }
+                                    finally { refreshingHistory = false }
+                                } else reload()
+                            },
+                            enabled = !refreshingHistory,
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null)
                             Spacer(Modifier.width(5.dp))
-                            Text("Refresh")
+                            Text(if (refreshingHistory) "Loading" else "Refresh")
                         }
-                        OutlinedButton(
+                        if (canClearSharedHistory) OutlinedButton(
                             onClick = { showClearHistoryDialog = true },
                             enabled = history.isNotEmpty() || snapshot?.alerts?.isNotEmpty() == true,
                             modifier = Modifier.weight(1f)
@@ -1576,6 +1616,7 @@ fun OneOutsideTrackingScreen(
                         radiusMeters = radius
                     )
                     store.saveSafePlace(personId, place)
+                    if (isBackend) store.queuePlace(personId, place.id, "safe", "save")
                     if (isBackend) coroutineScope.launch {
                         serviceError = locationRepository.saveSafePlace(personId, place).error
                         reload()
@@ -1621,7 +1662,7 @@ fun OneOutsideTrackingScreen(
                     val radius = homeRadius.toDoubleOrNull()
                         ?.coerceIn(ONE_OUTSIDE_MIN_ZONE_RADIUS_METERS, 1_000.0)
                         ?: ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS
-                    store.saveHome(personId, home.center, radius)
+                    saveHomeZone(personId, home.center, radius)
                     syncZonesIfTracking(personId)
                     showHomeRadiusDialog = false
                     reload()
@@ -1642,15 +1683,21 @@ fun OneOutsideTrackingScreen(
     if (showClearHistoryDialog) {
         OutsideDialog(
             onDismissRequest = { showClearHistoryDialog = false },
-            title = "Clear local history?",
+            title = if (isBackend) "Clear shared history?" else "Clear local history?",
             onConfirm = {
-                selectedPersonId?.let { store.clearHistory(it) }
+                selectedPersonId?.let { personId ->
+                    if (isBackend) coroutineScope.launch {
+                        serviceError = locationRepository.clearSharedHistory(personId).error
+                        reload()
+                    } else store.clearHistory(personId)
+                }
                 showClearHistoryDialog = false
                 reload()
             },
             confirmLabel = "Clear",
             content = {
-                Text("This removes the last 7 days of points and outside alerts for " + selectedName + " from this phone.")
+                Text(if (isBackend) "Permanently delete the shared location history for $selectedName? Other devices will remove their copies when they reconnect."
+                    else "This removes the last 7 days of points and outside alerts for $selectedName from this phone.")
             }
         )
     }
@@ -2191,7 +2238,7 @@ private fun OutsideMapSearchBar(
             }
         }
         Text(
-            "Search powered by OpenStreetMap / Nominatim",
+            "Search uses the configured ONE location service",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

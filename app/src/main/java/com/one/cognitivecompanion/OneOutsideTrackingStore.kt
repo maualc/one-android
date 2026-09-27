@@ -18,7 +18,8 @@ class OneOutsideTrackingStore(context: Context) {
 
     @Synchronized
     fun read(personId: UUID): OneOutsideTrackingSnapshot {
-        val db = helper.readableDatabase
+        val db = helper.writableDatabase
+        prune(db, personId, System.currentTimeMillis())
         ensureProfile(db, personId)
         return readSnapshot(db, personId)
     }
@@ -172,6 +173,76 @@ class OneOutsideTrackingStore(context: Context) {
         )
     }
 
+    data class PendingPlace(val id: String, val kind: String, val operation: String, val revision: Int)
+
+    @Synchronized
+    fun queuePlace(personId: UUID, id: String, kind: String, operation: String) {
+        val db = helper.writableDatabase
+        val previous = db.query(TABLE_PENDING_PLACES, arrayOf("revision"), "person_id=? AND id=?", arrayOf(personId.toString(), id), null, null, null, "1")
+        val existingRevision = previous.use { if (it.moveToFirst()) it.getInt(0) else null }
+        val place = db.query(TABLE_PLACES, arrayOf("remote_revision"), "person_id=? AND id=?", arrayOf(personId.toString(), id), null, null, null, "1")
+        val revision = existingRevision ?: place.use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        db.insertWithOnConflict(TABLE_PENDING_PLACES, null, ContentValues().apply {
+            put("person_id", personId.toString()); put("id", id); put("kind", kind); put("operation", operation); put("revision", revision)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    @Synchronized
+    fun pendingPlaces(personId: UUID): List<PendingPlace> {
+        val cursor = helper.readableDatabase.query(TABLE_PENDING_PLACES, arrayOf("id", "kind", "operation", "revision"),
+            "person_id=?", arrayOf(personId.toString()), null, null, null)
+        return cursor.use { rows -> buildList { while (rows.moveToNext()) add(PendingPlace(rows.getString(0), rows.getString(1), rows.getString(2), rows.getInt(3))) } }
+    }
+
+    @Synchronized
+    fun markPlaceSynced(personId: UUID, id: String, revision: Int) {
+        val db = helper.writableDatabase
+        db.update(TABLE_PLACES, ContentValues().apply { put("remote_revision", revision) }, "person_id=? AND id=?", arrayOf(personId.toString(), id))
+        db.delete(TABLE_PENDING_PLACES, "person_id=? AND id=?", arrayOf(personId.toString(), id))
+    }
+
+    @Synchronized
+    fun removeRemotePlace(personId: UUID, id: String) {
+        val db = helper.writableDatabase
+        db.delete(TABLE_PLACES, "person_id=? AND id=?", arrayOf(personId.toString(), id))
+    }
+
+    @Synchronized
+    fun pendingPoints(personId: UUID): List<OneOutsideLocationPoint> {
+        val db = helper.writableDatabase
+        prune(db, personId, System.currentTimeMillis())
+        val cursor = db.query(TABLE_POINTS, arrayOf("id", "latitude", "longitude", "accuracy_m", "captured_at", "source", "zone_key", "street_name", "dwell_duration_millis"),
+            "person_id=? AND source=? AND upload_pending=1", arrayOf(personId.toString(), OneOutsideLocationSource.GPS.wireValue),
+            null, null, "captured_at ASC", "200")
+        return cursor.use { rows -> buildList {
+            while (rows.moveToNext()) add(OneOutsideLocationPoint(
+                id = rows.getString(0), personId = personId,
+                point = OneExteriorPoint(rows.getDouble(1), rows.getDouble(2)),
+                accuracyMeters = if (rows.isNull(3)) null else rows.getFloat(3),
+                capturedAtMillis = rows.getLong(4), source = OneOutsideLocationSource.GPS,
+                zoneKey = rows.getString(6), streetName = rows.getString(7), dwellDurationMillis = rows.getLong(8)
+            ))
+        } }
+    }
+
+    @Synchronized
+    fun markPointsUploaded(points: List<OneOutsideLocationPoint>) {
+        val db = helper.writableDatabase
+        points.forEach { point -> db.update(TABLE_POINTS, ContentValues().apply { put("upload_pending", 0) },
+            "id=? AND street_name IS ? AND dwell_duration_millis=?",
+            arrayOf(point.id, point.streetName, point.dwellDurationMillis.toString())) }
+    }
+
+    @Synchronized
+    fun discardPointsThrough(personId: UUID, timestampMillis: Long) {
+        val db = helper.writableDatabase
+        db.delete(TABLE_POINTS, "person_id=? AND captured_at<=?", arrayOf(personId.toString(), timestampMillis.toString()))
+        db.delete(TABLE_ALERTS, "person_id=? AND created_at<=?", arrayOf(personId.toString(), timestampMillis.toString()))
+        val remaining = db.query(TABLE_POINTS, arrayOf("id"), "person_id=?", arrayOf(personId.toString()), null, null, null, "1")
+        remaining.use { if (!it.moveToFirst()) db.update(TABLE_PROFILES, ContentValues().apply { putNull("last_zone_key") },
+            "person_id=?", arrayOf(personId.toString())) }
+    }
+
     @Synchronized
     fun deletePerson(personId: UUID) {
         val db = helper.writableDatabase
@@ -179,6 +250,7 @@ class OneOutsideTrackingStore(context: Context) {
         db.delete(TABLE_POINTS, "person_id = ?", arrayOf(id))
         db.delete(TABLE_ALERTS, "person_id = ?", arrayOf(id))
         db.delete(TABLE_PLACES, "person_id = ?", arrayOf(id))
+        db.delete(TABLE_PENDING_PLACES, "person_id = ?", arrayOf(id))
         db.delete(TABLE_PROFILES, "person_id = ?", arrayOf(id))
         if (readSelectedPersonId() == personId) saveSelectedPersonId(null)
     }
@@ -235,6 +307,7 @@ class OneOutsideTrackingStore(context: Context) {
                     pointRow.zoneKey?.let { put("zone_key", it) } ?: putNull("zone_key")
                     pointRow.streetName?.let { put("street_name", it) } ?: putNull("street_name")
                     put("dwell_duration_millis", pointRow.dwellDurationMillis)
+                    put("upload_pending", if (source == OneOutsideLocationSource.GPS) 1 else 0)
                 }
             )
             val newAlerts = if (classified) {
@@ -264,10 +337,23 @@ class OneOutsideTrackingStore(context: Context) {
         remoteId: UUID,
         point: OneExteriorPoint,
         accuracyMeters: Float?,
-        capturedAtMillis: Long
+        capturedAtMillis: Long,
+        clientSampleId: String? = null,
+        streetName: String? = null,
+        dwellDurationMillis: Long = 0L
     ): Boolean {
         val db = helper.writableDatabase
         ensureProfile(db, personId)
+        if (clientSampleId != null) {
+            val existing = db.query(TABLE_POINTS, arrayOf("id", "street_name", "upload_pending"), "person_id=? AND id=?", arrayOf(personId.toString(), clientSampleId), null, null, null, "1")
+            existing.use { if (it.moveToFirst()) {
+                if (it.getInt(2) == 0) db.update(TABLE_POINTS, ContentValues().apply {
+                    if (it.isNull(1)) streetName?.let { value -> put("street_name", value) }
+                    put("dwell_duration_millis", dwellDurationMillis)
+                }, "id=?", arrayOf(clientSampleId))
+                return false
+            } }
+        }
         val zone = classifyOneExteriorPoint(point, readHome(db, personId), readSafePlaces(db, personId))
         val inserted = db.insertWithOnConflict(
             TABLE_POINTS,
@@ -281,12 +367,17 @@ class OneOutsideTrackingStore(context: Context) {
                 put("captured_at", capturedAtMillis)
                 put("source", OneOutsideLocationSource.REMOTE.wireValue)
                 put("zone_key", zone.key.takeIf { oneOutsideLocationIsAccurate(accuracyMeters) })
-                putNull("street_name")
-                put("dwell_duration_millis", 0L)
+                streetName?.let { put("street_name", it) } ?: putNull("street_name")
+                put("dwell_duration_millis", dwellDurationMillis)
+                put("upload_pending", 0)
             },
             SQLiteDatabase.CONFLICT_IGNORE
         ) != -1L
         if (inserted) prune(db, personId, capturedAtMillis)
+        else db.update(TABLE_POINTS, ContentValues().apply {
+            streetName?.let { put("street_name", it) }
+            put("dwell_duration_millis", dwellDurationMillis)
+        }, "id=? AND person_id=? AND source=?", arrayOf("remote:$remoteId", personId.toString(), OneOutsideLocationSource.REMOTE.wireValue))
         return inserted
     }
 
@@ -303,6 +394,7 @@ class OneOutsideTrackingStore(context: Context) {
         if (normalizedStreet.isEmpty()) return
         val db = helper.writableDatabase
         val values = ContentValues().apply { put("street_name", normalizedStreet) }
+        values.put("upload_pending", 1)
         db.update(
             TABLE_POINTS,
             values,
@@ -373,10 +465,7 @@ class OneOutsideTrackingStore(context: Context) {
     ) {
         val db = helper.writableDatabase
         ensureProfile(db, personId)
-        db.insertWithOnConflict(
-            TABLE_PLACES,
-            null,
-            ContentValues().apply {
+        val values = ContentValues().apply {
                 put("id", id)
                 put("person_id", personId.toString())
                 put("kind", kind)
@@ -385,9 +474,9 @@ class OneOutsideTrackingStore(context: Context) {
                 put("longitude", center.longitude)
                 put("radius_m", radiusMeters)
                 put("updated_at", System.currentTimeMillis())
-            },
-            SQLiteDatabase.CONFLICT_REPLACE
-        )
+            }
+        val updated = db.update(TABLE_PLACES, values, "person_id=? AND id=?", arrayOf(personId.toString(), id))
+        if (updated == 0) db.insertOrThrow(TABLE_PLACES, null, values)
     }
 
     private fun readSnapshot(db: SQLiteDatabase, personId: UUID): OneOutsideTrackingSnapshot {
@@ -724,6 +813,7 @@ class OneOutsideTrackingStore(context: Context) {
                     longitude REAL NOT NULL,
                     radius_m REAL NOT NULL,
                     updated_at INTEGER NOT NULL,
+                    remote_revision INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (person_id, id)
                 )
                 """.trimIndent()
@@ -740,10 +830,12 @@ class OneOutsideTrackingStore(context: Context) {
                     source TEXT NOT NULL,
                     zone_key TEXT,
                     street_name TEXT,
-                    dwell_duration_millis INTEGER NOT NULL DEFAULT 0
+                    dwell_duration_millis INTEGER NOT NULL DEFAULT 0,
+                    upload_pending INTEGER NOT NULL DEFAULT 0
                 )
                 """.trimIndent()
             )
+            db.execSQL("CREATE TABLE $TABLE_PENDING_PLACES (person_id TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL, operation TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(person_id,id))")
             db.execSQL(
                 """
                 CREATE TABLE $TABLE_ALERTS (
@@ -772,15 +864,24 @@ class OneOutsideTrackingStore(context: Context) {
                 db.execSQL("ALTER TABLE $TABLE_POINTS ADD COLUMN street_name TEXT")
                 db.execSQL("ALTER TABLE $TABLE_POINTS ADD COLUMN dwell_duration_millis INTEGER NOT NULL DEFAULT 0")
             }
+            if (oldVersion < 3) {
+                db.execSQL("ALTER TABLE $TABLE_POINTS ADD COLUMN upload_pending INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE $TABLE_POINTS SET upload_pending=1 WHERE source='gps'")
+            }
+            if (oldVersion < 4) {
+                db.execSQL("ALTER TABLE $TABLE_PLACES ADD COLUMN remote_revision INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE TABLE $TABLE_PENDING_PLACES (person_id TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL, operation TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(person_id,id))")
+            }
         }
     }
 
     private companion object {
         const val DATABASE_NAME = "one_outside_tracking.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 4
         const val TABLE_METADATA = "metadata"
         const val TABLE_PROFILES = "profiles"
         const val TABLE_PLACES = "places"
+        const val TABLE_PENDING_PLACES = "pending_places"
         const val TABLE_POINTS = "location_points"
         const val TABLE_ALERTS = "alerts"
         const val METADATA_SELECTED_PERSON = "selected_person_id"

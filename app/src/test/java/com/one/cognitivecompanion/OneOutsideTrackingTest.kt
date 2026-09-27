@@ -106,7 +106,7 @@ class OneOutsideTrackingTest {
             source = OneOutsideLocationSource.GPS,
             zoneKey = "outside"
         )
-        assertEquals("Street not available yet", oneOutsideLocationLabel(outsidePoint, home, listOf(safePlace)))
+        assertEquals(String.format(java.util.Locale.US, "%.5f, %.5f", outsidePoint.point.latitude, outsidePoint.point.longitude), oneOutsideLocationLabel(outsidePoint, home, listOf(safePlace)))
         assertEquals(
             "Carrer de la Prova",
             oneOutsideLocationLabel(outsidePoint.copy(streetName = "Carrer de la Prova"), home, listOf(safePlace))

@@ -6,7 +6,7 @@ const val ONE_OUTSIDE_DEFAULT_HOME_RADIUS_METERS = 20.0
 const val ONE_OUTSIDE_DEFAULT_SAFE_RADIUS_METERS = 20.0
 const val ONE_OUTSIDE_MIN_ZONE_RADIUS_METERS = 20.0
 const val ONE_OUTSIDE_MAX_HISTORY_DAYS = 7L
-const val ONE_OUTSIDE_MAX_HISTORY_POINTS = 50_000
+const val ONE_OUTSIDE_MAX_HISTORY_POINTS = 100_000
 const val ONE_OUTSIDE_LOCATION_INTERVAL_MILLIS = 20_000L
 const val ONE_OUTSIDE_MIN_LOCATION_INTERVAL_MILLIS = 10_000L
 const val ONE_OUTSIDE_STATIONARY_INTERVAL_MILLIS = 90_000L
@@ -192,8 +192,8 @@ fun oneOutsideLocationLabel(
     point.streetName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
     val zone = point.zoneKey?.let { outsideZoneForKey(it, home, safePlaces) }
     return when {
-        zone?.kind == OneExteriorZoneKind.OUTSIDE -> "Street not available yet"
+        zone?.kind == OneExteriorZoneKind.OUTSIDE -> String.format(java.util.Locale.US, "%.5f, %.5f", point.point.latitude, point.point.longitude)
         zone != null -> zone.label
-        else -> "Location saved; accuracy too low to classify"
+        else -> String.format(java.util.Locale.US, "%.5f, %.5f", point.point.latitude, point.point.longitude)
     }
 }

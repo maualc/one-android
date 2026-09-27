@@ -238,7 +238,10 @@ class OneOutsideLocationService : Service() {
             reverseLookupAttempts[key] = System.currentTimeMillis()
         }
         serviceScope.launch {
-            val streetName = runCatching { reverseGeocodeOneOutsideLocation(point.point) }.getOrNull()
+            val session = OneSecureStore(this@OneOutsideLocationService).restore()?.session
+            val streetName = if (session == null) null else runCatching {
+                reverseGeocodeOneOutsideLocation(point.point, session, point.personId)
+            }.getOrNull()
             if (!streetName.isNullOrBlank()) {
                 store.updateLocationStreetName(
                     personId = point.personId,

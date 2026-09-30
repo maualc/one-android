@@ -1,6 +1,8 @@
 package com.one.cognitivecompanion
 
 import android.Manifest
+import android.app.TimePickerDialog
+import org.json.JSONObject
 import android.graphics.BitmapFactory
 import android.content.pm.PackageManager
 import android.os.Build
@@ -77,6 +79,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -119,6 +122,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -202,11 +207,26 @@ private fun OneAlertDialog(
     dismissButton: (@Composable (() -> Unit))? = null,
     icon: (@Composable (() -> Unit))? = null,
     title: (@Composable (() -> Unit))? = null,
-    text: (@Composable (() -> Unit))? = null
+    text: (@Composable (() -> Unit))? = null,
+    fullScreen: Boolean = false
 ) {
     val dialogShapes = MaterialTheme.shapes.copy(small = RoundedCornerShape(14.dp))
     MaterialTheme(shapes = dialogShapes) {
-        AlertDialog(
+        if (fullScreen) {
+            Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                Surface(modifier = Modifier.fillMaxSize().imePadding().navigationBarsPadding(), color = MaterialTheme.colorScheme.background) {
+                    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        title?.invoke()
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { text?.invoke() }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            dismissButton?.invoke()
+                            Spacer(Modifier.weight(1f))
+                            confirmButton()
+                        }
+                    }
+                }
+            }
+        } else AlertDialog(
             onDismissRequest = onDismissRequest,
             confirmButton = confirmButton,
             modifier = modifier.padding(horizontal = 8.dp),
@@ -275,11 +295,13 @@ fun OneApp() {
     var liveKitPublishing by rememberSaveable { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<OneEvent?>(null) }
     var showEvents by rememberSaveable { mutableStateOf(false) }
+    var showCarePlanning by rememberSaveable { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val signOut: () -> Unit = {
         selectedCameraId = null
         selectedEvent = null
         showEvents = false
+        showCarePlanning = false
         captureCameraId = null
         liveKitPublishing = false
         OneOutsideLocationService.stop(appContext)
@@ -297,10 +319,11 @@ fun OneApp() {
     // Detail surfaces are an in-app navigation state. Handle the system back
     // gesture/button here so it closes the detail first instead of exiting to
     // the launcher.
-    BackHandler(enabled = selectedCamera != null || selectedEvent != null || showEvents) {
+    BackHandler(enabled = selectedCamera != null || selectedEvent != null || showCarePlanning || showEvents) {
         when {
             selectedCamera != null -> selectedCameraId = null
             selectedEvent != null -> selectedEvent = null
+            showCarePlanning -> showCarePlanning = false
             else -> showEvents = false
         }
     }
@@ -314,8 +337,12 @@ fun OneApp() {
                 appState.loadHome()
                 appState.loadCameras()
                 appState.loadFamily()
+                appState.loadCareRecipients()
             }
         }
+    }
+    LaunchedEffect(appState, appState.session, showCarePlanning, appState.selectedCareRecipientId) {
+        if (showCarePlanning && appState.backendMode) appState.loadCareEntries()
     }
     LaunchedEffect(appState, appState.authStageName, appState.session, appState.roleName, appState.selectedTab, showEvents, selectedEvent != null) {
         if (
@@ -434,6 +461,22 @@ fun OneApp() {
                         clipLoadError = appState.clipLoadError,
                         onClose = { selectedEvent = null }
                     )
+                } else if (showCarePlanning && role == OneRole.CAREGIVER) {
+                    CarePlanningScreen(
+                        session = appState.session,
+                        selectedRecipientId = appState.selectedCareRecipientId,
+                        selectedRecipientName = appState.careRecipients?.firstOrNull { it.id == appState.selectedCareRecipientId }?.displayName,
+                        consented = appState.selectedCareRecipientId?.let { appState.consentStatesByCareRecipient[it]?.get("care_planning") } == true,
+                        entries = appState.careEntries,
+                        loadError = appState.careEntriesError,
+                        actionError = appState.careEntryActionError,
+                        saving = appState.careEntrySaving,
+                        onEnableConsent = { recipientId -> coroutineScope.launch { appState.updateCareRecipientConsent("care_planning", true, recipientId) } },
+                        onRefresh = { coroutineScope.launch { appState.loadCareEntries() } },
+                        onSave = { request, existing -> appState.saveCareEntry(request, existing) },
+                        onRemove = { entry -> appState.removeCareEntry(entry) },
+                        onClose = { showCarePlanning = false }
+                    )
                 } else if (showEvents && role == OneRole.CAREGIVER) {
                     EventsScreen(
                         events = appState.homeSnapshot?.events ?: if (appState.backendMode) emptyList() else demoEvents,
@@ -449,6 +492,7 @@ fun OneApp() {
                         onRetry = { coroutineScope.launch { appState.loadHome() } },
                         onClipRetry = { coroutineScope.launch { appState.loadClips() } },
                         onOpenEvent = { selectedEvent = it },
+                        onOpenCarePlanning = { showCarePlanning = true },
                         onClose = { showEvents = false }
                     )
                 } else {
@@ -501,6 +545,7 @@ fun OneApp() {
                             onOpenFamily = { selectedTab = "family" }
                         )
                         "family" -> FamilyScreen(
+                            session = appState.session,
                             members = appState.familyMembers,
                             currentUserId = appState.session?.userId,
                             isBackend = appState.backendMode,
@@ -549,6 +594,9 @@ fun OneApp() {
                             selectedRecipientMedicationConsent = appState.selectedCareRecipientId?.let {
                                 appState.consentStatesByCareRecipient[it]?.get("medication_management")
                             } == true,
+                            selectedRecipientCarePlanningConsent = appState.selectedCareRecipientId?.let {
+                                appState.consentStatesByCareRecipient[it]?.get("care_planning")
+                            } == true,
                             selectedRecipientAssistantConsent = appState.selectedCareRecipientId?.let {
                                 appState.consentStatesByCareRecipient[it]?.get("family_assistant")
                             } == true,
@@ -583,12 +631,10 @@ fun OneApp() {
                             lastMedicationPlan = appState.lastMedicationPlan,
                             medicationPlanActionError = appState.medicationPlanActionError,
                             onCreateMedicationPlan = { name, dose, schedule, instructions, assignedCaregiverId ->
-                                coroutineScope.launch { appState.createMedicationPlan(name, dose, schedule, instructions, assignedCaregiverId) }
+                                appState.createMedicationPlan(name, dose, schedule, instructions, assignedCaregiverId)
                             },
                             onUpdateMedicationPlan = { plan, name, dose, schedule, instructions, active, assignedCaregiverId ->
-                                coroutineScope.launch {
-                                    appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active, assignedCaregiverId)
-                                }
+                                appState.updateMedicationPlan(plan, name, dose, schedule, instructions, active, assignedCaregiverId)
                             },
                             medicationActionKey = appState.medicationActionKey,
                             medicationActionError = appState.medicationActionError,
@@ -674,6 +720,9 @@ fun OneApp() {
                             },
                             onActivateCareSpace = { space -> coroutineScope.launch { appState.activateCareSpace(space) } },
                             medicationDoses = appState.medicationDoses,
+                            onManageCareSpace = if (appState.isAdmin) ({ selectedTab = "account" }) else null,
+                            canManageCameras = appState.canManageFamily,
+                            onCameraSignIn = signOut,
                             medicationLoadState = appState.medicationLoadState,
                             medicationLoadError = appState.medicationLoadError,
                             onMedicationRetry = { coroutineScope.launch { appState.loadMedicationReminders() } },
@@ -691,16 +740,18 @@ fun OneApp() {
                             cameraActionState = appState.cameraActionState,
                             cameraActionError = appState.cameraActionError,
                             onCameraRetry = { coroutineScope.launch { appState.loadCameras() } },
-                            onRegisterCamera = { name, roomId ->
-                                coroutineScope.launch { appState.registerCamera(name, roomId) }
-                            },
                             onUpdateCamera = { camera, name, roomId, enabled ->
                                 coroutineScope.launch { appState.updateCamera(camera, name, roomId, enabled) }
                             },
+                            onDeleteCamera = { camera -> coroutineScope.launch { appState.deleteCamera(camera) } },
                             onOpenCamera = { selectedCameraId = it.id.toString() },
                             onOpenMap = { selectedTab = "map" },
                             onOpenPlan = { selectedTab = "family" },
                             onOpenEvents = { showEvents = true },
+                            onOpenCarePlanning = { showCarePlanning = true },
+                            careEntries = appState.careEntries,
+                            careEntriesError = appState.careEntriesError,
+                            carePlanningConsented = appState.selectedCareRecipientId?.let { appState.consentStatesByCareRecipient[it]?.get("care_planning") } == true,
                             onOpenEvent = { selectedEvent = it; showEvents = true },
                             videoConsentGranted = appState.consentStates?.get("video_capture") == true,
                             publisherPairing = appState.publisherPairing,
@@ -812,20 +863,6 @@ private fun OneBackground(modifier: Modifier = Modifier, content: @Composable ()
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .size(230.dp)
-                .align(Alignment.TopEnd)
-                .offset(x = 90.dp, y = (-75).dp)
-                .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f), CircleShape)
-        )
-        Box(
-            modifier = Modifier
-                .size(190.dp)
-                .align(Alignment.BottomStart)
-                .offset(x = (-80).dp, y = 80.dp)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f), CircleShape)
-        )
         content()
     }
 }
@@ -845,23 +882,12 @@ private fun ScreenScroll(content: @Composable () -> Unit) {
 @Composable
 private fun ScreenHeader(eyebrow: String, title: String, subtitle: String? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Image(
-                painter = painterResource(R.drawable.one_logo),
-                contentDescription = "ONE logo",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.size(30.dp)
-            )
-            Text(
-                text = eyebrow.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
+        if (eyebrow == "ONE") Image(
+            painter = painterResource(R.drawable.one_logo),
+            contentDescription = "ONE logo",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(30.dp)
+        )
         Text(text = title, style = MaterialTheme.typography.headlineLarge)
         subtitle?.let {
             Text(text = it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -941,12 +967,6 @@ private fun OneBottomBar(
 @Composable
 private fun SectionHeading(eyebrow: String, title: String) {
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text(
-            text = eyebrow.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
         Text(text = title, style = MaterialTheme.typography.titleLarge)
     }
 }
@@ -1002,8 +1022,7 @@ private fun LoginScreen(
         Spacer(Modifier.height(34.dp))
         ScreenHeader(
             eyebrow = "ONE",
-            title = "Sign in to your home.",
-            subtitle = "Use the one-time code from your ONE backend. Your session will be stored securely on this device."
+            title = "Sign in to your home"
         )
         PrimaryTabRow(selectedTabIndex = mode) {
             Tab(selected = mode == 0, onClick = { mode = 0; emailChallenge = null; emailCode = "" }, text = { Text("Sign in") })
@@ -1014,7 +1033,6 @@ private fun LoginScreen(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("Use ONE backend", style = MaterialTheme.typography.titleMedium)
-                Text("Connect this device to a running FastAPI home.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = useBackend, onCheckedChange = { useBackend = it })
         }
@@ -1236,7 +1254,7 @@ private fun InfoCard(title: String, body: String) {
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (body.isNotBlank()) Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -1256,9 +1274,12 @@ private fun CaregiverHomeScreen(
     careSpaceActionState: OneCareSpaceActionState,
     careSpaceActionError: String?,
     canCreateCareSpace: Boolean,
+    canManageCameras: Boolean,
+    onCameraSignIn: () -> Unit,
     onCareSpacesRetry: () -> Unit,
     onCreateCareSpace: (String, String, String) -> Unit,
     onActivateCareSpace: (OneCareSpace) -> Unit,
+    onManageCareSpace: (() -> Unit)?,
     medicationDoses: List<MedicationDose>?,
     medicationLoadState: OneMedicationLoadState,
     medicationLoadError: String?,
@@ -1275,12 +1296,16 @@ private fun CaregiverHomeScreen(
     cameraActionState: OneCameraActionState,
     cameraActionError: String?,
     onCameraRetry: () -> Unit,
-    onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
+    onDeleteCamera: (OneCamera) -> Unit,
     onOpenCamera: (OneCamera) -> Unit,
     onOpenMap: () -> Unit,
     onOpenPlan: () -> Unit,
     onOpenEvents: () -> Unit,
+    onOpenCarePlanning: () -> Unit,
+    careEntries: List<OneCareEntry>?,
+    careEntriesError: String?,
+    carePlanningConsented: Boolean,
     onOpenEvent: (OneEvent) -> Unit,
     videoConsentGranted: Boolean,
     publisherPairing: PublisherPairingStartResponse?,
@@ -1404,6 +1429,7 @@ private fun CaregiverHomeScreen(
                     modifier = Modifier.weight(1f),
                     title = "Cameras",
                     detail = when {
+                        !isBackendHome -> "Sign in to pair"
                         cameras.isNullOrEmpty() -> "Pair a camera"
                         else -> "${cameras.size} paired · ${if (hasOnlineCamera) "online" else "offline"}"
                     },
@@ -1419,6 +1445,24 @@ private fun CaregiverHomeScreen(
             onOpenEvents = onOpenEvents,
             onOpenEvent = onOpenEvent
         )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Notes and appointments", style = MaterialTheme.typography.titleMedium)
+                val next = careEntries.orEmpty().filter { it.kind == "appointment" && it.startsAt?.isAfter(Instant.now()) == true }.minByOrNull { it.startsAt ?: Instant.MAX }
+                Text(when {
+                    !carePlanningConsented -> "Sharing is off"
+                    careEntriesError != null -> "Appointments unavailable"
+                    careEntries == null -> "Loading appointments…"
+                    next != null -> "Next: ${next.title}"
+                    else -> "No upcoming appointments"
+                }, style = MaterialTheme.typography.bodyMedium)
+                FilledTonalButton(onClick = onOpenCarePlanning, modifier = Modifier.fillMaxWidth()) { Text("Open care plan") }
+            }
+        }
 
         if (isBackendHome) {
             PublisherPairingCard(
@@ -1444,7 +1488,7 @@ private fun CaregiverHomeScreen(
                     .padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ScreenHeader("CARE SPACES", "Choose where you’re caring.", "People, cameras, maps and consent stay scoped to one household.")
+                ScreenHeader("CARE SPACES", "Choose a care space")
                 CareSpacesCard(
                     role = OneRole.CAREGIVER,
                     isBackend = isBackendHome,
@@ -1456,7 +1500,8 @@ private fun CaregiverHomeScreen(
                     canCreate = canCreateCareSpace,
                     onRetry = onCareSpacesRetry,
                     onCreate = onCreateCareSpace,
-                    onActivate = onActivateCareSpace
+                    onActivate = onActivateCareSpace,
+                    onManageDeletion = onManageCareSpace
                 )
             }
         }
@@ -1491,8 +1536,11 @@ private fun CaregiverHomeScreen(
                     .padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ScreenHeader("CAMERAS", "Paired views", "Camera viewing remains consent-based and receive-only for caregivers.")
+                ScreenHeader("CAMERAS", "Paired cameras")
                 HomeCameraStatusCard(
+                    isBackend = isBackendHome,
+                    canManage = canManageCameras,
+                    onSignIn = onCameraSignIn,
                     paused = homeSnapshot?.profile?.paused == true,
                     cameras = cameras,
                     camerasAreStale = camerasAreStale,
@@ -1502,8 +1550,8 @@ private fun CaregiverHomeScreen(
                     actionState = cameraActionState,
                     actionError = cameraActionError,
                     onRetry = onCameraRetry,
-                    onRegisterCamera = onRegisterCamera,
                     onUpdateCamera = onUpdateCamera,
+                    onDeleteCamera = onDeleteCamera,
                     onOpenCamera = onOpenCamera,
                     videoConsentGranted = videoConsentGranted,
                     captureCameraId = captureCameraId,
@@ -1513,6 +1561,18 @@ private fun CaregiverHomeScreen(
                     onStartLiveKit = onStartLiveKit,
                     onStopLiveKit = onStopLiveKit
                 )
+                if (isBackendHome && canManageCameras) {
+                    PublisherPairingCard(
+                        pairing = publisherPairing,
+                        loadState = publisherPairingLoadState,
+                        error = publisherPairingError,
+                        onCreatePairing = onCreatePublisherPairing,
+                        pairingStatus = cameraPairingStatus,
+                        pairingStatusLoadState = cameraPairingStatusLoadState,
+                        pairingStatusError = cameraPairingStatusError,
+                        onRefreshStatus = onRefreshCameraPairingStatus
+                    )
+                }
             }
         }
     }
@@ -1543,7 +1603,7 @@ private fun CareSpaceContextCard(
                 Icon(Icons.Default.Home, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("CARING FOR", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
+                Text("CURRENT CARE SPACE", style = MaterialTheme.typography.labelSmall, color = OneCyan, fontWeight = FontWeight.Bold)
                 Text(space?.name ?: "Current care space", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     space?.let { "${it.recipientCount} people · ${it.careSetting.humanLabel()}" } ?: if (isLoading) "Loading household details…" else "Manage homes and residences",
@@ -1556,7 +1616,7 @@ private fun CareSpaceContextCard(
             if (isLoading && space == null) {
                 androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             } else {
-                Text("⌃⌄", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Default.ExpandMore, contentDescription = "Switch care space", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -1609,19 +1669,18 @@ private fun HomeTodayCard(
                 Text("$eventCount events", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 checkInTime?.let { Text("Check-in $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            TextButton(onClick = onOpenCheckIn, contentPadding = PaddingValues(0.dp)) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = OneBlue, modifier = Modifier.size(18.dp))
+            Button(onClick = onOpenCheckIn, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
                 Text(
                     if (hasCheckInToday) "Review today’s check-in" else "Start today’s check-in",
-                    color = OneBlue,
                     fontWeight = FontWeight.SemiBold
                 )
             }
-            TextButton(onClick = onOpenPlan, contentPadding = PaddingValues(0.dp)) {
-                Text("Open today’s plan", color = OneBlue, fontWeight = FontWeight.SemiBold)
+            FilledTonalButton(onClick = onOpenPlan, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                Text("Open today’s plan", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.width(6.dp))
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = OneBlue, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -1672,7 +1731,6 @@ private fun DailyCheckInFlow(
     val transcript = dailyCheckInPrompts.joinToString("\n") { item ->
         "${item.title}: ${answers[item.id] ?: "Not answered"}"
     }
-
     Column(
         modifier = modifier.fillMaxHeight().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -1792,13 +1850,15 @@ private fun HomeGlanceCard(
     Card(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, contentDescription = null, tint = OneBlue, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.weight(1f))
                 Box(Modifier.size(9.dp).background(status, CircleShape))
+                Spacer(Modifier.width(8.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open $title", tint = OneBlue, modifier = Modifier.size(18.dp))
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
@@ -1816,12 +1876,12 @@ private fun HomeRecentEvents(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
-            SectionHeading("RECENT", "Events")
+            SectionHeading("", "Events")
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onOpenEvents, contentPadding = PaddingValues(0.dp)) { Text("See all", color = OneBlue, fontWeight = FontWeight.SemiBold) }
+            FilledTonalButton(onClick = onOpenEvents) { Text("See all") }
         }
         if (events.isEmpty()) {
-            InfoCard("No recent events", "Recorded household events will appear here when ONE has them.")
+            InfoCard("No recent events", "")
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1896,6 +1956,9 @@ private fun HomeObjectsRow(homeSnapshot: OneHomeSnapshot?, isBackend: Boolean) {
 
 @Composable
 private fun HomeCameraStatusCard(
+    isBackend: Boolean,
+    canManage: Boolean,
+    onSignIn: () -> Unit,
     paused: Boolean,
     cameras: List<OneCamera>?,
     camerasAreStale: Boolean,
@@ -1905,8 +1968,8 @@ private fun HomeCameraStatusCard(
     actionState: OneCameraActionState,
     actionError: String?,
     onRetry: () -> Unit,
-    onRegisterCamera: (String, UUID?) -> Unit,
     onUpdateCamera: (OneCamera, String, UUID?, Boolean) -> Unit,
+    onDeleteCamera: (OneCamera) -> Unit,
     onOpenCamera: (OneCamera) -> Unit,
     videoConsentGranted: Boolean,
     captureCameraId: String?,
@@ -1917,6 +1980,7 @@ private fun HomeCameraStatusCard(
     onStopLiveKit: () -> Unit
 ) {
     var showCameraDialog by rememberSaveable { mutableStateOf(false) }
+    var deleteCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var editingCameraId by rememberSaveable { mutableStateOf<String?>(null) }
     var cameraName by rememberSaveable { mutableStateOf("") }
     var cameraRoomId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1977,23 +2041,17 @@ private fun HomeCameraStatusCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Camera and room setup", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = {
-                        editingCameraId = null
-                        cameraName = ""
-                        cameraRoomId = null
-                        cameraEnabled = true
-                        showCameraDialog = true
-                    },
-                    enabled = actionState != OneCameraActionState.SUBMITTING
-                ) { Text("Register") }
+            Text("Paired cameras", style = MaterialTheme.typography.titleMedium)
+            if (!isBackend) {
+                Text("This is a demo preview. Sign in to your ONE household to pair and view real cameras.", style = MaterialTheme.typography.bodyMedium)
+                OutlinedButton(onClick = onSignIn, modifier = Modifier.fillMaxWidth()) { Text("Sign in to ONE") }
+            } else if (!canManage) {
+                Text("Only a caregiver or household administrator can manage cameras.", style = MaterialTheme.typography.bodyMedium)
             }
-            if (camerasAreStale) {
+            if (isBackend && camerasAreStale) {
                 AssistChip(onClick = onRetry, label = { Text("Offline · showing last known cameras") })
             }
-            Text(
+            if (isBackend) Text(
                 when {
                     paused -> "Camera capture is paused until the household enables room-data consent."
                     !videoConsentGranted -> "Enable room and camera consent in Account before starting capture."
@@ -2003,6 +2061,7 @@ private fun HomeCameraStatusCard(
                 color = if (!videoConsentGranted && !paused) OneAmber else MaterialTheme.colorScheme.onSurfaceVariant
             )
             when {
+                !isBackend -> Unit
                 loadState == OneCameraLoadState.LOADING && cameras == null -> {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Text("Loading paired cameras…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2014,18 +2073,19 @@ private fun HomeCameraStatusCard(
                 cameras.orEmpty().isEmpty() -> {
                     Text("No cameras are paired with this household yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                else -> cameras.orEmpty().take(3).forEach { camera ->
+                else -> cameras.orEmpty().forEach { camera ->
                     CameraStatusRow(
                         camera = camera,
                         paused = paused,
                         onOpenCamera = onOpenCamera,
-                        onEditCamera = {
+                        onEditCamera = if (canManage) ({
                             editingCameraId = camera.id.toString()
                             cameraName = camera.name
                             cameraRoomId = camera.roomId?.toString()
                             cameraEnabled = camera.enabled
                             showCameraDialog = true
-                        }
+                        }) else null,
+                        onDeleteCamera = if (canManage) ({ deleteCameraId = camera.id.toString() }) else null
                     )
                 }
             }
@@ -2048,20 +2108,20 @@ private fun HomeCameraStatusCard(
             if (actionState == OneCameraActionState.LOADED) {
                 Text("Camera saved. Assigning a room helps keep the household map understandable.", style = MaterialTheme.typography.bodySmall, color = OneMint)
             }
-            actionError?.let { error ->
+            if (isBackend) actionError?.let { error ->
                 Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
     }
-    if (showCameraDialog) {
+    if (showCameraDialog && editingCamera != null) {
         OneAlertDialog(
             onDismissRequest = {
                 if (actionState != OneCameraActionState.SUBMITTING) showCameraDialog = false
             },
-            title = { Text(if (editingCamera == null) "Register household camera" else "Edit household camera") },
+            title = { Text("Edit household camera") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Register the paired device in ONE. This does not publish this phone's camera or microphone.", style = MaterialTheme.typography.bodySmall)
+                    Text("Rename this paired camera or assign it to a room.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = cameraName,
                         onValueChange = { cameraName = it.take(120) },
@@ -2096,28 +2156,17 @@ private fun HomeCameraStatusCard(
                             }
                         }
                     }
-                    if (editingCamera != null) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Camera enabled", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                            Switch(checked = cameraEnabled, onCheckedChange = { cameraEnabled = it })
-                        }
-                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         showCameraDialog = false
-                        val camera = editingCamera
-                        if (camera == null) {
-                            onRegisterCamera(cameraName, selectedRoomId)
-                        } else {
-                            onUpdateCamera(camera, cameraName, selectedRoomId, cameraEnabled)
-                        }
+                        onUpdateCamera(editingCamera, cameraName, selectedRoomId, cameraEnabled)
                         editingCameraId = null
                     },
                     enabled = cameraName.trim().isNotBlank() && actionState != OneCameraActionState.SUBMITTING
-                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Saving…" else if (editingCamera == null) "Register" else "Save") }
+                ) { Text(if (actionState == OneCameraActionState.SUBMITTING) "Saving…" else "Save") }
             },
             dismissButton = {
                 TextButton(
@@ -2128,6 +2177,22 @@ private fun HomeCameraStatusCard(
                     enabled = actionState != OneCameraActionState.SUBMITTING
                 ) { Text("Cancel") }
             }
+        )
+    }
+    val deleteCamera = deleteCameraId?.let { id -> cameras.orEmpty().firstOrNull { it.id.toString() == id } }
+    if (deleteCamera != null) {
+        OneAlertDialog(
+            onDismissRequest = { deleteCameraId = null },
+            title = { Text("Remove ${deleteCamera.name}?") },
+            text = { Text("This disconnects the camera and revokes its saved link. Its historical records remain available.") },
+            confirmButton = {
+                Button(
+                    onClick = { deleteCameraId = null; onDeleteCamera(deleteCamera) },
+                    enabled = actionState != OneCameraActionState.SUBMITTING,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Remove camera") }
+            },
+            dismissButton = { TextButton(onClick = { deleteCameraId = null }) { Text("Cancel") } }
         )
     }
 }
@@ -2152,7 +2217,7 @@ private fun PublisherPairingCard(
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Pair a publisher device", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Use this one-time code on the Android phone that will publish the consented camera and microphone feed. Publisher devices cannot access family or household controls.",
+                "Enter this one-time code on the web or Android device that will publish the camera. Publisher devices cannot access household controls.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2330,7 +2395,8 @@ private fun CameraStatusRow(
     camera: OneCamera,
     paused: Boolean,
     onOpenCamera: (OneCamera) -> Unit,
-    onEditCamera: (() -> Unit)? = null
+    onEditCamera: (() -> Unit)? = null,
+    onDeleteCamera: (() -> Unit)? = null
 ) {
     val status = if (paused) "Paused" else camera.status.cameraStatusLabel(camera.enabled, camera.platform)
     val tint = if (paused) OneAmber else camera.status.cameraStatusTint(camera.enabled, camera.platform)
@@ -2362,6 +2428,9 @@ private fun CameraStatusRow(
             IconButton(onClick = it) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit camera", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
             }
+        }
+        onDeleteCamera?.let { remove ->
+            TextButton(onClick = remove) { Text("Remove", color = MaterialTheme.colorScheme.error) }
         }
         if (camera.enabled && !paused) {
             Spacer(Modifier.width(7.dp))
@@ -2415,7 +2484,7 @@ private fun LiveCameraScreen(
                 Text("Back")
             }
         }
-        ScreenHeader("CAMERA", camera.name, "Consent-based live view · receive only")
+        ScreenHeader("CAMERA", camera.name)
         when {
             tokenError != null -> {
                 InfoCard("Live view unavailable", tokenError ?: "ONE could not start the live camera view.")
@@ -2425,15 +2494,14 @@ private fun LiveCameraScreen(
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Text("Requesting a short-lived viewer token…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            else -> LiveKitCameraSurface(liveToken!!)
+            else -> LiveKitCameraSurface(liveToken!!, camera.id)
         }
-        InfoCard("Viewer preview", "This LiveKit subscriber is a receive-only preview. Verify the deployed LiveKit subscriber and retention controls before relying on it in production.")
-        InfoCard("Privacy reminder", "This view is receive-only. ONE does not publish this device's camera or microphone, and the room disconnects when you leave.")
+        InfoCard("Receive only", "This device does not publish its camera or microphone. Leaving closes the connection.")
     }
 }
 
 @Composable
-private fun LiveKitCameraSurface(token: OneLiveKitToken) {
+private fun LiveKitCameraSurface(token: OneLiveKitToken, cameraId: UUID) {
     var roomError by remember(token.participantToken) { mutableStateOf<String?>(null) }
     RoomScope(
         url = token.serverUrl,
@@ -2443,8 +2511,14 @@ private fun LiveKitCameraSurface(token: OneLiveKitToken) {
         connect = true,
         onError = { _, error -> roomError = error?.message ?: "The live camera connection failed." }
     ) { room ->
-        val trackRefs by rememberTracks()
-        val cameraTrack = trackRefs.firstOrNull { track -> track.source == Track.Source.CAMERA && track.isSubscribed() }
+        // Older browser publishers marked video as UNKNOWN. Include those
+        // publications, but never select an UNKNOWN microphone or another
+        // camera in the same household room.
+        val trackRefs by rememberTracks(sources = listOf(Track.Source.CAMERA, Track.Source.UNKNOWN))
+        val cameraTrack = trackRefs.firstOrNull { track ->
+            track.participant.identity?.value == cameraId.toString() &&
+                track.publication?.kind == Track.Kind.VIDEO && track.isSubscribed()
+        }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(
                 modifier = Modifier
@@ -2589,6 +2663,7 @@ private fun StatusRow(title: String, subtitle: String, icon: ImageVector, tint: 
 
 @Composable
 private fun FamilyScreen(
+    session: OneSession?,
     members: List<OneFamilyMember>?,
     currentUserId: UUID?,
     isBackend: Boolean,
@@ -2621,6 +2696,7 @@ private fun FamilyScreen(
     selectedSubjectFamilyConsent: Boolean,
     selectedCareRecipientId: UUID?,
     selectedRecipientMedicationConsent: Boolean,
+    selectedRecipientCarePlanningConsent: Boolean,
     selectedRecipientAssistantConsent: Boolean,
     selectedRecipientAnalyticsConsent: Boolean,
     consentUpdatePurpose: String?,
@@ -2648,12 +2724,15 @@ private fun FamilyScreen(
     medicationPlanActionState: OneMedicationPlanActionState,
     lastMedicationPlan: OneMedicationPlan?,
     medicationPlanActionError: String?,
-    onCreateMedicationPlan: (String, String, String, String, UUID?) -> Unit,
-    onUpdateMedicationPlan: (OneMedicationPlan, String, String, String, String, Boolean, UUID?) -> Unit,
+    onCreateMedicationPlan: suspend (String, String, String, String, UUID?) -> Boolean,
+    onUpdateMedicationPlan: suspend (OneMedicationPlan, String, String, String, String, Boolean, UUID?) -> Boolean,
     medicationActionKey: String?,
     medicationActionError: String?,
     onMedicationStatusChange: (MedicationDose, DoseStatus) -> Unit
 ) {
+    val familyScope = rememberCoroutineScope()
+    val familyContext = LocalContext.current
+    val medicationDrafts = remember(familyContext) { OneSecureStore(familyContext) }
     var showInviteDialog by rememberSaveable { mutableStateOf(false) }
     var inviteName by rememberSaveable { mutableStateOf("") }
     var inviteEmail by rememberSaveable { mutableStateOf("") }
@@ -2669,6 +2748,8 @@ private fun FamilyScreen(
     var planInstructions by rememberSaveable { mutableStateOf("") }
     var planAssignedCaregiverId by rememberSaveable { mutableStateOf<String?>(null) }
     var assignedCaregiverMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var deactivatePlan by remember { mutableStateOf<OneMedicationPlan?>(null) }
+    var showSafetyContext by rememberSaveable { mutableStateOf(false) }
     var medicationHistoryStatus by rememberSaveable { mutableStateOf("all") }
     val selectedRecipientName = careRecipients?.firstOrNull { it.id == selectedCareRecipientId }?.displayName
         ?: if (isBackend) "Select cared-for person" else "Demo resident"
@@ -2684,7 +2765,17 @@ private fun FamilyScreen(
         demoMedicationDoses.filter(MedicationDose::isOpenReminder)
     }
     val canCreateMedicationPlan = isBackend && selectedCareRecipientId != null && medicationAccessGranted && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
-    val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() && planSchedule.trim().isNotBlank() && medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
+    val canSubmitMedicationPlan = planName.trim().isNotBlank() && planDose.trim().isNotBlank() &&
+        (parseSimpleMedicationSchedule(planSchedule) != null || planSchedule == editingMedicationPlan?.schedule) &&
+        medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
+    LaunchedEffect(showMedicationPlanDialog, editingMedicationPlanId, planName, planDose, planSchedule, planInstructions, planAssignedCaregiverId) {
+        if (showMedicationPlanDialog && session != null && selectedCareRecipientId != null) {
+            val draftKey = editingMedicationPlanId?.let { "medication:$it" } ?: "medication"
+            medicationDrafts.saveDraft(session, selectedCareRecipientId, draftKey, JSONObject()
+                .put("name", planName).put("dose", planDose).put("schedule", planSchedule)
+                .put("instructions", planInstructions).put("caregiver", planAssignedCaregiverId ?: "").toString())
+        }
+    }
 
     ScreenScroll {
         ScreenHeader("FAMILY", "Family")
@@ -2726,6 +2817,14 @@ private fun FamilyScreen(
             }
         }
         if (isBackend && selectedCareRecipientId != null) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Share notes and appointments", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(
+                    checked = selectedRecipientCarePlanningConsent,
+                    onCheckedChange = { onCareRecipientConsentChange(selectedCareRecipientId, "care_planning", it) },
+                    enabled = canManageRecipients && consentUpdatePurpose != "care_planning"
+                )
+            }
             if (!familyAccessGranted) InfoCard("Family sharing is paused", "Family sharing consent is required to view household details.")
             if (!medicationAccessGranted) {
                 InfoCard("Medication controls are paused", "Enable medication consent for $selectedRecipientName before creating or viewing plans.")
@@ -2759,7 +2858,11 @@ private fun FamilyScreen(
         consentUpdateError?.let { error ->
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        SectionHeading("30-DAY CONTEXT", "Safety and daily check-ins")
+        OutlinedButton(onClick = { showSafetyContext = !showSafetyContext }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (showSafetyContext) "Hide safety context" else "Show safety context")
+        }
+        if (showSafetyContext) {
+        SectionHeading("", "Safety and daily check-ins")
         if (isBackend && selectedCareRecipientId != null && !selectedRecipientAnalyticsConsent) {
             InfoCard("Safety context is paused", "Enable analytics consent for $selectedRecipientName to view bounded fall and check-in counts.")
             OutlinedButton(
@@ -2780,30 +2883,27 @@ private fun FamilyScreen(
             )
             else -> InfoCard("No safety context yet", "Recorded check-ins and fall-review signals will appear here.")
         }
-        SectionHeading("TODAY'S PLAN", "Medication reminders")
+        }
+        SectionHeading("", "Medication")
         if (canCreateMedicationPlan) {
-            OutlinedButton(
+            Button(
                 onClick = {
                     editingMedicationPlanId = null
-                    planName = ""
-                    planDose = ""
-                    planSchedule = "08:00"
-                    planInstructions = ""
-                    planAssignedCaregiverId = null
+                    val draft = if (session != null) medicationDrafts.readDraft(session, selectedCareRecipientId, "medication")?.let { runCatching { JSONObject(it) }.getOrNull() } else null
+                    planName = draft?.optString("name").orEmpty()
+                    planDose = draft?.optString("dose").orEmpty()
+                    planSchedule = draft?.optString("schedule")?.takeIf(String::isNotBlank) ?: "08:00"
+                    planInstructions = draft?.optString("instructions").orEmpty()
+                    planAssignedCaregiverId = draft?.optString("caregiver")?.takeIf(String::isNotBlank)
                     showMedicationPlanDialog = true
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Add medication plan for $selectedRecipientName") }
+            ) { Text("Add medication") }
         }
         medicationPlanActionError?.let { error ->
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        lastMedicationPlan?.let { plan ->
-            InfoCard(
-                "Medication plan saved",
-                "${plan.name} · ${plan.dose} · ${plan.schedule}. Reminders are administrative only; confirm decisions with the resident and care team."
-            )
-        }
+        lastMedicationPlan?.let { plan -> Text("Saved: ${plan.name}", style = MaterialTheme.typography.bodySmall, color = OneMint) }
         if (isBackend && canCreateMedicationPlan) {
             when {
                 medicationPlans == null && (medicationPlansLoadState == OneMedicationLoadState.IDLE || medicationPlansLoadState == OneMedicationLoadState.LOADING) -> {
@@ -2850,20 +2950,19 @@ private fun FamilyScreen(
                                     OutlinedButton(
                                         onClick = {
                                             editingMedicationPlanId = plan.id.toString()
-                                            planName = plan.name
-                                            planDose = plan.dose
-                                            planSchedule = plan.schedule
-                                            planInstructions = plan.instructions
-                                            planAssignedCaregiverId = plan.assignedCaregiverId?.toString()
+                                            val draft = if (session != null) medicationDrafts.readDraft(session, selectedCareRecipientId, "medication:${plan.id}")?.let { runCatching { JSONObject(it) }.getOrNull() } else null
+                                            planName = draft?.optString("name") ?: plan.name
+                                            planDose = draft?.optString("dose") ?: plan.dose
+                                            planSchedule = draft?.optString("schedule") ?: plan.schedule
+                                            planInstructions = draft?.optString("instructions") ?: plan.instructions
+                                            planAssignedCaregiverId = if (draft?.has("caregiver") == true) draft.optString("caregiver").takeIf(String::isNotBlank) else plan.assignedCaregiverId?.toString()
                                             showMedicationPlanDialog = true
                                         },
                                         enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
                                         modifier = Modifier.weight(1f)
                                     ) { Text("Edit") }
                                     TextButton(
-                                        onClick = {
-                                            onUpdateMedicationPlan(plan, plan.name, plan.dose, plan.schedule, plan.instructions, false, plan.assignedCaregiverId)
-                                        },
+                                        onClick = { deactivatePlan = plan },
                                         enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING,
                                         modifier = Modifier.weight(1f)
                                     ) { Text("Deactivate") }
@@ -3066,10 +3165,8 @@ private fun FamilyScreen(
             },
             text = {
                 Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Enter the plan exactly as provided by the resident's care team.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = planName,
                         onValueChange = { planName = it },
@@ -3086,15 +3183,7 @@ private fun FamilyScreen(
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = planSchedule,
-                        onValueChange = { planSchedule = it },
-                        label = { Text("Schedule") },
-                        placeholder = { Text("08:00 or Mon,Wed,Fri @ 08:00") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    MedicationScheduleEditor(planSchedule, { planSchedule = it })
                     OutlinedTextField(
                         value = planInstructions,
                         onValueChange = { planInstructions = it },
@@ -3162,33 +3251,26 @@ private fun FamilyScreen(
                     if (medicationPlanActionError != null) {
                         Text(medicationPlanActionError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
+                    if (planName.isNotBlank() && planDose.isNotBlank()) {
+                        Text("Review: ${planName.trim()} · ${planDose.trim()} · $planSchedule", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text("Confirm the plan with the care team.", style = MaterialTheme.typography.bodySmall)
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        showMedicationPlanDialog = false
                         val plan = editingMedicationPlan
-                        if (plan == null) {
-                            onCreateMedicationPlan(
-                                planName,
-                                planDose,
-                                planSchedule,
-                                planInstructions,
-                                planAssignedCaregiverId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                            )
-                        } else {
-                            onUpdateMedicationPlan(
-                                plan,
-                                planName,
-                                planDose,
-                                planSchedule,
-                                planInstructions,
-                                true,
-                                planAssignedCaregiverId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                            )
+                        familyScope.launch {
+                            val caregiverId = planAssignedCaregiverId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                            val saved = if (plan == null) onCreateMedicationPlan(planName, planDose, planSchedule, planInstructions, caregiverId)
+                                else onUpdateMedicationPlan(plan, planName, planDose, planSchedule, planInstructions, true, caregiverId)
+                            if (saved) {
+                                if (session != null && selectedCareRecipientId != null) medicationDrafts.clearDraft(session, selectedCareRecipientId, plan?.let { "medication:${it.id}" } ?: "medication")
+                                showMedicationPlanDialog = false
+                                editingMedicationPlanId = null
+                            }
                         }
-                        editingMedicationPlanId = null
                     },
                     enabled = canSubmitMedicationPlan,
                     modifier = Modifier.height(48.dp),
@@ -3204,7 +3286,23 @@ private fun FamilyScreen(
                     },
                     enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING
                 ) { Text("Cancel") }
-            }
+            },
+            fullScreen = true
+        )
+    }
+    deactivatePlan?.let { plan ->
+        OneAlertDialog(
+            onDismissRequest = { deactivatePlan = null },
+            title = { Text("Deactivate ${plan.name}?") },
+            text = { Text("This stops future reminders for this plan.") },
+            confirmButton = {
+                Button(onClick = {
+                    familyScope.launch {
+                        if (onUpdateMedicationPlan(plan, plan.name, plan.dose, plan.schedule, plan.instructions, false, plan.assignedCaregiverId)) deactivatePlan = null
+                    }
+                }, enabled = medicationPlanActionState != OneMedicationPlanActionState.SUBMITTING) { Text("Deactivate") }
+            },
+            dismissButton = { TextButton(onClick = { deactivatePlan = null }) { Text("Cancel") } }
         )
     }
 }
@@ -3609,11 +3707,6 @@ private fun CareRecipientsCard(
                     ) { Text("Add") }
                 }
             }
-            Text(
-                "Face recognition is optional. Enrollment photos are not retained.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             when {
                 recipients == null && (loadState == OneCareRecipientLoadState.IDLE || loadState == OneCareRecipientLoadState.LOADING) -> {
@@ -3729,7 +3822,7 @@ private fun CareRecipientsCard(
         OneAlertDialog(
             onDismissRequest = { if (!busy) deleteTargetId = null },
             title = { Text("Remove ${deleteTarget.displayName}?") },
-            text = { Text("This removes the care profile from this space. It does not delete any household member account.") },
+            text = { Text("This permanently removes this care profile and its linked care data from the space. It does not delete a household member account. This cannot be undone.") },
             confirmButton = {
                 Button(onClick = { deleteTargetId = null; onDelete(deleteTarget) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Remove") }
             },
@@ -3777,7 +3870,8 @@ private fun CareSpacesCard(
     canCreate: Boolean,
     onRetry: () -> Unit,
     onCreate: (String, String, String) -> Unit,
-    onActivate: (OneCareSpace) -> Unit
+    onActivate: (OneCareSpace) -> Unit,
+    onManageDeletion: (() -> Unit)? = null
 ) {
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
@@ -3803,7 +3897,7 @@ private fun CareSpacesCard(
                     }
                 }
             }
-            Text("A care space keeps people, consent and camera data scoped to one household.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Manage people in Family. To delete a household, select it, then open Account → Request deletion (admin only).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             when {
                 spaces == null && (loadState == OneCareSpaceLoadState.IDLE || loadState == OneCareSpaceLoadState.LOADING) -> {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -3828,6 +3922,9 @@ private fun CareSpacesCard(
                         if (space.active) {
                             Surface(shape = RoundedCornerShape(50), color = OneMint.copy(alpha = 0.14f)) {
                                 Text("ACTIVE", modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall, color = OneMint, fontWeight = FontWeight.Bold)
+                            }
+                            onManageDeletion?.let { manage ->
+                                TextButton(onClick = manage) { Text("Manage") }
                             }
                         } else {
                             TextButton(onClick = { onActivate(space) }, enabled = !busy) { Text("Use") }
@@ -3942,6 +4039,7 @@ private fun EventsScreen(
     onRetry: () -> Unit,
     onClipRetry: () -> Unit,
     onOpenEvent: (OneEvent) -> Unit,
+    onOpenCarePlanning: () -> Unit,
     onClose: (() -> Unit)? = null
 ) {
     var eventRangeFilter by rememberSaveable { mutableStateOf("7d") }
@@ -3973,7 +4071,8 @@ private fun EventsScreen(
                 }
             }
         }
-        item { ScreenHeader("EVENTS", "Reviewable moments", "Recent activity for caregiver attention.") }
+        item { ScreenHeader("EVENTS", "Detected activity") }
+        item { OutlinedButton(onClick = onOpenCarePlanning, modifier = Modifier.fillMaxWidth()) { Text("Open notes and appointments") } }
         if (!isBackend) {
             item { AssistChip(onClick = { }, enabled = false, label = { Text("Demo preview · illustrative events") }) }
         }
@@ -4304,7 +4403,7 @@ private fun ResidentTodayScreen(
     val nextDose = todayDoses.firstOrNull { it.status !in setOf(DoseStatus.TAKEN, DoseStatus.SKIPPED) }
 
     ScreenScroll {
-        ScreenHeader("TODAY", "A more independent day.", "Support when you need it.")
+        ScreenHeader("TODAY", "Today")
         if (nextDose != null) {
             Card(
                 shape = RoundedCornerShape(28.dp),
@@ -4449,7 +4548,7 @@ private fun AssistantScreen(
     val pushToTalkAllowed = !isBackend || audioConsentGranted
 
     ScreenScroll {
-        ScreenHeader("ASSISTANT", "I'm here with you.", "A calm daily check-in.")
+        ScreenHeader("ASSISTANT", "Check-in")
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.GraphicEq, contentDescription = null, tint = OneBlue, modifier = Modifier.size(30.dp))
@@ -4630,7 +4729,7 @@ private fun AccountScreen(
     }
 
     ScreenScroll {
-        ScreenHeader("ACCOUNT", "Privacy and control.", "Your home, your choices.")
+        ScreenHeader("ACCOUNT", "Account and privacy")
         CareSpaceContextCard(
             space = careSpaces?.firstOrNull { it.active } ?: careSpaces?.firstOrNull(),
             isLoading = careSpacesLoadState == OneCareSpaceLoadState.LOADING,

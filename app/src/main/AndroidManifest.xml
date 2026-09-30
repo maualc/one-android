@@ -54,6 +54,9 @@
             android:name=".OneMedicationAlarmReceiver"
             android:exported="false" />
         <receiver
+            android:name=".OneCareAppointmentAlarmReceiver"
+            android:exported="false" />
+        <receiver
             android:name=".OneBootReceiver"
             android:enabled="true"
             android:exported="true">

@@ -91,6 +91,10 @@ class OneAppState(
     var medicationPlanActionState by mutableStateOf(OneMedicationPlanActionState.IDLE)
     var lastMedicationPlan by mutableStateOf<OneMedicationPlan?>(null)
     var medicationPlanActionError by mutableStateOf<String?>(null)
+    var careEntries by mutableStateOf<List<OneCareEntry>?>(null)
+    var careEntriesError by mutableStateOf<String?>(null)
+    var careEntryActionError by mutableStateOf<String?>(null)
+    var careEntrySaving by mutableStateOf(false)
     var medicationActionKey by mutableStateOf<String?>(null)
     var medicationActionError by mutableStateOf<String?>(null)
     var assistantLoadState by mutableStateOf(OneAssistantLoadState.IDLE)
@@ -199,6 +203,8 @@ class OneAppState(
     }
 
     fun applyAuthenticatedSession(authenticatedSession: OneSession?, usedBackend: Boolean) {
+        if (authenticatedSession != null && usedBackend) OneCareAppointmentScheduler.bindSession(appContext, authenticatedSession)
+        else if (session != null) OneCareAppointmentScheduler.clear(appContext)
         session = authenticatedSession
         backendMode = usedBackend
         backendHealth = null
@@ -234,6 +240,9 @@ class OneAppState(
         familySubjectInitialized = false
         selectedCareRecipientId = null
         careRecipientSelectionInitialized = false
+        careEntries = null
+        careEntriesError = null
+        careEntryActionError = null
         medicationDoses = null
         medicationLoadState = OneMedicationLoadState.IDLE
         medicationLoadError = null
@@ -545,6 +554,16 @@ class OneAppState(
             }
             careRecipientsLoadState = OneCareRecipientLoadState.LOADED
             loadCareAnalytics()
+            loadCareEntries()
+            if (consentLoadState == OneConsentLoadState.LOADED) {
+                careRecipients.orEmpty().filter { consentStatesByCareRecipient[it.id]?.get("care_planning") != true }.forEach { recipient ->
+                    OneCareAppointmentScheduler.sync(appContext, recipient.id, emptyList())
+                }
+            }
+            careRecipients.orEmpty().filter { it.id != selectedCareRecipientId && consentStatesByCareRecipient[it.id]?.get("care_planning") == true }.forEach { recipient ->
+                runCatching { apiClient.careEntries(authenticatedSession, recipient.id) }
+                    .onSuccess { OneCareAppointmentScheduler.sync(appContext, recipient.id, it) }
+            }
         } catch (error: Exception) {
             careRecipientsLoadState = OneCareRecipientLoadState.ERROR
             careRecipientsLoadError = error.message ?: "Could not load care recipients."
@@ -857,6 +876,27 @@ class OneAppState(
         }
     }
 
+    suspend fun deleteCamera(camera: OneCamera) {
+        val authenticatedSession = session
+        if (!backendMode || authenticatedSession == null || !canManageFamily) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = "Only caregivers can remove household cameras."
+            return
+        }
+        cameraActionState = OneCameraActionState.SUBMITTING
+        cameraActionError = null
+        try {
+            apiClient.deleteCamera(authenticatedSession, camera.id)
+            cameras = cameras.orEmpty().filterNot { it.id == camera.id }
+            offlineCache.saveCameras(authenticatedSession.homeId, cameras.orEmpty())
+            if (lastRegisteredCamera?.id == camera.id) lastRegisteredCamera = null
+            cameraActionState = OneCameraActionState.LOADED
+        } catch (error: Exception) {
+            cameraActionState = OneCameraActionState.ERROR
+            cameraActionError = error.message ?: "Could not remove the camera."
+        }
+    }
+
 
     suspend fun createObject(label: String, displayName: String?) {
         val authenticatedSession = session
@@ -1023,6 +1063,7 @@ class OneAppState(
         medicationDoses = null
         medicationPlans = null
         medicationCheckIns = null
+        careEntries = null
         medicationActionError = null
         assistantResult = null
         familyAssistantResult = null
@@ -1030,6 +1071,65 @@ class OneAppState(
         loadMedicationPlans()
         loadMedicationCheckIns()
         loadCareAnalytics()
+        loadCareEntries()
+    }
+
+    suspend fun loadCareEntries(careRecipientId: UUID? = selectedCareRecipientId) {
+        val authenticatedSession = session ?: return
+        if (!backendMode || careRecipientId == null || consentStatesByCareRecipient[careRecipientId]?.get("care_planning") != true) {
+            careEntries = null
+            careEntriesError = null
+            if (careRecipientId != null && consentLoadState == OneConsentLoadState.LOADED) OneCareAppointmentScheduler.sync(appContext, careRecipientId, emptyList())
+            return
+        }
+        careEntriesError = null
+        try {
+            val result = apiClient.careEntries(authenticatedSession, careRecipientId)
+            if (careRecipientId == selectedCareRecipientId) {
+                careEntries = result
+                OneCareAppointmentScheduler.sync(appContext, careRecipientId, result)
+            }
+        } catch (error: Exception) {
+            careEntriesError = error.message ?: "Could not load notes and appointments."
+        }
+    }
+
+    suspend fun saveCareEntry(request: OneCareEntryRequest, existing: OneCareEntry? = null): Boolean {
+        val authenticatedSession = session ?: return false
+        if (!backendMode || !canManageFamily || request.careRecipientId != selectedCareRecipientId) return false
+        careEntrySaving = true
+        careEntryActionError = null
+        return try {
+            val saved = if (existing == null) apiClient.createCareEntry(authenticatedSession, request)
+            else apiClient.updateCareEntry(authenticatedSession, existing, request)
+            careEntries = careEntries.orEmpty().filterNot { it.id == saved.id } + saved
+            OneCareAppointmentScheduler.sync(appContext, request.careRecipientId, careEntries.orEmpty())
+            loadCareEntries()
+            true
+        } catch (error: Exception) {
+            careEntryActionError = error.message ?: "Could not save this entry."
+            false
+        } finally {
+            careEntrySaving = false
+        }
+    }
+
+    suspend fun removeCareEntry(entry: OneCareEntry): Boolean {
+        val authenticatedSession = session ?: return false
+        careEntrySaving = true
+        careEntryActionError = null
+        return try {
+            apiClient.removeCareEntry(authenticatedSession, entry)
+            careEntries = careEntries.orEmpty().filterNot { it.id == entry.id }
+            OneCareAppointmentScheduler.sync(appContext, entry.careRecipientId, careEntries.orEmpty())
+            loadCareEntries()
+            true
+        } catch (error: Exception) {
+            careEntryActionError = error.message ?: "Could not remove this entry."
+            false
+        } finally {
+            careEntrySaving = false
+        }
     }
 
     suspend fun loadCareAnalytics(careRecipientId: UUID? = selectedCareRecipientId) {
@@ -1242,28 +1342,28 @@ class OneAppState(
         schedule: String,
         instructions: String,
         assignedCaregiverId: UUID? = null
-    ) {
+    ): Boolean {
         val authenticatedSession = session
         val careRecipientId = selectedCareRecipientId
         if (!backendMode || authenticatedSession == null) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Connect a backend session before creating a medication plan."
-            return
+            return false
         }
         if (!canManageFamily) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Only caregivers can create medication plans."
-            return
+            return false
         }
         if (careRecipientId == null) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Select a person before creating a medication plan."
-            return
+            return false
         }
         if (recipientConsentIsKnownAndDenied("medication_management", careRecipientId)) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Active medication_management consent is required for this person."
-            return
+            return false
         }
         val cleanName = name.trim()
         val cleanDose = dose.trim()
@@ -1272,7 +1372,7 @@ class OneAppState(
         if (cleanName.isBlank() || cleanDose.isBlank() || cleanSchedule.isBlank()) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Name, dose and schedule are required."
-            return
+            return false
         }
         medicationPlanActionState = OneMedicationPlanActionState.SUBMITTING
         medicationPlanActionError = null
@@ -1291,9 +1391,11 @@ class OneAppState(
             medicationPlanActionState = OneMedicationPlanActionState.LOADED
             loadMedicationReminders(careRecipientId = careRecipientId)
             loadMedicationPlans(careRecipientId = careRecipientId)
+            return true
         } catch (error: Exception) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = error.message ?: "Could not create the medication plan."
+            return false
         }
     }
 
@@ -1305,23 +1407,23 @@ class OneAppState(
         instructions: String,
         active: Boolean,
         assignedCaregiverId: UUID? = null
-    ) {
+    ): Boolean {
         val authenticatedSession = session
         if (!backendMode || authenticatedSession == null) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Connect a backend session before updating a medication plan."
-            return
+            return false
         }
         if (!canManageFamily) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Only caregivers can update medication plans."
-            return
+            return false
         }
         if (plan.careRecipientId?.let { recipientConsentIsKnownAndDenied("medication_management", it) }
                 ?: consentIsKnownAndDenied("medication_management", plan.subjectUserId)) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Active medication_management consent is required for this person."
-            return
+            return false
         }
         val cleanName = name.trim()
         val cleanDose = dose.trim()
@@ -1330,7 +1432,7 @@ class OneAppState(
         if (cleanName.isBlank() || cleanDose.isBlank() || cleanSchedule.isBlank()) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = "Name, dose and schedule are required."
-            return
+            return false
         }
         medicationPlanActionState = OneMedicationPlanActionState.SUBMITTING
         medicationPlanActionError = null
@@ -1356,9 +1458,11 @@ class OneAppState(
             medicationPlanActionState = OneMedicationPlanActionState.LOADED
             loadMedicationReminders(subjectUserId = plan.subjectUserId, careRecipientId = plan.careRecipientId)
             loadMedicationPlans(subjectUserId = plan.subjectUserId, careRecipientId = plan.careRecipientId)
+            return true
         } catch (error: Exception) {
             medicationPlanActionState = OneMedicationPlanActionState.ERROR
             medicationPlanActionError = error.message ?: "Could not update the medication plan."
+            return false
         }
     }
 
@@ -1522,6 +1626,7 @@ class OneAppState(
             consentStatesByCareRecipient = latestByRecipient
             consentStates = latestBySubject[authenticatedSession.userId].orEmpty()
             consentLoadState = OneConsentLoadState.LOADED
+            loadCareEntries()
         } catch (error: Exception) {
             consentLoadState = OneConsentLoadState.ERROR
             consentLoadError = error.message ?: "Could not load privacy settings."
@@ -1594,6 +1699,10 @@ class OneAppState(
             )
             val updated = consentStatesByCareRecipient[careRecipientId].orEmpty() + (purpose to granted)
             consentStatesByCareRecipient = consentStatesByCareRecipient + (careRecipientId to updated)
+            if (!granted && purpose == "care_planning") {
+                OneCareAppointmentScheduler.sync(appContext, careRecipientId, emptyList())
+                if (careRecipientId == selectedCareRecipientId) careEntries = null
+            }
             if (!granted && careRecipientId == selectedCareRecipientId) {
                 when (purpose) {
                     "medication_management" -> {
@@ -1605,8 +1714,13 @@ class OneAppState(
                     "family_assistant" -> familyAssistantResult = null
                     "outside_location" -> OneOutsideLocationService.stop(appContext, careRecipientId)
                 }
-            } else if (granted && purpose == "analytics" && careRecipientId == selectedCareRecipientId) {
-                loadCareAnalytics(careRecipientId)
+            } else if (granted) {
+                if (purpose == "analytics" && careRecipientId == selectedCareRecipientId) loadCareAnalytics(careRecipientId)
+                if (purpose == "care_planning") {
+                    if (careRecipientId == selectedCareRecipientId) loadCareEntries(careRecipientId)
+                    else runCatching { apiClient.careEntries(authenticatedSession, careRecipientId) }
+                        .onSuccess { OneCareAppointmentScheduler.sync(appContext, careRecipientId, it) }
+                }
             }
         } catch (error: Exception) {
             consentUpdateError = error.message ?: "Could not update this privacy setting."
@@ -1660,6 +1774,7 @@ class OneAppState(
         OneCaptureService.stop(appContext)
         OneLiveKitPublisherService.stop(appContext)
         OneMedicationScheduler.cancelAll(appContext)
+        OneCareAppointmentScheduler.clear(appContext)
         withContext(Dispatchers.IO) { runCatching { offlineCache.clear() } }
         val activeSession = session
         if (backendMode && activeSession != null) {
@@ -1710,6 +1825,9 @@ class OneAppState(
         medicationPlanActionState = OneMedicationPlanActionState.IDLE
         lastMedicationPlan = null
         medicationPlanActionError = null
+        careEntries = null
+        careEntriesError = null
+        careEntryActionError = null
         medicationActionKey = null
         medicationActionError = null
         assistantLoadState = OneAssistantLoadState.IDLE

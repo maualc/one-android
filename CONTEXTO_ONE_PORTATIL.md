@@ -510,9 +510,15 @@ sirve dentro del propio PC.
 
 ### Endpoint de API
 
-El valor por defecto de debug está pensado para el emulador:
+El valor por defecto de debug está pensado para el emulador cuando la API
+escucha en el loopback del PC:
 
     http://10.0.2.2:8000/api/v1
+
+Si `ONE_API_BIND` expone Docker **solo en la IP LAN**, el alias `10.0.2.2`
+no llega a ese puerto. En `local.properties` (ignorado por Git) añade
+`one.apiBaseUrl=http://<IP_DEL_PC>:8000/api/v1` y recompila desde Android
+Studio. La propiedad `-PoneApiBaseUrl` tiene prioridad si se proporciona.
 
 `app/src/debug/res/xml/network_security_config.xml` permite HTTP en debug para
 el backend local; `app/src/main/res/xml/network_security_config.xml` mantiene
@@ -561,8 +567,9 @@ El test instrumentado requiere un emulador/dispositivo conectado:
 
     .\gradlew.bat connectedDebugAndroidTest
 
-No editar local.properties; es específico de cada PC y normalmente contiene la
-ruta local del SDK. No subir keystores, firmas ni credenciales.
+Conserva `sdk.dir` en `local.properties`; solo añade la URL de debug de este PC
+si hace falta. Este archivo es específico de cada máquina y no debe subirse.
+No subir keystores, firmas ni credenciales.
 
 ### Notificaciones
 

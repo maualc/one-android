@@ -91,6 +91,27 @@ class OneSecureStore(context: Context) {
         saveSession(session, onboardingComplete = true)
     }
 
+    /** Encrypted, device-only form drafts scoped to one signed-in household member. */
+    fun saveDraft(session: OneSession, recipientId: UUID, form: String, content: String) {
+        val envelope = JSONObject().put("saved_at", Instant.now().epochSecond).put("content", content).toString()
+        preferences.edit().putString(draftKey(session, recipientId, form), encrypt(envelope)).apply()
+    }
+
+    fun readDraft(session: OneSession, recipientId: UUID, form: String): String? {
+        val key = draftKey(session, recipientId, form)
+        val encrypted = preferences.getString(key, null) ?: return null
+        val draft = runCatching { JSONObject(decrypt(encrypted)) }.getOrNull()
+        if (draft == null || Instant.now().epochSecond - draft.optLong("saved_at") > 7 * 86_400L) {
+            preferences.edit().remove(key).apply()
+            return null
+        }
+        return draft.optString("content")
+    }
+
+    fun clearDraft(session: OneSession, recipientId: UUID, form: String) {
+        preferences.edit().remove(draftKey(session, recipientId, form)).apply()
+    }
+
     /** Onboarding is scoped to the signed-in identity and care space. */
     fun isOnboardingComplete(session: OneSession): Boolean =
         onboardingKeys().contains(onboardingKey(session)) || restoreEnvelope()?.onboardingComplete == true
@@ -115,8 +136,13 @@ class OneSecureStore(context: Context) {
 
     @Suppress("UseKtx")
     fun clear() {
-        check(preferences.edit().remove(SESSION_KEY).remove(ONBOARDING_KEYS).commit()) { "Could not clear the ONE session." }
+        val editor = preferences.edit().remove(SESSION_KEY).remove(ONBOARDING_KEYS)
+        preferences.all.keys.filter { it.startsWith(DRAFT_PREFIX) }.forEach(editor::remove)
+        check(editor.commit()) { "Could not clear the ONE session." }
     }
+
+    private fun draftKey(session: OneSession, recipientId: UUID, form: String): String =
+        "$DRAFT_PREFIX${session.homeId}:${session.userId}:$recipientId:$form"
 
     private fun restoreEnvelope(): StoredOneSession? {
         val encrypted = preferences.getString(SESSION_KEY, null) ?: return null
@@ -175,5 +201,6 @@ class OneSecureStore(context: Context) {
         const val PREFERENCES_NAME = "one.secure.session"
         const val SESSION_KEY = "encrypted_session"
         const val ONBOARDING_KEYS = "onboarding_complete_keys"
+        const val DRAFT_PREFIX = "draft:"
     }
 }

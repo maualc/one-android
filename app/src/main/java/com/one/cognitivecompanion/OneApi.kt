@@ -556,6 +556,34 @@ data class OneRemoteLocationPoint(
     val dwellDurationMillis: Long = 0L
 )
 
+data class OneCareEntry(
+    val id: UUID,
+    val careRecipientId: UUID,
+    val kind: String,
+    val title: String,
+    val body: String,
+    val location: String,
+    val startsAt: Instant?,
+    val endsAt: Instant?,
+    val timezoneName: String?,
+    val reminderMinutes: Int?,
+    val version: Int,
+    val createdBy: UUID,
+    val createdAt: Instant
+)
+
+data class OneCareEntryRequest(
+    val careRecipientId: UUID,
+    val kind: String,
+    val title: String,
+    val body: String,
+    val location: String = "",
+    val startsAt: Instant? = null,
+    val endsAt: Instant? = null,
+    val timezoneName: String? = null,
+    val reminderMinutes: Int? = null
+)
+
 data class OneLocationHistoryPage(val points: List<OneRemoteLocationPoint>, val nextCursor: String?, val clearedAt: Instant?)
 data class OneLocationState(val clearedAt: Instant?, val latest: OneRemoteLocationPoint?)
 
@@ -637,6 +665,7 @@ interface OneApiClient {
     suspend fun homeCameras(session: OneSession): List<OneRemoteCamera>
     suspend fun registerCamera(session: OneSession, request: CameraRegistrationRequest): OneRemoteCamera
     suspend fun updateCamera(session: OneSession, cameraId: UUID, request: CameraUpdateRequest): OneRemoteCamera
+    suspend fun deleteCamera(session: OneSession, cameraId: UUID)
     suspend fun createCalibration(
         session: OneSession,
         cameraId: UUID,
@@ -674,6 +703,10 @@ interface OneApiClient {
         scheduledTo: Instant? = null
     ): List<OneRemoteMedicationCheckIn>
     suspend fun medicationPlans(session: OneSession, subjectUserId: UUID? = null, careRecipientId: UUID? = null, activeOnly: Boolean = true): List<OneMedicationPlan>
+    suspend fun careEntries(session: OneSession, careRecipientId: UUID): List<OneCareEntry>
+    suspend fun createCareEntry(session: OneSession, entry: OneCareEntryRequest): OneCareEntry
+    suspend fun updateCareEntry(session: OneSession, entry: OneCareEntry, update: OneCareEntryRequest): OneCareEntry
+    suspend fun removeCareEntry(session: OneSession, entry: OneCareEntry)
     suspend fun createMedicationPlan(session: OneSession, request: MedicationPlanRequest): OneMedicationPlan
     suspend fun updateMedicationPlan(session: OneSession, planId: UUID, request: MedicationPlanUpdateRequest): OneMedicationPlan
     suspend fun familyAssistant(session: OneSession, message: String, subjectUserId: UUID? = null, careRecipientId: UUID? = null): OneFamilyAssistantResult
@@ -1386,6 +1419,10 @@ class OneHttpApiClient(
         )
     }
 
+    override suspend fun deleteCamera(session: OneSession, cameraId: UUID) {
+        request("/homes/${session.homeId}/cameras/$cameraId", "DELETE", token = session.accessToken)
+    }
+
     override suspend fun createCalibration(
         session: OneSession,
         cameraId: UUID,
@@ -1824,7 +1861,8 @@ class OneHttpApiClient(
             "/homes/${session.homeId}/family-assistant",
             "POST",
             payload,
-            token = session.accessToken
+            token = session.accessToken,
+            readTimeoutMillis = 90_000
         )
         val data = body.optJSONObject("data") ?: throw OneApiException("ONE API response is missing the family assistant result.")
         val evidenceRows = data.optJSONArray("evidence_ids")
@@ -1879,7 +1917,8 @@ class OneHttpApiClient(
             "/homes/${session.homeId}/check-ins",
             "POST",
             payload,
-            token = session.accessToken
+            token = session.accessToken,
+            readTimeoutMillis = 90_000
         )
         val evidenceRows = body.optJSONArray("evidence_ids")
         val evidenceIds = if (evidenceRows == null) {
@@ -1992,6 +2031,52 @@ class OneHttpApiClient(
         }
         return OneLocationHistoryPage(points, body.optString("next_cursor").takeIf { it.isNotBlank() }, body.optNullableString("cleared_at")?.toInstantOrNull())
     }
+
+    override suspend fun careEntries(session: OneSession, careRecipientId: UUID): List<OneCareEntry> {
+        val rows = request("/homes/${session.homeId}/care-entries?care_recipient_id=$careRecipientId", "GET", token = session.accessToken).optJSONArray("data") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) rows.optJSONObject(index)?.let { add(parseCareEntry(it)) }
+        }
+    }
+
+    override suspend fun createCareEntry(session: OneSession, entry: OneCareEntryRequest): OneCareEntry = parseCareEntry(
+        request("/homes/${session.homeId}/care-entries", "POST", careEntryPayload(entry), token = session.accessToken)
+    )
+
+    override suspend fun updateCareEntry(session: OneSession, entry: OneCareEntry, update: OneCareEntryRequest): OneCareEntry = parseCareEntry(
+        request("/homes/${session.homeId}/care-entries/${entry.id}", "PATCH", careEntryPayload(update).put("version", entry.version), token = session.accessToken)
+    )
+
+    override suspend fun removeCareEntry(session: OneSession, entry: OneCareEntry) {
+        request("/homes/${session.homeId}/care-entries/${entry.id}?version=${entry.version}", "DELETE", token = session.accessToken)
+    }
+
+    private fun careEntryPayload(entry: OneCareEntryRequest): JSONObject = JSONObject()
+        .put("care_recipient_id", entry.careRecipientId.toString())
+        .put("kind", entry.kind)
+        .put("title", entry.title)
+        .put("body", entry.body)
+        .put("location", entry.location)
+        .put("starts_at", entry.startsAt?.toString() ?: JSONObject.NULL)
+        .put("ends_at", entry.endsAt?.toString() ?: JSONObject.NULL)
+        .put("timezone_name", entry.timezoneName ?: JSONObject.NULL)
+        .put("reminder_minutes", entry.reminderMinutes ?: JSONObject.NULL)
+
+    private fun parseCareEntry(row: JSONObject): OneCareEntry = OneCareEntry(
+        id = row.requiredUuid("id"),
+        careRecipientId = row.requiredUuid("care_recipient_id"),
+        kind = row.requiredString("kind"),
+        title = row.requiredString("title"),
+        body = row.optString("body"),
+        location = row.optString("location"),
+        startsAt = row.optNullableString("starts_at")?.toInstantOrNull(),
+        endsAt = row.optNullableString("ends_at")?.toInstantOrNull(),
+        timezoneName = row.optNullableString("timezone_name"),
+        reminderMinutes = if (row.isNull("reminder_minutes")) null else row.optInt("reminder_minutes"),
+        version = row.optInt("version", 1),
+        createdBy = row.requiredUuid("created_by"),
+        createdAt = row.optNullableString("created_at")?.toInstantOrNull() ?: Instant.EPOCH
+    )
 
     override suspend fun locationState(session: OneSession, careRecipientId: UUID): OneLocationState {
         val body = request("/homes/${session.homeId}/care-recipients/$careRecipientId/locations/state", "GET", token = session.accessToken)
@@ -2462,12 +2547,13 @@ class OneHttpApiClient(
         method: String,
         body: JSONObject? = null,
         token: String? = null,
-        extraHeaders: Map<String, String> = emptyMap()
+        extraHeaders: Map<String, String> = emptyMap(),
+        readTimeoutMillis: Int = 15_000
     ): JSONObject = withContext(Dispatchers.IO) {
         val connection = (URL(configuration.apiBaseUrl.trimEnd('/') + "/" + path.trimStart('/')).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 10_000
-            readTimeout = 15_000
+            readTimeout = readTimeoutMillis
             doInput = true
             setRequestProperty("Accept", "application/json")
             body?.let { setRequestProperty("Content-Type", "application/json") }
@@ -2487,6 +2573,8 @@ class OneHttpApiClient(
             if (raw.isBlank()) JSONObject() else JSONObject(raw)
         } catch (error: OneApiException) {
             throw error
+        } catch (error: SocketTimeoutException) {
+            throw OneApiException("ONE API took too long to respond. Check the history before retrying; the request may have completed.", cause = error)
         } catch (error: Exception) {
             throw OneApiException("Could not reach the ONE API.", cause = error)
         } finally {

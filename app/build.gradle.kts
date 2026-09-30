@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -5,6 +7,10 @@ plugins {
 
 android {
     namespace = "com.one.cognitivecompanion"
+    val localApiBaseUrl = providers.fileContents(rootProject.layout.projectDirectory.file("local.properties"))
+        .asText.orNull?.let { contents ->
+            Properties().apply { load(contents.reader()) }.getProperty("one.apiBaseUrl")
+        }
     val configuredApiBaseUrl = providers.gradleProperty("oneApiBaseUrl").orNull
     val configuredMapStyleUrl = providers.gradleProperty("oneMapStyleUrl").orNull
     compileSdk {
@@ -18,12 +24,12 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // The emulator reaches a backend running on the development machine
-        // through 10.0.2.2. Release configuration will provide an HTTPS URL.
+        // A backend bound to a LAN address is not reachable through emulator alias 10.0.2.2.
+        // Android Studio can use one.apiBaseUrl from ignored local.properties for debug.
         buildConfigField(
             "String",
             "ONE_API_BASE_URL",
-            "\"${configuredApiBaseUrl ?: "http://10.0.2.2:8000/api/v1"}\""
+            "\"${configuredApiBaseUrl ?: localApiBaseUrl ?: "http://10.0.2.2:8000/api/v1"}\""
         )
         buildConfigField(
             "String",
